@@ -1,5 +1,6 @@
 const TelegramBot = require('node-telegram-bot-api');
 const { OpenAI, toFile } = require('openai');
+const { generateWeeklyReport, chunkMessage } = require('./report');
 
 const token = process.env.BOT_TOKEN;
 const openaiKey = process.env.OPENAI_API_KEY;
@@ -89,6 +90,30 @@ bot.on('voice', async (msg) => {
     console.error('Детали:', err.cause || err.code || err.name || 'нет доп. деталей');
     console.error('Полный стек:', err.stack);
     bot.sendMessage(chatId, 'Не получилось распознать голос 😔 Попробуй ещё раз.');
+  }
+});
+
+bot.onText(/\/report/, async (msg) => {
+  const chatId = msg.chat.id;
+  try {
+    await bot.sendMessage(chatId, 'Собираю сводку по мероприятиям на следующую неделю... 📊 Секунду.');
+
+    const { text, totalEvents, failedTabs } = await generateWeeklyReport();
+
+    for (const chunk of chunkMessage(text)) {
+      await bot.sendMessage(chatId, chunk);
+    }
+
+    if (failedTabs.length > 0) {
+      await bot.sendMessage(
+        chatId,
+        `⚠️ Не удалось загрузить данные из вкладок:\n${failedTabs.join('\n')}\n\nОтчёт составлен по остальным вкладкам (событий найдено: ${totalEvents}).`
+      );
+    }
+  } catch (err) {
+    console.error('Ошибка формирования отчёта:', err.message);
+    console.error(err.stack);
+    bot.sendMessage(chatId, `Не получилось собрать отчёт 😔 ${err.message}`);
   }
 });
 
