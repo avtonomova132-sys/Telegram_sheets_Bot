@@ -65,6 +65,8 @@ bot.on('voice', async (msg) => {
     bot.sendMessage(chatId, `Я услышал:\n\n"${transcription.text}"\n\n(Пока просто показываю распознанный текст — скоро научусь красиво его оформлять)`);
   } catch (err) {
     console.error('Ошибка распознавания голоса:', err.message);
+    console.error('Детали:', err.cause || err.code || err.name || 'нет доп. деталей');
+    console.error('Полный стек:', err.stack);
     bot.sendMessage(chatId, 'Не получилось распознать голос 😔 Попробуй ещё раз.');
   } finally {
     if (tempPath && fs.existsSync(tempPath)) {
