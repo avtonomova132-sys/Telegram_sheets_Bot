@@ -122,8 +122,8 @@ bot.onText(/\/weekly\b/, (msg) => {
 });
 
 // Точечная проверка текущей недели — только события, которым ещё нужен хост.
-// /doctor и /report — алиасы на ту же логику.
-bot.onText(/\/(check|doctor|report)\b/, (msg) => {
+// /report — алиас на ту же логику.
+bot.onText(/\/(check|report)\b/, (msg) => {
   handleReportCommand(msg.chat.id, 'проверку по текущей неделе', generateCheckReport);
 });
 
