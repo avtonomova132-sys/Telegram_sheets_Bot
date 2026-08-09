@@ -1,9 +1,5 @@
 const TelegramBot = require('node-telegram-bot-api');
-const { OpenAI } = require('openai');
-const { File } = require('buffer');
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
+const { OpenAI, toFile } = require('openai');
 
 const token = process.env.BOT_TOKEN;
 const openaiKey = process.env.OPENAI_API_KEY;
@@ -14,7 +10,12 @@ if (!token) {
 }
 
 const bot = new TelegramBot(token, { polling: true });
-const openai = openaiKey ? new OpenAI({ apiKey: openaiKey, maxRetries: 1, timeout: 30000, fetch: globalThis.fetch }) : null;
+// maxRetries: 0 — встроенный ретрай openai-node переиспользует тот же поток
+// тела multipart-запроса, а нативный fetch (undici) не даёт прочитать уже
+// "потревоженный" body повторно => "Response body object should not be
+// disturbed or locked". Поэтому ретраим вручную ниже, пересобирая файл
+// с нуля на каждой попытке.
+const openai = openaiKey ? new OpenAI({ apiKey: openaiKey, maxRetries: 0, timeout: 60000 }) : null;
 
 console.log('Бот запущен и слушает сообщения...');
 
@@ -35,6 +36,33 @@ bot.on('message', (msg) => {
   bot.sendMessage(chatId, `Я получил твоё сообщение: "${text}"\n\n(Пока я просто эхо — скоро научусь большему)`);
 });
 
+async function transcribeVoice(buffer, attempts = 3) {
+  let lastErr;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      // Пересобираем Uploadable на каждой попытке — переиспользовать один и
+      // тот же File/поток между попытками нельзя (см. комментарий у openai клиента).
+      const file = await toFile(buffer, 'voice.ogg', { type: 'audio/ogg' });
+      return await openai.audio.transcriptions.create({
+        file,
+        model: 'whisper-1',
+        language: 'ru',
+      });
+    } catch (err) {
+      lastErr = err;
+      const transient =
+        err.code === 'ECONNRESET' ||
+        err.cause?.code === 'ECONNRESET' ||
+        err.status === undefined || // сетевая ошибка до получения ответа
+        err.status >= 500;
+      console.error(`Попытка ${attempt}/${attempts} не удалась:`, err.message);
+      if (!transient || attempt === attempts) throw err;
+      await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+    }
+  }
+  throw lastErr;
+}
+
 bot.on('voice', async (msg) => {
   const chatId = msg.chat.id;
 
@@ -43,7 +71,6 @@ bot.on('voice', async (msg) => {
     return;
   }
 
-  let tempPath;
   try {
     bot.sendMessage(chatId, 'Слушаю... 🎧');
 
@@ -54,11 +81,7 @@ bot.on('voice', async (msg) => {
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    const transcription = await openai.audio.transcriptions.create({
-      file: new File([buffer], 'voice.ogg', { type: 'audio/ogg' }),
-      model: 'whisper-1',
-      language: 'ru',
-    });
+    const transcription = await transcribeVoice(buffer);
 
     bot.sendMessage(chatId, `Я услышал:\n\n"${transcription.text}"\n\n(Пока просто показываю распознанный текст — скоро научусь красиво его оформлять)`);
   } catch (err) {
@@ -66,10 +89,6 @@ bot.on('voice', async (msg) => {
     console.error('Детали:', err.cause || err.code || err.name || 'нет доп. деталей');
     console.error('Полный стек:', err.stack);
     bot.sendMessage(chatId, 'Не получилось распознать голос 😔 Попробуй ещё раз.');
-  } finally {
-    if (tempPath && fs.existsSync(tempPath)) {
-      fs.unlinkSync(tempPath);
-    }
   }
 });
 
