@@ -1,5 +1,4 @@
-[09.08.2026 6:33] Elena Avtonomova: Telegram_sheets_Bot
-[09.08.2026 7:07] Elena Avtonomova: const TelegramBot = require('node-telegram-bot-api');
+const TelegramBot = require('node-telegram-bot-api');
 const OpenAI = require('openai');
 const fs = require('fs');
 const path = require('path');
