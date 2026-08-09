@@ -1,5 +1,5 @@
 const TelegramBot = require('node-telegram-bot-api');
-const OpenAI = require('openai');
+const { OpenAI, toFile } = require('openai');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -53,11 +53,8 @@ bot.on('voice', async (msg) => {
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    tempPath = path.join(os.tmpdir(), `voice_${Date.now()}.ogg`);
-    fs.writeFileSync(tempPath, buffer);
-
     const transcription = await openai.audio.transcriptions.create({
-      file: fs.createReadStream(tempPath),
+      file: await toFile(buffer, 'voice.ogg'),
       model: 'whisper-1',
       language: 'ru',
     });
