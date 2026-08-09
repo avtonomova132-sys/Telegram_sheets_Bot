@@ -1,6 +1,6 @@
 const TelegramBot = require('node-telegram-bot-api');
 const { OpenAI, toFile } = require('openai');
-const { generateWeeklyReport, chunkMessage } = require('./report');
+const { generateWeeklyReport, generateCheckReport, chunkMessage } = require('./report');
 
 const token = process.env.BOT_TOKEN;
 const openaiKey = process.env.OPENAI_API_KEY;
@@ -93,12 +93,11 @@ bot.on('voice', async (msg) => {
   }
 });
 
-bot.onText(/\/report/, async (msg) => {
-  const chatId = msg.chat.id;
+async function handleReportCommand(chatId, label, generate) {
   try {
-    await bot.sendMessage(chatId, 'Собираю сводку по мероприятиям на следующую неделю... 📊 Секунду.');
+    await bot.sendMessage(chatId, `Собираю ${label}... 📊 Секунду.`);
 
-    const { text, totalEvents, failedTabs } = await generateWeeklyReport();
+    const { text, totalEvents, failedTabs } = await generate();
 
     for (const chunk of chunkMessage(text)) {
       await bot.sendMessage(chatId, chunk);
@@ -115,6 +114,17 @@ bot.onText(/\/report/, async (msg) => {
     console.error(err.stack);
     bot.sendMessage(chatId, `Не получилось собрать отчёт 😔 ${err.message}`);
   }
+}
+
+// Полный обзор недели (обычно по воскресеньям утром) — все события, с хостами и без.
+bot.onText(/\/weekly\b/, (msg) => {
+  handleReportCommand(msg.chat.id, 'полный обзор недели', generateWeeklyReport);
+});
+
+// Точечная проверка текущей недели — только события, которым ещё нужен хост.
+// /doctor и /report — алиасы на ту же логику.
+bot.onText(/\/(check|doctor|report)\b/, (msg) => {
+  handleReportCommand(msg.chat.id, 'проверку по текущей неделе', generateCheckReport);
 });
 
 bot.on('polling_error', (err) => {
