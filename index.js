@@ -1,5 +1,6 @@
 const TelegramBot = require('node-telegram-bot-api');
-const { OpenAI, toFile } = require('openai');
+const { OpenAI } = require('openai');
+const { File } = require('buffer');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -13,7 +14,7 @@ if (!token) {
 }
 
 const bot = new TelegramBot(token, { polling: true });
-const openai = openaiKey ? new OpenAI({ apiKey: openaiKey, maxRetries: 5, timeout: 30000, fetch: globalThis.fetch }) : null;
+const openai = openaiKey ? new OpenAI({ apiKey: openaiKey, maxRetries: 2, timeout: 30000 }) : null;
 
 console.log('Бот запущен и слушает сообщения...');
 
@@ -54,7 +55,7 @@ bot.on('voice', async (msg) => {
     const buffer = Buffer.from(arrayBuffer);
 
     const transcription = await openai.audio.transcriptions.create({
-      file: await toFile(buffer, 'voice.ogg'),
+      file: new File([buffer], 'voice.ogg', { type: 'audio/ogg' }),
       model: 'whisper-1',
       language: 'ru',
     });
