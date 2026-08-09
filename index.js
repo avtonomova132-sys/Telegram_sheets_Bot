@@ -13,7 +13,7 @@ if (!token) {
 }
 
 const bot = new TelegramBot(token, { polling: true });
-const openai = openaiKey ? new OpenAI({ apiKey: openaiKey, maxRetries: 5, timeout: 30000 }) : null;
+const openai = openaiKey ? new OpenAI({ apiKey: openaiKey, maxRetries: 5, timeout: 30000, fetch: globalThis.fetch }) : null;
 
 console.log('Бот запущен и слушает сообщения...');
 
