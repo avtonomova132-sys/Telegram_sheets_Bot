@@ -97,7 +97,7 @@ async function handleReportCommand(chatId, label, generate) {
   try {
     await bot.sendMessage(chatId, `Собираю ${label}... 📊 Секунду.`);
 
-    const { text, totalEvents, failedTabs } = await generate();
+    const { text, totalEvents, failedTabs, debug } = await generate();
 
     for (const chunk of chunkMessage(text)) {
       await bot.sendMessage(chatId, chunk);
@@ -108,6 +108,15 @@ async function handleReportCommand(chatId, label, generate) {
         chatId,
         `⚠️ Не удалось загрузить данные из вкладок:\n${failedTabs.join('\n')}\n\nОтчёт составлен по остальным вкладкам (событий найдено: ${totalEvents}).`
       );
+    }
+
+    // Временный отладочный вывод — помогает проверить, что бот действительно
+    // прошёлся по всем вкладкам и что именно там нашёл. Уберём после того,
+    // как парсинг подтвердится на реальных данных за несколько недель.
+    if (debug) {
+      for (const chunk of chunkMessage(debug)) {
+        await bot.sendMessage(chatId, chunk);
+      }
     }
   } catch (err) {
     console.error('Ошибка формирования отчёта:', err.message);

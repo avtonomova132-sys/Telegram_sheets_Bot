@@ -78,63 +78,57 @@ async function fetchWithTimeout(url, ms) {
   }
 }
 
-// Every program tab has its own quirky, hand-edited header block (column
-// order shifts between tabs), but they all share one anchor: a row with a
-// cell that's exactly "Host". AZ/MSK time columns and Co-Host sit on that
-// same row, and the session-title column is reliably one cell to the left
-// of Host, while the AZ end-time column is reliably two cells to the right
-// of AZ start (start, "-", end are always three consecutive columns). We
-// use the LAST such row in the sheet, since some tabs repeat a decorative
-// header block before the real, data-aligned one.
-function findHeaderRow(rows) {
-  let headerRowIndex = -1;
-  let hostCol = -1;
-  let coHostCol = -1;
-  let azCol = -1;
-  let mskCol = -1;
-
+// Each program tab has its own quirky, hand-edited header block, AND most
+// tabs repeat that header block once per month as the sheet grows (a fresh
+// "Data / AZ / MSK / Host / Co-Host / ..." row every ~50 rows). A version of
+// this parser that only looked at the LAST such row — and started reading
+// data right after it — silently dropped every earlier month's events,
+// which is how a whole week of real August sessions went missing. So we
+// find every row with an exact "Host" cell and treat each one as the start
+// of its own segment, running until the next "Host" row (or EOF). Columns
+// are re-detected per segment since a hand-edited sheet can't be trusted to
+// keep the exact same layout in every monthly block.
+function findHeaderSegments(rows) {
+  const headerRowIndices = [];
   for (let r = 0; r < rows.length; r++) {
     const row = rows[r];
-    let localHostCol = -1;
     for (let c = 0; c < row.length; c++) {
       if (normalize(row[c]).toLowerCase() === 'host') {
-        localHostCol = c;
+        headerRowIndices.push(r);
         break;
       }
     }
-    if (localHostCol === -1) continue;
+  }
+  if (headerRowIndices.length === 0) return [];
 
-    let localCoHostCol = -1;
-    let localAzCol = -1;
-    let localMskCol = -1;
+  return headerRowIndices.map((headerRowIndex, i) => {
+    const row = rows[headerRowIndex];
+    let hostCol = -1;
+    let coHostCol = -1;
+    let azCol = -1;
+    let mskCol = -1;
     for (let c = 0; c < row.length; c++) {
       const v = normalize(row[c]).toLowerCase();
-      if (localCoHostCol === -1 && (v === 'co-host' || v === 'cohost')) localCoHostCol = c;
-      if (localAzCol === -1 && v.includes('az') && (v.includes('utc-7') || v.includes('mst'))) localAzCol = c;
-      if (localMskCol === -1 && v.includes('msk')) localMskCol = c;
+      if (hostCol === -1 && v === 'host') hostCol = c;
+      if (coHostCol === -1 && (v === 'co-host' || v === 'cohost')) coHostCol = c;
+      if (azCol === -1 && v.includes('az') && (v.includes('utc-7') || v.includes('mst'))) azCol = c;
+      if (mskCol === -1 && v.includes('msk')) mskCol = c;
     }
+    const resolvedAzCol = azCol === -1 ? 2 : azCol;
+    const endRowIndex = i + 1 < headerRowIndices.length ? headerRowIndices[i + 1] : rows.length;
 
-    headerRowIndex = r;
-    hostCol = localHostCol;
-    coHostCol = localCoHostCol;
-    azCol = localAzCol;
-    mskCol = localMskCol;
-  }
-
-  if (headerRowIndex === -1) return null;
-
-  const resolvedAzCol = azCol === -1 ? 2 : azCol;
-
-  return {
-    headerRowIndex,
-    dateCol: 1,
-    titleCol: hostCol - 1,
-    hostCol,
-    coHostCol,
-    azCol: resolvedAzCol,
-    azEndCol: resolvedAzCol + 2,
-    mskCol: mskCol === -1 ? 5 : mskCol,
-  };
+    return {
+      headerRowIndex,
+      endRowIndex,
+      dateCol: 1,
+      titleCol: hostCol - 1,
+      hostCol,
+      coHostCol,
+      azCol: resolvedAzCol,
+      azEndCol: resolvedAzCol + 2,
+      mskCol: mskCol === -1 ? 5 : mskCol,
+    };
+  });
 }
 
 const MONTHS = {
@@ -182,43 +176,56 @@ function parseTimeToMinutes(text) {
   return hour * 60 + minute;
 }
 
+// Arizona is fixed UTC-7 (no DST) and Moscow is fixed UTC+3 (no DST), so the
+// gap between them is always exactly 10 hours. Deriving Moscow time from the
+// Arizona column arithmetically is both simpler and more reliable than
+// reading the sheet's own MSK column, which is sometimes just blank for a
+// given month's block — and it also tells us for free whether the Moscow
+// clock has rolled over to the next calendar day.
+const AZ_TO_MSK_OFFSET_MIN = 600;
+
+function deriveMsk(azMin) {
+  if (azMin === null || azMin === undefined) return { min: null, dayOffset: 0 };
+  const raw = azMin + AZ_TO_MSK_OFFSET_MIN;
+  return { min: ((raw % 1440) + 1440) % 1440, dayOffset: Math.floor(raw / 1440) };
+}
+
 function parseTabEvents(tabName, rows) {
-  const header = findHeaderRow(rows);
-  if (!header) return [];
-
+  const segments = findHeaderSegments(rows);
   const events = [];
-  for (let r = header.headerRowIndex + 1; r < rows.length; r++) {
-    const row = rows[r];
-    const title = normalize(row[header.titleCol]);
-    if (!title) continue; // section dividers / continuation rows have no title
 
-    const date = parseDateFromText(title) || parseDateFromText(row[header.dateCol]);
-    if (!date) continue;
+  for (const seg of segments) {
+    for (let r = seg.headerRowIndex + 1; r < seg.endRowIndex; r++) {
+      const row = rows[r];
+      const title = normalize(row[seg.titleCol]);
+      if (!title) continue; // section dividers / continuation rows have no title
 
-    const host = normalize(row[header.hostCol]);
-    const azStartMin = parseTimeToMinutes(row[header.azCol]);
-    const azEndMin = parseTimeToMinutes(row[header.azEndCol]);
-    const mskStartMin = parseTimeToMinutes(row[header.mskCol]);
+      const date = parseDateFromText(title) || parseDateFromText(row[seg.dateCol]);
+      if (!date) continue;
 
-    // The sheet only gives one Moscow time column (aligned to AZ start), not
-    // a Moscow end time — so we derive it from the AZ session length.
-    let durationMin = 0;
-    if (azStartMin !== null && azEndMin !== null) {
-      durationMin = ((azEndMin - azStartMin) % 1440 + 1440) % 1440;
+      const host = normalize(row[seg.hostCol]);
+      const coHost = seg.coHostCol !== -1 ? normalize(row[seg.coHostCol]) : '';
+      const azStartMin = parseTimeToMinutes(row[seg.azCol]);
+      const azEndMin = parseTimeToMinutes(row[seg.azEndCol]);
+
+      const mskStart = deriveMsk(azStartMin);
+      const mskEnd = azEndMin !== null ? deriveMsk(azEndMin) : { min: null, dayOffset: mskStart.dayOffset };
+
+      events.push({
+        tabName,
+        title,
+        host,
+        coHost,
+        hasHost: host.length > 0,
+        date,
+        azStartMin,
+        azEndMin,
+        mskStartMin: mskStart.min,
+        mskStartDayOffset: mskStart.dayOffset,
+        mskEndMin: mskEnd.min,
+        mskEndDayOffset: mskEnd.dayOffset,
+      });
     }
-    const mskEndMin = mskStartMin !== null && durationMin > 0 ? (mskStartMin + durationMin) % 1440 : null;
-
-    events.push({
-      tabName,
-      title,
-      host,
-      hasHost: host.length > 0,
-      date,
-      azStartMin,
-      azEndMin,
-      mskStartMin,
-      mskEndMin,
-    });
   }
   return events;
 }
@@ -260,13 +267,17 @@ async function collectWeekEvents(range) {
   const config = loadConfig();
   const allEvents = [];
   const failedTabs = [];
+  const debugCounts = [];
 
   await Promise.all(
     config.tabs.map(async (tab) => {
       try {
         const events = await fetchTabEvents(config.spreadsheetId, tab);
+        const inRangeCount = events.filter((e) => inRange(e.date, range.start, range.end)).length;
+        debugCounts.push({ name: tab.name, total: events.length, inRange: inRangeCount });
         allEvents.push(...events);
       } catch (err) {
+        debugCounts.push({ name: tab.name, total: 0, inRange: 0, error: err.message });
         failedTabs.push(`${tab.name}: ${err.message}`);
       }
     })
@@ -278,7 +289,15 @@ async function collectWeekEvents(range) {
 
   const hostSignupUrl = `https://docs.google.com/spreadsheets/d/${config.spreadsheetId}/edit?gid=${config.hostSignupGid}#gid=${config.hostSignupGid}`;
 
-  return { events, failedTabs, hostSignupUrl };
+  return { events, failedTabs, hostSignupUrl, debugCounts };
+}
+
+function formatDebugCounts(debugCounts, range) {
+  const lines = debugCounts.map((d) => {
+    if (d.error) return `${d.name}: ошибка (${d.error})`;
+    return `${d.name}: ${d.inRange} в диапазоне (всего в таблице: ${d.total})`;
+  });
+  return `🔍 Debug (${formatWeekRangeEn(range.start, range.end)}):\n${lines.join('\n')}`;
 }
 
 const WEEKDAYS_EN_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -294,6 +313,26 @@ function formatEventDateRu(date) {
   return `${WEEKDAYS_RU_FULL[date.getUTCDay()]}, ${date.getUTCDate()} ${MONTHS_RU_GENITIVE[date.getUTCMonth()]}`;
 }
 
+function formatWeeklyDateEn(date) {
+  return `${MONTHS_EN_FULL[date.getUTCMonth()]} ${date.getUTCDate()} (${WEEKDAYS_EN_FULL[date.getUTCDay()]})`;
+}
+
+function formatWeeklyDateRu(date) {
+  return `${date.getUTCDate()} ${MONTHS_RU_GENITIVE[date.getUTCMonth()]} (${WEEKDAYS_RU_FULL[date.getUTCDay()].toLowerCase()})`;
+}
+
+function formatMonthDayEn(date) {
+  return `${MONTHS_EN_FULL[date.getUTCMonth()]} ${date.getUTCDate()}`;
+}
+
+function formatMonthDayShortEn(date) {
+  return `${MONTHS_EN_FULL[date.getUTCMonth()].slice(0, 3)} ${date.getUTCDate()}`;
+}
+
+function formatMonthDayRu(date) {
+  return `${date.getUTCDate()} ${MONTHS_RU_GENITIVE[date.getUTCMonth()]}`;
+}
+
 function formatWeekRangeEn(start, end) {
   const sameMonth = start.getUTCMonth() === end.getUTCMonth() && start.getUTCFullYear() === end.getUTCFullYear();
   if (sameMonth) return `${MONTHS_EN_FULL[start.getUTCMonth()]} ${start.getUTCDate()}–${end.getUTCDate()}`;
@@ -304,6 +343,22 @@ function formatWeekRangeRu(start, end) {
   const sameMonth = start.getUTCMonth() === end.getUTCMonth() && start.getUTCFullYear() === end.getUTCFullYear();
   if (sameMonth) return `${start.getUTCDate()}–${end.getUTCDate()} ${MONTHS_RU_GENITIVE[end.getUTCMonth()]}`;
   return `${start.getUTCDate()} ${MONTHS_RU_GENITIVE[start.getUTCMonth()]} – ${end.getUTCDate()} ${MONTHS_RU_GENITIVE[end.getUTCMonth()]}`;
+}
+
+function addDays(date, n) {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + n));
+}
+
+function mskSuffixEn(e) {
+  if (!e.mskStartDayOffset) return '';
+  const d = addDays(e.date, e.mskStartDayOffset);
+  return ` (${formatMonthDayShortEn(d)})`;
+}
+
+function mskSuffixRu(e) {
+  if (!e.mskStartDayOffset) return '';
+  const d = addDays(e.date, e.mskStartDayOffset);
+  return ` (${formatMonthDayRu(d)})`;
 }
 
 function pad2(n) {
@@ -318,6 +373,17 @@ function to12h(min) {
   let h12 = h % 12;
   if (h12 === 0) h12 = 12;
   return { h: h12, m, period };
+}
+
+function formatPoint12h(min) {
+  if (min === null || min === undefined) return '—';
+  const t = to12h(min);
+  return `${t.h}:${pad2(t.m)} ${t.period}`;
+}
+
+function formatPoint24h(min) {
+  if (min === null || min === undefined) return '—';
+  return `${pad2(Math.floor(min / 60))}:${pad2(min % 60)}`;
 }
 
 function formatRange12h(startMin, endMin) {
@@ -350,65 +416,70 @@ function programEmoji(tabName) {
   return ACADEMIC_KEYWORDS.some((k) => lower.includes(k)) ? '🎓' : '💙';
 }
 
+// Strips the trailing "(Mon DD, YYYY)" (and anything after it, like
+// "no translation") that almost every session title ends with, since the
+// date is already shown on its own line.
+function sessionLabel(title) {
+  const m = title.match(/\([A-Za-z]{3,9}\.?\s+\d{1,2},?\s*\d{4}\)/);
+  const cut = m ? title.slice(0, m.index) : title;
+  return cut.trim().replace(/[-–—]\s*$/, '').trim();
+}
+
 function ruIsOneForm(n) {
   return n % 10 === 1 && n % 100 !== 11;
 }
 
-function ruHostPhrase(n) {
-  if (ruIsOneForm(n)) return `НУЖЕН ${n} ХОСТ`;
+function ruFewForm(n) {
   const n10 = n % 10;
   const n100 = n % 100;
-  const few = n10 >= 2 && n10 <= 4 && (n100 < 12 || n100 > 14);
-  return `НУЖНЫ ${n} ${few ? 'ХОСТА' : 'ХОСТОВ'}`;
+  return n10 >= 2 && n10 <= 4 && (n100 < 12 || n100 > 14);
+}
+
+function ruHostPhrase(n) {
+  if (ruIsOneForm(n)) return `НУЖЕН ${n} ХОСТ`;
+  return `НУЖНЫ ${n} ${ruFewForm(n) ? 'ХОСТА' : 'ХОСТОВ'}`;
 }
 
 function enHostPhrase(n) {
   return `NEEDED ${n} HOST${n === 1 ? '' : 'S'}`;
 }
 
-function eventBlockEn(e, hostLine) {
+function ruBroadcastWord(n) {
+  if (ruIsOneForm(n)) return 'эфир';
+  return ruFewForm(n) ? 'эфира' : 'эфиров';
+}
+
+function ruMissingHeader(n) {
+  if (ruIsOneForm(n)) return `${n} хост ещё не назначен — пожалуйста, откликнитесь!`;
+  return `${n} ${ruFewForm(n) ? 'хоста' : 'хостов'} ещё не назначены — пожалуйста, откликнитесь!`;
+}
+
+function enMissingHeader(n) {
+  return n === 1
+    ? 'One host is still not assigned — please respond!'
+    : `${n} hosts are still not assigned — please respond!`;
+}
+
+// ---- /check event blocks (only used for the "missing host" listing) ----
+
+function checkEventBlockEn(e) {
   return [
     `🗓️ ${formatEventDateEn(e.date)}`,
     `${programEmoji(e.tabName)} ${e.tabName}`,
     `🕒 Arizona: ${formatRange12h(e.azStartMin, e.azEndMin)}`,
     `🕒 Moscow: ${formatRange12h(e.mskStartMin, e.mskEndMin)}`,
-    hostLine,
+    '👤 Host: needed',
   ].join('\n');
 }
 
-function eventBlockRu(e, hostLine) {
+function checkEventBlockRu(e) {
   return [
     `🗓️ ${formatEventDateRu(e.date)}`,
     `${programEmoji(e.tabName)} ${e.tabName}`,
     `🕒 Аризона: ${formatRange24h(e.azStartMin, e.azEndMin)}`,
     `🕒 Москва: ${formatRange24h(e.mskStartMin, e.mskEndMin)}`,
-    hostLine,
+    '👤 Хост: нужен',
   ].join('\n');
-}
-
-// /weekly — full listing of every event in the range, host or not.
-function buildWeeklyMessage(events, range, hostSignupUrl) {
-  const rangeEn = formatWeekRangeEn(range.start, range.end);
-  const rangeRu = formatWeekRangeRu(range.start, range.end);
-
-  const enBody =
-    events.length === 0
-      ? 'No sessions scheduled this week.'
-      : events
-          .map((e) => eventBlockEn(e, e.hasHost ? `👤 Host: ${e.host}` : '👤 🔥 Host needed'))
-          .join('\n\n');
-
-  const ruBody =
-    events.length === 0
-      ? 'На этой неделе нет запланированных сессий.'
-      : events
-          .map((e) => eventBlockRu(e, e.hasHost ? `👤 Хост: ${e.host}` : '👤 🔥 Хост не назначен'))
-          .join('\n\n');
-
-  const enBlock = [`📝 🗓️ Full schedule for the week, ${rangeEn}`, '', enBody, '', '🙏 Thank you', '🌿'].join('\n');
-  const ruBlock = [`📝 🗓️ Полное расписание на неделю, ${rangeRu}`, '', ruBody, '', '🙏 Спасибо', '🌿'].join('\n');
-
-  return [enBlock, ruBlock, hostSignupUrl].join('\n\n');
 }
 
 // /check — only the events still missing a host; a short all-clear message
@@ -426,8 +497,8 @@ function buildCheckMessage(events, range, hostSignupUrl, tags) {
   const rangeEn = formatWeekRangeEn(range.start, range.end);
   const rangeRu = formatWeekRangeRu(range.start, range.end);
 
-  const enBody = missing.map((e) => eventBlockEn(e, '👤 Host: needed')).join('\n\n');
-  const ruBody = missing.map((e) => eventBlockRu(e, '👤 Хост: нужен')).join('\n\n');
+  const enBody = missing.map(checkEventBlockEn).join('\n\n');
+  const ruBody = missing.map(checkEventBlockRu).join('\n\n');
 
   const enBlock = [
     `📝 🔥${enHostPhrase(missing.length)} for this week, ${rangeEn}`,
@@ -454,19 +525,194 @@ function buildCheckMessage(events, range, hostSignupUrl, tags) {
   return parts.join('\n\n');
 }
 
+// ---- /weekly event blocks (every event, host or not) ----
+
+function weeklyHostLineEn(e) {
+  if (e.hasHost) {
+    const co = e.coHost ? `, Co-Host: ${e.coHost}` : '';
+    return `🌱👤 Host: ${e.host}${co}`;
+  }
+  return '🔥👤 Host: volunteer needed 🙏';
+}
+
+function weeklyHostLineRu(e) {
+  if (e.hasHost) {
+    const co = e.coHost ? `, Ко-хост: ${e.coHost}` : '';
+    return `🌱👤 Хост: ${e.host}${co}`;
+  }
+  return '🔥👤 Хост: нужен волонтёр 🙏';
+}
+
+function weeklyEventBlockEn(e) {
+  return [
+    `📅 ${formatWeeklyDateEn(e.date)}`,
+    `${programEmoji(e.tabName)} ${e.tabName} — ${sessionLabel(e.title)}`,
+    `🕒 Arizona: ${formatRange12h(e.azStartMin, e.azEndMin)}`,
+    `🕒 Moscow: ${formatRange24h(e.mskStartMin, e.mskEndMin)}${mskSuffixEn(e)}`,
+    weeklyHostLineEn(e),
+  ].join('\n');
+}
+
+function weeklyEventBlockRu(e) {
+  return [
+    `📅 ${formatWeeklyDateRu(e.date)}`,
+    `${programEmoji(e.tabName)} ${e.tabName} — ${sessionLabel(e.title)}`,
+    `🕒 Аризона: ${formatRange24h(e.azStartMin, e.azEndMin)}`,
+    `🕒 Москва: ${formatRange24h(e.mskStartMin, e.mskEndMin)}${mskSuffixRu(e)}`,
+    weeklyHostLineRu(e),
+  ].join('\n');
+}
+
+function tabBreakdownEn(events) {
+  const order = [];
+  const counts = new Map();
+  const missing = new Map();
+  for (const e of events) {
+    if (!counts.has(e.tabName)) {
+      counts.set(e.tabName, 0);
+      missing.set(e.tabName, false);
+      order.push(e.tabName);
+    }
+    counts.set(e.tabName, counts.get(e.tabName) + 1);
+    if (!e.hasHost) missing.set(e.tabName, true);
+  }
+  return order
+    .map((name, i) => {
+      const isLast = i === order.length - 1;
+      const fire = missing.get(name) ? ' 🔥' : '';
+      return `${counts.get(name)} from ${name}${fire}${isLast ? '.' : ','}`;
+    })
+    .join('\n');
+}
+
+function tabBreakdownRu(events) {
+  const order = [];
+  const counts = new Map();
+  const missing = new Map();
+  for (const e of events) {
+    if (!counts.has(e.tabName)) {
+      counts.set(e.tabName, 0);
+      missing.set(e.tabName, false);
+      order.push(e.tabName);
+    }
+    counts.set(e.tabName, counts.get(e.tabName) + 1);
+    if (!e.hasHost) missing.set(e.tabName, true);
+  }
+  return order
+    .map((name, i) => {
+      const isLast = i === order.length - 1;
+      const fire = missing.get(name) ? ' 🔥' : '';
+      return `${counts.get(name)} — ${name}${fire}${isLast ? '.' : ','}`;
+    })
+    .join('\n');
+}
+
+function warningBlockEn(missing) {
+  if (missing.length === 0) return '';
+  const items = missing
+    .map(
+      (e) =>
+        `${e.tabName},\n${formatMonthDayEn(e.date)}\nArizona: ${formatPoint12h(e.azStartMin)},\nMoscow: ${formatPoint24h(e.mskStartMin)}.`
+    )
+    .join('\n\n');
+  return `⚠️ ${enMissingHeader(missing.length)}\n${items}`;
+}
+
+function warningBlockRu(missing) {
+  if (missing.length === 0) return '';
+  const items = missing
+    .map(
+      (e) =>
+        `${e.tabName},\n${formatMonthDayRu(e.date)}\nАризона: ${formatPoint24h(e.azStartMin)},\nМосква: ${formatPoint24h(e.mskStartMin)}.`
+    )
+    .join('\n\n');
+  return `⚠️ ${ruMissingHeader(missing.length)}\n${items}`;
+}
+
+function ctaLineEn(missing) {
+  if (missing.length === 0) return '';
+  if (missing.length === 1) {
+    const e = missing[0];
+    return `If anyone can host ${sessionLabel(e.title)} (${formatMonthDayShortEn(e.date)}) — please sign up via the link below 🙏`;
+  }
+  return 'If anyone can host one of the sessions above — please sign up via the link below 🙏';
+}
+
+function ctaLineRu(missing) {
+  if (missing.length === 0) return '';
+  if (missing.length === 1) {
+    const e = missing[0];
+    return `Если кто-то может провести «${sessionLabel(e.title)}» (${formatMonthDayRu(e.date)}) — пожалуйста, запишитесь по ссылке ниже 🙏`;
+  }
+  return 'Если вы можете провести одну из сессий выше — пожалуйста, запишитесь по ссылке ниже 🙏';
+}
+
+// /weekly — full listing of every event in the range, host or not.
+function buildWeeklyMessage(events, range, hostSignupUrl) {
+  const missing = events.filter((e) => !e.hasHost);
+  const rangeEn = formatWeekRangeEn(range.start, range.end);
+  const rangeRu = formatWeekRangeRu(range.start, range.end);
+
+  const enSectionParts = ['📝', 'Precious Angels 🪽', '', 'Wishing everyone kindness and enlightenment in this life 💎', ''];
+  const ruSectionParts = ['📝', 'Дорогие Ангелы 🪽', '', 'Желаем всем доброты и просветления в этой жизни 💎', ''];
+
+  if (events.length === 0) {
+    enSectionParts.push('Zoom broadcast schedule for the upcoming week', rangeEn, '', 'No sessions scheduled this week.');
+    ruSectionParts.push('Расписание Zoom-эфиров на предстоящую неделю', rangeRu, '', 'На этой неделе нет запланированных сессий.');
+  } else {
+    enSectionParts.push(
+      'Zoom broadcast schedule for the upcoming week',
+      rangeEn,
+      '',
+      `In total, ${events.length} broadcast${events.length === 1 ? '' : 's'} this week:`,
+      '',
+      tabBreakdownEn(events)
+    );
+    ruSectionParts.push(
+      'Расписание Zoom-эфиров на предстоящую неделю',
+      rangeRu,
+      '',
+      `Всего на этой неделе ${events.length} ${ruBroadcastWord(events.length)}:`,
+      '',
+      tabBreakdownRu(events)
+    );
+
+    if (missing.length > 0) {
+      enSectionParts.push('', warningBlockEn(missing));
+      ruSectionParts.push('', warningBlockRu(missing));
+    }
+
+    enSectionParts.push('', events.map(weeklyEventBlockEn).join('\n\n'));
+    ruSectionParts.push('', events.map(weeklyEventBlockRu).join('\n\n'));
+
+    if (missing.length > 0) {
+      enSectionParts.push('', ctaLineEn(missing));
+      ruSectionParts.push('', ctaLineRu(missing));
+    }
+  }
+
+  enSectionParts.push('', 'If anyone has any changes or needs help, please let us know in advance. 💛');
+  ruSectionParts.push('', 'Если у кого-то есть изменения или нужна помощь — пожалуйста, сообщите заранее. 💛');
+
+  const enSection = enSectionParts.join('\n');
+  const ruSection = ruSectionParts.join('\n');
+
+  return [enSection, '---', ruSection, hostSignupUrl].join('\n\n');
+}
+
 async function generateWeeklyReport(now = new Date()) {
   const range = getNextWeekRange(now);
-  const { events, failedTabs, hostSignupUrl } = await collectWeekEvents(range);
+  const { events, failedTabs, hostSignupUrl, debugCounts } = await collectWeekEvents(range);
   const text = buildWeeklyMessage(events, range, hostSignupUrl);
-  return { text, range, totalEvents: events.length, failedTabs };
+  return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
 }
 
 async function generateCheckReport(now = new Date()) {
   const range = getCurrentWeekRange(now);
-  const { events, failedTabs, hostSignupUrl } = await collectWeekEvents(range);
+  const { events, failedTabs, hostSignupUrl, debugCounts } = await collectWeekEvents(range);
   const tags = loadCommunityTags();
   const text = buildCheckMessage(events, range, hostSignupUrl, tags);
-  return { text, range, totalEvents: events.length, failedTabs };
+  return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
 }
 
 function chunkMessage(text, maxLen = 3500) {
@@ -490,7 +736,7 @@ module.exports = {
   loadConfig,
   loadCommunityTags,
   parseCsv,
-  findHeaderRow,
+  findHeaderSegments,
   parseDateFromText,
   parseTimeToMinutes,
   parseTabEvents,
