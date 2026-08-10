@@ -1,13 +1,21 @@
+const cron = require('node-cron');
 const TelegramBot = require('node-telegram-bot-api');
 const { OpenAI, toFile } = require('openai');
 const { generateWeeklyReport, generateCheckReport, chunkMessage } = require('./report');
+const { generateVerseImageBuffer } = require('./verse/generateVerseImage');
+const { getNextVerseNumber, setLastSent } = require('./verse/progress');
 
 const token = process.env.BOT_TOKEN;
 const openaiKey = process.env.OPENAI_API_KEY;
+const myChatId = process.env.MY_CHAT_ID;
 
 if (!token) {
   console.error('BOT_TOKEN не задан! Добавьте переменную окружения BOT_TOKEN.');
   process.exit(1);
+}
+
+if (!myChatId) {
+  console.warn('MY_CHAT_ID не задан — ежедневная отправка изречений отключена.');
 }
 
 const bot = new TelegramBot(token, { polling: true });
@@ -135,6 +143,55 @@ bot.onText(/\/weekly\b/, (msg) => {
 bot.onText(/\/(check|report)\b/, (msg) => {
   handleReportCommand(msg.chat.id, 'проверку по текущей неделе', generateCheckReport);
 });
+
+async function sendVerseImage(chatId, verseNumber) {
+  const buffer = await generateVerseImageBuffer(verseNumber);
+  await bot.sendDocument(
+    chatId,
+    buffer,
+    {},
+    { filename: `verse-${verseNumber}.png`, contentType: 'image/png' }
+  );
+}
+
+// Ручная проверка вне расписания — присылает текущее следующее изречение,
+// прогресс при этом не сдвигает (сдвигает только ежедневная авто-отправка).
+bot.onText(/\/verse\b/, async (msg) => {
+  const chatId = msg.chat.id;
+  const next = getNextVerseNumber();
+
+  if (next === null) {
+    await bot.sendMessage(chatId, 'Изречения закончились — добавьте новые в verses.json 🙏');
+    return;
+  }
+
+  try {
+    await bot.sendMessage(chatId, `Готовлю изречение №${next}... 🖼️`);
+    await sendVerseImage(chatId, next);
+  } catch (err) {
+    console.error('Ошибка генерации изречения:', err.message);
+    await bot.sendMessage(chatId, `Не получилось сгенерировать изречение 😔 ${err.message}`);
+  }
+});
+
+// Ежедневная отправка следующего изречения в 6:00 по Бали (Asia/Makassar, UTC+8, без DST).
+if (myChatId) {
+  cron.schedule(
+    '0 6 * * *',
+    async () => {
+      const next = getNextVerseNumber();
+      if (next === null) return; // изречения в verses.json закончились — ничего не отправляем
+
+      try {
+        await sendVerseImage(myChatId, next);
+        setLastSent(next);
+      } catch (err) {
+        console.error('Ошибка ежедневной отправки изречения:', err.message);
+      }
+    },
+    { timezone: 'Asia/Makassar' }
+  );
+}
 
 bot.on('polling_error', (err) => {
   console.error('Ошибка polling:', err.message);
