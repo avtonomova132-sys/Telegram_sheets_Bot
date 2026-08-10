@@ -11,11 +11,6 @@ if (!token) {
 }
 
 const bot = new TelegramBot(token, { polling: true });
-// maxRetries: 0 — встроенный ретрай openai-node переиспользует тот же поток
-// тела multipart-запроса, а нативный fetch (undici) не даёт прочитать уже
-// "потревоженный" body повторно => "Response body object should not be
-// disturbed or locked". Поэтому ретраим вручную ниже, пересобирая файл
-// с нуля на каждой попытке.
 const openai = openaiKey ? new OpenAI({ apiKey: openaiKey, maxRetries: 0, timeout: 60000 }) : null;
 
 console.log('Бот запущен и слушает сообщения...');
@@ -24,9 +19,36 @@ bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
   bot.sendMessage(
     chatId,
-    'Привет! 🙏 Я твой бот-помощник.\n\nПока я умею только отвечать на сообщения, но скоро научусь гораздо большему — проверять расписание, напоминать и упаковывать твои инсайты.'
+    'Привет! 🙏 Я твой бот-помощник.\n\nЯ умею отвечать на сообщения, напоминать о делах (просто напиши "напомни ... в 15:00 ...") и собирать отчёты по расписанию (/weekly, /check).'
   );
 });
+
+// ===== Напоминания =====
+function parseReminder(text) {
+  const timeMatch = text.match(/(\d{1,2})[:.](\d{2})/);
+  if (!/напомни/i.test(text) || !timeMatch) return null;
+  const hours = parseInt(timeMatch[1], 10);
+  const minutes = parseInt(timeMatch[2], 10);
+  if (hours > 23 || minutes > 59) return null;
+  return { hours, minutes };
+}
+
+function scheduleReminder(chatId, hours, minutes, message) {
+  const baliOffsetMs = 8 * 60 * 60 * 1000;
+  const nowBali = new Date(Date.now() + baliOffsetMs);
+  const targetBali = new Date(nowBali);
+  targetBali.setHours(hours, minutes, 0, 0);
+  if (targetBali <= nowBali) {
+    targetBali.setDate(targetBali.getDate() + 1);
+  }
+  const delayMs = targetBali.getTime() - nowBali.getTime();
+
+  setTimeout(() => {
+    bot.sendMessage(chatId, `🔔 Напоминание!\n\n${message}`);
+  }, delayMs);
+
+  return targetBali;
+}
 
 bot.on('message', (msg) => {
   const chatId = msg.chat.id;
@@ -34,15 +56,22 @@ bot.on('message', (msg) => {
 
   if (!text || text.startsWith('/')) return;
 
+  const reminder = parseReminder(text);
+  if (reminder) {
+    scheduleReminder(chatId, reminder.hours, reminder.minutes, text);
+    const timeStr = `${String(reminder.hours).padStart(2, '0')}:${String(reminder.minutes).padStart(2, '0')}`;
+    bot.sendMessage(chatId, `✅ Хорошо, напомню в ${timeStr} по Бали!`);
+    return;
+  }
+
   bot.sendMessage(chatId, `Я получил твоё сообщение: "${text}"\n\n(Пока я просто эхо — скоро научусь большему)`);
 });
 
+// ===== Голосовые сообщения =====
 async function transcribeVoice(buffer, attempts = 3) {
   let lastErr;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      // Пересобираем Uploadable на каждой попытке — переиспользовать один и
-      // тот же File/поток между попытками нельзя (см. комментарий у openai клиента).
       const file = await toFile(buffer, 'voice.ogg', { type: 'audio/ogg' });
       return await openai.audio.transcriptions.create({
         file,
@@ -54,7 +83,7 @@ async function transcribeVoice(buffer, attempts = 3) {
       const transient =
         err.code === 'ECONNRESET' ||
         err.cause?.code === 'ECONNRESET' ||
-        err.status === undefined || // сетевая ошибка до получения ответа
+        err.status === undefined ||
         err.status >= 500;
       console.error(`Попытка ${attempt}/${attempts} не удалась:`, err.message);
       if (!transient || attempt === attempts) throw err;
@@ -93,6 +122,7 @@ bot.on('voice', async (msg) => {
   }
 });
 
+// ===== Отчёты =====
 async function handleReportCommand(chatId, label, generate) {
   try {
     await bot.sendMessage(chatId, `Собираю ${label}... 📊 Секунду.`);
@@ -110,9 +140,6 @@ async function handleReportCommand(chatId, label, generate) {
       );
     }
 
-    // Временный отладочный вывод — помогает проверить, что бот действительно
-    // прошёлся по всем вкладкам и что именно там нашёл. Уберём после того,
-    // как парсинг подтвердится на реальных данных за несколько недель.
     if (debug) {
       for (const chunk of chunkMessage(debug)) {
         await bot.sendMessage(chatId, chunk);
@@ -125,13 +152,10 @@ async function handleReportCommand(chatId, label, generate) {
   }
 }
 
-// Полный обзор недели (обычно по воскресеньям утром) — все события, с хостами и без.
 bot.onText(/\/weekly\b/, (msg) => {
   handleReportCommand(msg.chat.id, 'полный обзор недели', generateWeeklyReport);
 });
 
-// Точечная проверка текущей недели — только события, которым ещё нужен хост.
-// /report — алиас на ту же логику.
 bot.onText(/\/(check|report)\b/, (msg) => {
   handleReportCommand(msg.chat.id, 'проверку по текущей неделе', generateCheckReport);
 });
