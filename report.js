@@ -488,10 +488,17 @@ function buildCheckMessage(events, range, hostSignupUrl, tags) {
   const missing = events.filter((e) => !e.hasHost);
 
   if (missing.length === 0) {
-    return [
-      '📝🎉 Hooray! All Zoom sessions for this week are fully covered with hosts. ✅ The schedule has been updated. 🙏 Thank you, everyone, for your generous service and support! 💙',
-      '📝🎉 Ура! На эту неделю все Zoom-эфиры с хостами. ✅ В табличке всё отмечено. 🙏 Благодарим каждого за ваше щедрое служение и поддержку! 💙',
-    ].join('\n');
+    const enBlock = [
+      '📝🎉 Hooray! All Zoom sessions for this week are fully covered with hosts. ✅',
+      'The schedule has been updated. 🙏',
+      'Thank you, everyone, for your generous service and support! 💙',
+    ].join('\n\n');
+    const ruBlock = [
+      '📝🎉 Ура! На эту неделю все Zoom-эфиры с хостами. ✅',
+      'В табличке всё отмечено. 🙏',
+      'Благодарим каждого за ваше щедрое служение и поддержку! 💙',
+    ].join('\n\n');
+    return [enBlock, ruBlock].join('\n\n');
   }
 
   const rangeEn = formatWeekRangeEn(range.start, range.end);
