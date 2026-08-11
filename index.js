@@ -140,10 +140,9 @@ async function handleReportCommand(chatId, label, generate) {
       );
     }
 
+    // Отладочная сводка по вкладкам — только в логи Railway, не в Telegram.
     if (debug) {
-      for (const chunk of chunkMessage(debug)) {
-        await bot.sendMessage(chatId, chunk);
-      }
+      console.log(debug);
     }
   } catch (err) {
     console.error('Ошибка формирования отчёта:', err.message);
