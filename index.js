@@ -3,7 +3,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const { OpenAI, toFile } = require('openai');
 const { generateWeeklyReport, generateCheckReport, chunkMessage } = require('./report');
 const { generateVerseImageBuffer } = require('./verse/generateVerseImage');
-const { getNextVerseNumber, setLastSent } = require('./verse/progress');
+const { getNextVerseNumber, setLastSent, ensureProgressSeeded } = require('./verse/progress');
 
 const token = process.env.BOT_TOKEN;
 const openaiKey = process.env.OPENAI_API_KEY;
@@ -17,6 +17,8 @@ if (!token) {
 if (!myChatId) {
   console.warn('MY_CHAT_ID не задан — ежедневная отправка изречений отключена.');
 }
+
+ensureProgressSeeded();
 
 const bot = new TelegramBot(token, { polling: true });
 // maxRetries: 0 — встроенный ретрай openai-node переиспользует тот же поток
