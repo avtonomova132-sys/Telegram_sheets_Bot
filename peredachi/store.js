@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { isSameEvent, decideForAdd } = require('./dedupe');
 
 // /data — тот же примонтированный Railway Volume, что уже используется для
 // прогресса стихов (см. verse/progress.js), переживает передеплои.
@@ -28,25 +29,48 @@ function writeAll(records) {
 
 // entries — объекты от extractPeredachi (без id/addedAt/rawText), rawText —
 // исходный текст сообщения учителя, для отладки.
+// Перед добавлением каждая запись сверяется с уже существующими по kurs+dateISO+timeMSK
+// (см. peredachi/dedupe.js): новая передача добавляется, полностью совпадающая
+// пропускается, а частично уточняющая — обновляет существующую запись на месте.
 function addRecords(entries, rawText) {
   const all = readAll();
   const addedAt = new Date().toISOString();
 
-  const saved = entries.map((entry, i) => ({
-    id: String(Date.now() + i),
-    kurs: entry.kurs || '',
-    postfix: entry.postfix || '',
-    teacher: entry.teacher || '',
-    dateISO: entry.dateISO || '',
-    timeMSK: entry.timeMSK || '',
-    zanyatie: entry.zanyatie || '',
-    zoomLink: entry.zoomLink || '',
-    groupLink: entry.groupLink || '',
-    addedAt,
-    rawText,
-  }));
+  const added = [];
+  const updated = [];
+  const skipped = [];
 
-  all.push(...saved);
+  entries.forEach((entry, i) => {
+    const normalized = {
+      kurs: entry.kurs || '',
+      postfix: entry.postfix || '',
+      teacher: entry.teacher || '',
+      dateISO: entry.dateISO || '',
+      timeMSK: entry.timeMSK || '',
+      zanyatie: entry.zanyatie || '',
+      zoomLink: entry.zoomLink || '',
+      groupLink: entry.groupLink || '',
+      rawText,
+    };
+
+    const matchIdx = all.findIndex((r) => isSameEvent(r, normalized));
+
+    if (matchIdx === -1) {
+      const record = { id: String(Date.now() + i), ...normalized, addedAt };
+      all.push(record);
+      added.push(record);
+      return;
+    }
+
+    const decision = decideForAdd(all[matchIdx], normalized);
+    if (decision.action === 'skip') {
+      skipped.push(all[matchIdx]);
+      return;
+    }
+
+    all[matchIdx] = decision.merged;
+    updated.push(decision.merged);
+  });
 
   try {
     writeAll(all);
@@ -55,7 +79,7 @@ function addRecords(entries, rawText) {
     throw new Error('не получилось сохранить на диск — проверь, подключён ли volume');
   }
 
-  return saved;
+  return { added, updated, skipped };
 }
 
-module.exports = { readAll, addRecords };
+module.exports = { readAll, addRecords, saveAll: writeAll };

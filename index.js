@@ -7,8 +7,9 @@ const { generateWeeklyReport, generateCheckReport, chunkMessage } = require('./r
 const { generateVerseImageBuffer } = require('./verse/generateVerseImage');
 const { getNextVerseNumber, setLastSent, ensureProgressSeeded, applyForceOverride } = require('./verse/progress');
 const { extractPeredachi } = require('./peredachi/extract');
-const { addRecords, readAll: readPeredachi } = require('./peredachi/store');
+const { addRecords, readAll: readPeredachi, saveAll: savePeredachi } = require('./peredachi/store');
 const { formatPeredachiReply } = require('./peredachi/query');
+const { analyzeDuplicates } = require('./peredachi/dedupe');
 
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
@@ -257,15 +258,26 @@ bot.onText(/^\/добавить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) 
       return;
     }
 
-    const saved = addRecords(entries, rawText);
-    const lines = saved.map((r) => {
+    const { added, updated, skipped } = addRecords(entries, rawText);
+    const describe = (r) => {
       const kursLabel = r.postfix ? `${r.kurs} (${r.postfix})` : r.kurs || '?';
       const dateLabel = r.dateISO || 'дата неизвестна';
       const timeLabel = r.timeMSK ? `, ${r.timeMSK} МСК` : '';
       return `• Курс ${kursLabel} — ${dateLabel}${timeLabel}`;
-    });
+    };
 
-    await bot.sendMessage(chatId, `✅ Добавлено записей: ${saved.length}\n\n${lines.join('\n')}`);
+    const blocks = [];
+    if (added.length > 0) {
+      blocks.push(`✅ Добавлено новых: ${added.length}\n${added.map(describe).join('\n')}`);
+    }
+    if (updated.length > 0) {
+      blocks.push(`🔄 Обновлено (дополнены данными): ${updated.length}\n${updated.map(describe).join('\n')}`);
+    }
+    if (skipped.length > 0) {
+      blocks.push(`⏭️ Пропущено как дубли: ${skipped.length}\n${skipped.map(describe).join('\n')}`);
+    }
+
+    await bot.sendMessage(chatId, blocks.join('\n\n') || 'Ничего не изменилось.');
   } catch (err) {
     console.error('[peredachi] ошибка распознавания/сохранения:', err.message);
     await bot.sendMessage(
@@ -286,6 +298,78 @@ bot.onText(/^\/передачи(?:@\S+)?(?:\s+(\S+))?$/, async (msg, match) => {
   } catch (err) {
     console.error('[peredachi] ошибка формирования списка передач:', err.message);
     await bot.sendMessage(chatId, 'Не получилось получить список передач 😔');
+  }
+});
+
+// Разовая/повторная проверка volume на задвоенные передачи (одинаковые
+// kurs+dateISO+timeMSK). Однозначные дубли (без конфликтующих полей)
+// схлопываются автоматически в более полную версию; там, где записи
+// конфликтуют — например, разные zoomLink — ничего не удаляется, обе версии
+// просто показываются, чтобы решение принял человек.
+bot.onText(/^\/дубли(?:@\S+)?$/, async (msg) => {
+  const chatId = msg.chat.id;
+
+  if (myChatId && String(chatId) !== String(myChatId)) {
+    await bot.sendMessage(chatId, 'Эта команда доступна только администратору.');
+    return;
+  }
+
+  try {
+    const all = readPeredachi();
+    const { autoResolved, ambiguous } = analyzeDuplicates(all);
+
+    if (autoResolved.length === 0 && ambiguous.length === 0) {
+      await bot.sendMessage(chatId, 'Дублей не найдено 👍');
+      return;
+    }
+
+    if (autoResolved.length > 0) {
+      const removeIds = new Set(autoResolved.flatMap((g) => g.remove.map((r) => r.id)));
+      const keepById = new Map(autoResolved.map((g) => [g.keep.id, g.keep]));
+      const next = all.filter((r) => !removeIds.has(r.id)).map((r) => keepById.get(r.id) || r);
+      savePeredachi(next);
+    }
+
+    const lines = [];
+
+    if (autoResolved.length > 0) {
+      lines.push(`✅ Автоматически объединено дублей: ${autoResolved.length}`);
+      for (const g of autoResolved) {
+        lines.push(
+          `• Курс ${g.keep.kurs} — ${g.keep.dateISO}, ${g.keep.timeMSK} МСК (удалено записей: ${g.remove.length})`
+        );
+      }
+    }
+
+    if (ambiguous.length > 0) {
+      lines.push('');
+      lines.push('⚠️ Неоднозначные дубли — реши сама, какую версию оставить (ничего не удалено):');
+      ambiguous.forEach((group, gi) => {
+        lines.push('');
+        lines.push(`Группа ${gi + 1}:`);
+        group.forEach((r) => {
+          lines.push(
+            [
+              `  id=${r.id}`,
+              `курс=${r.kurs}${r.postfix ? ` (${r.postfix})` : ''}`,
+              `дата=${r.dateISO} ${r.timeMSK} МСК`,
+              `учитель=${r.teacher || '—'}`,
+              `занятие=${r.zanyatie || '—'}`,
+              `zoom=${r.zoomLink || '—'}`,
+              `группа=${r.groupLink || '—'}`,
+              `добавлено=${r.addedAt || '—'}`,
+            ].join(', ')
+          );
+        });
+      });
+    }
+
+    for (const chunk of chunkMessage(lines.join('\n'))) {
+      await bot.sendMessage(chatId, chunk);
+    }
+  } catch (err) {
+    console.error('[peredachi] ошибка поиска дублей:', err.message);
+    await bot.sendMessage(chatId, 'Не получилось проверить дубли 😔');
   }
 });
 

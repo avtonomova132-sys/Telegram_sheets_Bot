@@ -83,12 +83,11 @@ function escapeMarkdown(text) {
 function formatRecordBlock(record) {
   const dateStr = formatDateRu(record.dateISO);
   const timeStr = record.timeMSK ? `${record.timeMSK} МСК` : 'время уточняется';
-  const teacher = escapeMarkdown(record.teacher) || 'учитель не указан';
   const zanyatie = escapeMarkdown(record.zanyatie);
   const zoom = record.zoomLink || 'ссылка появится позже, следи за группой';
   const group = record.groupLink || '—';
 
-  const lines = [`📅 ${dateStr}, ${timeStr} — ${teacher}`];
+  const lines = [`📅 ${dateStr}, ${timeStr}`];
   if (zanyatie) lines.push(`   ${zanyatie}`);
   lines.push(`   🔗 ${zoom}`);
   lines.push(`   👥 ${group}`);
