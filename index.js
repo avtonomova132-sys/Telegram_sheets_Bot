@@ -18,6 +18,7 @@ const {
   ensureGroupLinksSeeded,
   resolveInviteLink,
 } = require('./peredachi/groupLinks');
+const { checkReminders, formatReminderMessage } = require('./peredachi/reminders');
 
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
@@ -241,6 +242,24 @@ if (myChatId) {
     },
     { timezone: 'Asia/Makassar' }
   );
+}
+
+// Проверка каждую минуту: если до начала какой-то передачи осталось 14-15
+// минут (МСК) и напоминание по ней ещё не отправлялось — шлём. checkReminders
+// сам помечает найденные записи reminderSent и сохраняет на диск, так что
+// повторный тик крона в ту же минуту (или в течение следующей) не пришлёт то
+// же самое напоминание второй раз.
+if (myChatId) {
+  cron.schedule('* * * * *', async () => {
+    try {
+      const due = checkReminders();
+      for (const record of due) {
+        await bot.sendMessage(myChatId, formatReminderMessage(record));
+      }
+    } catch (err) {
+      console.error('[reminders] ошибка проверки напоминаний:', err.message);
+    }
+  });
 }
 
 // ===== Прямые передачи курсов "Пять домов" =====
