@@ -336,7 +336,7 @@ bot.onText(/^\/курс([1-6])(?:@\S+)?$/, async (msg, match) => {
   }
 });
 
-bot.onText(/^\/медитации(?:@\S+)?$/, async (msg) => {
+bot.onText(/^\/медитаци[яи](?:@\S+)?$/, async (msg) => {
   const chatId = msg.chat.id;
 
   try {
