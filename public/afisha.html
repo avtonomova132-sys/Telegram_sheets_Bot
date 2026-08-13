@@ -8,54 +8,72 @@
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root{
-    --night: #1c2438;
-    --night-deep: #141a2b;
+    --bg-a: #fbf6ea;
+    --bg-b: #f2e6c8;
+    --ink: #2a2620;
+    --ink-soft: #5c5644;
     --gold: #c8a24d;
-    --gold-soft: #e4c877;
-    --parchment: #f4ecda;
+    --gold-deep: #93711f;
+    --gold-soft: #e9cf8f;
+    --parchment: #fffdf7;
     --maroon: #7a3226;
     --sage: #5c7a63;
-    --ink: #2a2620;
-    --muted: #8b93a8;
+    --muted: #948a6f;
   }
   *{box-sizing:border-box; margin:0; padding:0;}
   body{
-    background: var(--night-deep);
+    background-color: var(--bg-a);
     background-image:
-      radial-gradient(1px 1px at 10% 20%, rgba(200,162,77,0.4) 0%, transparent 60%),
-      radial-gradient(1px 1px at 80% 15%, rgba(200,162,77,0.3) 0%, transparent 60%),
-      radial-gradient(1.5px 1.5px at 60% 40%, rgba(200,162,77,0.35) 0%, transparent 60%),
-      radial-gradient(1px 1px at 30% 70%, rgba(200,162,77,0.3) 0%, transparent 60%),
-      radial-gradient(1px 1px at 90% 80%, rgba(200,162,77,0.25) 0%, transparent 60%);
+      radial-gradient(55% 38% at 12% -6%, rgba(255,255,255,0.95) 0%, transparent 70%),
+      radial-gradient(42% 32% at 88% 0%, rgba(228,207,143,0.55) 0%, transparent 70%),
+      radial-gradient(60% 42% at 50% 105%, rgba(200,162,77,0.14) 0%, transparent 70%),
+      linear-gradient(160deg, #fbf6ea 0%, #f2e6c8 100%);
+    background-attachment: fixed;
     font-family: 'Inter', sans-serif;
-    color: var(--parchment);
+    color: var(--ink);
     min-height: 100vh;
     padding-bottom: 60px;
   }
   header{
     padding: 36px 20px 24px;
     text-align: center;
-    border-bottom: 1px solid rgba(200,162,77,0.25);
+    border-bottom: 1px solid rgba(200,162,77,0.35);
+    position: relative;
+    overflow: hidden;
+  }
+  header::after{
+    content:"";
+    position:absolute;
+    left:-20%; right:-20%; bottom:-2px;
+    height: 2px;
+    background: linear-gradient(90deg, transparent 0%, var(--gold-soft) 20%, #fff 50%, var(--gold-soft) 80%, transparent 100%);
+    background-size: 200% 100%;
+    animation: shine 7s linear infinite;
+    opacity: 0.8;
+  }
+  @keyframes shine{
+    0%{ background-position: 200% 0; }
+    100%{ background-position: -200% 0; }
   }
   .eyebrow{
     font-size: 12px;
     letter-spacing: 0.18em;
     text-transform: uppercase;
-    color: var(--gold);
+    color: var(--gold-deep);
     margin-bottom: 10px;
   }
   h1{
     font-family: 'Cormorant Garamond', serif;
     font-weight: 600;
     font-size: 38px;
-    color: var(--gold-soft);
+    color: var(--ink);
     line-height: 1.15;
   }
   .subtitle{
     font-family: 'Cormorant Garamond', serif;
     font-style: italic;
     font-size: 17px;
-    color: var(--muted);
+    color: var(--ink-soft);
     margin-top: 8px;
     max-width: 480px;
     margin-left: auto;
@@ -64,14 +82,14 @@
   .lang-toggle{
     display: inline-flex;
     margin-top: 18px;
-    border: 1px solid rgba(200,162,77,0.4);
+    border: 1px solid rgba(200,162,77,0.5);
     border-radius: 20px;
     overflow: hidden;
   }
   .lang-toggle button{
     background: none;
     border: none;
-    color: var(--muted);
+    color: var(--ink-soft);
     font-family: 'Inter';
     font-size: 13px;
     font-weight: 600;
@@ -81,13 +99,13 @@
   }
   .lang-toggle button.active{
     background: var(--gold);
-    color: var(--night-deep);
+    color: #fff;
   }
 
   .path-nav{
     display: flex;
     justify-content: center;
-    align-items: center;
+    align-items: flex-start;
     gap: 4px;
     padding: 26px 12px 6px;
     flex-wrap: wrap;
@@ -100,31 +118,96 @@
     gap: 8px;
     cursor: pointer;
     padding: 6px 10px;
+    width: 96px;
   }
   .path-dot .star{
     width: 10px; height: 10px;
     border-radius: 50%;
     background: var(--muted);
-    box-shadow: 0 0 0 3px rgba(255,255,255,0.03);
+    box-shadow: 0 0 0 3px rgba(200,162,77,0.08);
     transition: all 0.25s;
   }
   .path-dot.active .star{
-    background: var(--gold-soft);
-    box-shadow: 0 0 12px 3px rgba(228,200,119,0.5);
+    background: var(--gold);
+    box-shadow: 0 0 12px 3px rgba(200,162,77,0.55);
   }
   .path-dot span.label{
-    font-size: 12px;
+    font-size: 11.5px;
+    line-height: 1.25;
     color: var(--muted);
     text-align: center;
-    white-space: nowrap;
   }
-  .path-dot.active span.label{ color: var(--gold-soft); font-weight: 600; }
-  .path-line{
-    position:absolute;
-    top: 32px; left: 8%; right: 8%;
-    height: 1px;
-    background: repeating-linear-gradient(90deg, rgba(200,162,77,0.35) 0 6px, transparent 6px 12px);
-    z-index: 0;
+  .path-dot.active span.label{ color: var(--gold-deep); font-weight: 600; }
+
+  .program-header{
+    max-width: 680px;
+    margin: 8px auto 0;
+    padding: 10px 16px 0;
+    text-align: center;
+  }
+  .program-header h2{
+    font-family: 'Cormorant Garamond', serif;
+    font-weight: 600;
+    font-size: 26px;
+    color: var(--ink);
+  }
+  .program-header .program-subtitle{
+    font-family: 'Cormorant Garamond', serif;
+    font-style: italic;
+    font-size: 15px;
+    color: var(--ink-soft);
+    margin-top: 4px;
+  }
+
+  .about-card{
+    max-width: 680px;
+    margin: 18px auto 0;
+    padding: 22px 24px;
+    border-radius: 12px;
+    background: linear-gradient(135deg, #fffaea 0%, #f6ecc8 100%);
+    border: 1px solid rgba(200,162,77,0.55);
+    box-shadow: 0 4px 18px rgba(147,113,31,0.15);
+    margin-left: 16px;
+    margin-right: 16px;
+  }
+  .about-card .about-label{
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--gold-deep);
+    font-weight: 600;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .about-card .about-label::before{
+    content: "✦";
+    font-size: 12px;
+  }
+  .about-card .about-body{
+    font-size: 14.5px;
+    line-height: 1.6;
+    color: var(--ink-soft);
+  }
+  .about-card .about-body p{ margin-bottom: 10px; }
+  .about-card .about-body p:last-child{ margin-bottom: 0; }
+  .about-card .about-body.placeholder{
+    font-family: 'Cormorant Garamond', serif;
+    font-style: italic;
+    color: var(--muted);
+  }
+  .about-card .houses-list{
+    list-style: none;
+    margin: 8px 0 12px;
+    padding: 0;
+  }
+  .about-card .houses-list li{
+    padding: 5px 0 5px 16px;
+    border-left: 2px solid var(--gold);
+    margin-bottom: 4px;
+    color: var(--ink);
+    font-weight: 500;
   }
 
   .format-tabs{
@@ -135,9 +218,9 @@
   }
   .format-tabs button{
     font-family:'Inter'; font-weight:600; font-size:14px;
-    background: transparent;
-    border: 1px solid rgba(200,162,77,0.4);
-    color: var(--parchment);
+    background: rgba(255,255,255,0.5);
+    border: 1px solid rgba(200,162,77,0.5);
+    color: var(--ink);
     padding: 9px 22px;
     border-radius: 999px;
     cursor:pointer;
@@ -160,7 +243,7 @@
     border-radius: 10px;
     padding: 18px 20px;
     margin-bottom: 14px;
-    box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+    box-shadow: 0 6px 20px rgba(147,113,31,0.14);
     border-left: 4px solid var(--gold);
     position: relative;
   }
@@ -174,9 +257,10 @@
     padding: 3px 9px;
     border-radius: 5px;
   }
-  .tag.category{ background: rgba(122,50,38,0.1); color: var(--maroon); }
-  .tag.format-online{ background: rgba(200,162,77,0.15); color: #8a6d1f; }
+  .tag.program{ background: rgba(92,122,99,0.12); color: var(--sage); }
+  .tag.format-online{ background: rgba(200,162,77,0.18); color: #8a6d1f; }
   .tag.format-offline{ background: rgba(92,122,99,0.15); color: var(--sage); }
+  .tag.format-records{ background: rgba(122,50,38,0.1); color: var(--maroon); }
   .card h3{
     font-family: 'Cormorant Garamond', serif;
     font-weight: 600;
@@ -231,20 +315,15 @@
   </div>
 </header>
 
-<div class="path-nav">
-  <div class="path-line"></div>
-  <div class="path-dot active" data-cat="all"><div class="star"></div><span class="label" data-i18n="cat-all">Всё</span></div>
-  <div class="path-dot" data-cat="isa"><div class="star"></div><span class="label" data-i18n="cat-isa">ACI</span></div>
-  <div class="path-dot" data-cat="domov"><div class="star"></div><span class="label" data-i18n="cat-domov">Пять домов</span></div>
-  <div class="path-dot" data-cat="lamrim"><div class="star"></div><span class="label" data-i18n="cat-lamrim">Ламрим</span></div>
-  <div class="path-dot" data-cat="med"><div class="star"></div><span class="label" data-i18n="cat-med">Медитация</span></div>
-  <div class="path-dot" data-cat="retreat"><div class="star"></div><span class="label" data-i18n="cat-retreat">Ретрит</span></div>
-</div>
+<div class="path-nav" id="program-nav"></div>
+
+<div class="program-header" id="program-header"></div>
+<div id="about-wrap"></div>
 
 <div class="format-tabs">
-  <button class="active" data-format="all" data-i18n="fmt-all">Все</button>
-  <button data-format="online" data-i18n="fmt-online">Онлайн</button>
+  <button class="active" data-format="online" data-i18n="fmt-online">Онлайн</button>
   <button data-format="offline" data-i18n="fmt-offline">Офлайн</button>
+  <button data-format="records" data-i18n="fmt-records">Записи</button>
 </div>
 
 <main id="cards"></main>
@@ -257,104 +336,304 @@ const i18n = {
     eyebrow: "Маршрутная карта",
     title: "Афиша Алмазного пути",
     subtitle: "Где встретиться с Дхармой — онлайн и вживую, на разных языках мира",
-    "cat-all":"Всё", "cat-isa":"ACI", "cat-domov":"Пять домов", "cat-lamrim":"Ламрим", "cat-med":"Медитация", "cat-retreat":"Ретрит",
-    "fmt-all":"Все", "fmt-online":"Онлайн", "fmt-offline":"Офлайн",
-    where:"Где", when:"Когда", who:"Ведёт", lang:"Язык", open:"Открыть →",
-    footer:"Черновик · WVP 2026 · данные будут дополняться",
-    empty:"Пока нет событий в этой категории — скоро добавим"
+    navAll: "Все",
+    "fmt-online":"Онлайн", "fmt-offline":"Офлайн", "fmt-records":"Записи",
+    labelAZ: "Аризона (MST)", labelMSK: "Москва (MSK)",
+    labelWho: "Ведёт", labelWhere: "Где", labelOpen: "Открыть →",
+    aboutLabel: "О программе",
+    footer: "Черновик · WVP 2026 · данные будут дополняться",
+    emptyDefault: "Пока нет событий в этой категории — скоро добавим"
   },
   en: {
     eyebrow: "A route map",
     title: "Diamond Way Guide",
     subtitle: "Where to meet the Dharma — online and in person, in many languages",
-    "cat-all":"All", "cat-isa":"ACI", "cat-domov":"Five Houses", "cat-lamrim":"Lamrim", "cat-med":"Meditation", "cat-retreat":"Retreat",
-    "fmt-all":"All", "fmt-online":"Online", "fmt-offline":"In person",
-    where:"Where", when:"When", who:"Teacher", lang:"Language", open:"Open →",
-    footer:"Draft · WVP 2026 · content will keep growing",
-    empty:"Nothing here yet — more coming soon"
+    navAll: "All",
+    "fmt-online":"Online", "fmt-offline":"In person", "fmt-records":"Recordings",
+    labelAZ: "Arizona (MST)", labelMSK: "Moscow (MSK)",
+    labelWho: "Teacher", labelWhere: "Where", labelOpen: "Open →",
+    aboutLabel: "About the program",
+    footer: "Draft · WVP 2026 · content will keep growing",
+    emptyDefault: "Nothing here yet — more coming soon"
   }
 };
 
-// Пример данных: часть — реальные названия сессий из таблицы Xuanzang's Tower,
-// офлайн-события — плейсхолдеры для демонстрации структуры.
+// Список программ — точки верхней навигации.
+const programs = [
+  { id: "all", nav: { ru: "Все", en: "All" } },
+  {
+    id: "xuanzang",
+    nav: { ru: "Xuanzang's Tower", en: "Xuanzang's Tower" },
+    title: { ru: "Xuanzang's Tower", en: "Xuanzang's Tower" },
+    subtitle: { ru: "ACI с Geshe Michael Roach и переводчиками", en: "ACI with Geshe Michael Roach & translators" }
+  },
+  {
+    id: "timothy",
+    nav: { ru: "ACI c Timothy Lowenhaupt", en: "ACI with Timothy Lowenhaupt" },
+    title: { ru: "ACI with Timothy Lowenhaupt", en: "ACI with Timothy Lowenhaupt" },
+    subtitle: { ru: "Курсы ACI с Timothy D. Lowenhaupt", en: "ACI courses with Timothy D. Lowenhaupt" }
+  },
+  {
+    id: "bluesky",
+    nav: { ru: "Blue Sky Friends", en: "Blue Sky Friends" },
+    title: { ru: "Blue Sky Friends", en: "Blue Sky Friends" },
+    subtitle: { ru: "Встречи о заботе и осознанности", en: "Gatherings on care and awareness" }
+  },
+  {
+    id: "utpala",
+    nav: { ru: "ACI c Ven. Utpala", en: "ACI with Ven. Utpala" },
+    title: { ru: "ACI with Ven. Utpala", en: "ACI with Ven. Utpala" },
+    subtitle: { ru: "Курсы ACI с Venerable Utpala", en: "ACI courses with Venerable Utpala" }
+  },
+  {
+    id: "domov",
+    nav: { ru: "Пять домов", en: "Five Houses" },
+    title: { ru: "Пять домов", en: "Five Houses" },
+    subtitle: { ru: "Программа Геше Майкла Роуча", en: "A program by Geshe Michael Roach" }
+  },
+  {
+    id: "peachtree",
+    nav: { ru: "Peach Tree", en: "Peach Tree" },
+    title: { ru: "Peach Tree", en: "Peach Tree" },
+    subtitle: { ru: "Джецунма, Аризона", en: "Jetsunma, Arizona" }
+  }
+];
+
+const placeholderAbout = {
+  ru: "Здесь будет краткое описание программы — добавим позже",
+  en: "A short program description will be added here soon"
+};
+
+const domovAbout = {
+  ru: `
+    <p>Это программа Геше Майкла Роуча, начатая после многолетнего перерыва в преподавании Алмазного пути напрямую. Он разделил 18 курсов на 6 встреч и назвал их «Пять домов» — потому что в каждом можно выбрать свой путь, свой дом, ведь каждый по-своему приходит к Дхарме.</p>
+    <ul class="houses-list">
+      <li>Дом первый — Ламрим («лестница»)</li>
+      <li>Дом второй — Горный дом (ретриты)</li>
+      <li>Дом третий — Медитация</li>
+      <li>Дом четвёртый — классический дом ACI</li>
+      <li>Дом пятый — Алмазный путь</li>
+    </ul>
+    <p>Занятия начинаются с Ламрима не случайно — по традиции, прежде чем переходить к более глубоким тантрическим практикам, закладывается основа через шаги пути. Геше-ла говорит, что вся программа рассчитана примерно на полтора года совместных встреч.</p>
+  `,
+  en: `
+    <p>This is a program by Geshe Michael Roach, begun after a many-year break from teaching the Diamond Way directly. He split 18 courses into 6 gatherings and called them the "Five Houses" — because in each one you can choose your own path, your own house, since everyone comes to the Dharma in their own way.</p>
+    <ul class="houses-list">
+      <li>House One — Lamrim ("the staircase")</li>
+      <li>House Two — Mountain House (retreats)</li>
+      <li>House Three — Meditation</li>
+      <li>House Four — the classical House of ACI</li>
+      <li>House Five — the Diamond Way</li>
+    </ul>
+    <p>The classes begin with Lamrim for a reason — by tradition, before moving to deeper tantric practices a foundation is laid through the steps of the path. Geshe-la says the whole program is designed for about a year and a half of gatherings together.</p>
+  `
+};
+
+const aboutTexts = {
+  xuanzang: placeholderAbout,
+  timothy: placeholderAbout,
+  bluesky: placeholderAbout,
+  utpala: placeholderAbout,
+  domov: domovAbout,
+  peachtree: placeholderAbout
+};
+
+const emptyMessages = {
+  xuanzang: {
+    offline: { ru: "Информация появится позже", en: "Information will be added soon" },
+    records: { ru: "Информация появится позже", en: "Information will be added soon" }
+  },
+  timothy: {
+    offline: { ru: "Информация появится позже", en: "Information will be added soon" },
+    records: { ru: "Информация появится позже", en: "Information will be added soon" }
+  },
+  bluesky: {
+    offline: { ru: "Информация появится позже", en: "Information will be added soon" },
+    records: { ru: "Информация появится позже", en: "Information will be added soon" }
+  },
+  utpala: {
+    offline: { ru: "Информация появится позже", en: "Information will be added soon" },
+    records: { ru: "Информация появится позже", en: "Information will be added soon" }
+  },
+  domov: {
+    online: { ru: "Пока нет мероприятий, информация появится позже", en: "No events yet — information will be added soon" },
+    offline: { ru: "Пока нет мероприятий, информация появится позже", en: "No events yet — information will be added soon" },
+    records: { ru: "Ссылки на записи скоро появятся здесь", en: "Links to recordings will appear here soon" }
+  },
+  peachtree: {
+    online: { ru: "Информация появится позже", en: "Information will be added soon" },
+    offline: { ru: "Информация появится позже", en: "Information will be added soon" },
+    records: { ru: "Информация появится позже", en: "Information will be added soon" }
+  }
+};
+
+// Реальные ближайшие онлайн-события — взяты из Google-таблицы расписания
+// (вкладки Xuanzang's Tower, ACI with Timothy Lowenhaupt, Blue Sky Friends,
+// ACI with Ven. Utpala). Время MSK для Blue Sky Friends и Ven. Utpala в
+// таблице не указано напрямую — посчитано как AZ +10 часов от колонок,
+// которые в этих вкладках всё же присутствуют.
 const events = [
+  // --- Xuanzang's Tower ---
   {
-    format: "online", cat: "isa",
-    title_ru: "Учение о Пустоте (Dependence) — с переводом", title_en: "Teaching on Dependence — translated",
-    when: "Суббота, 11:00 (Баку) / 21:00 МСК",
-    where_ru: "Zoom · Xuanzang's Tower", where_en: "Zoom · Xuanzang's Tower",
-    who: "Sugeng", lang: "RU · EN · ZH · VI · ES · UA · DE",
+    program: "xuanzang", format: "online",
+    title_ru: "Высший сад мудрости", title_en: "The Supreme Garden of Wisdom",
+    az_ru: "Сб, 15 августа 2026, 11:00", az_en: "Sat, Aug 15, 2026, 11:00",
+    msk_ru: "Сб, 15 августа 2026, 21:00", msk_en: "Sat, Aug 15, 2026, 21:00",
+    who: "Nick Lashaw",
     link: "https://xuanzang.live/class"
   },
   {
-    format: "online", cat: "isa",
-    title_ru: "Углублённое объяснение только-ума-школы", title_en: "A Deeper Explanation of Mind Only",
-    when: "Суббота, 6:00 вечера (Баку)",
-    where_ru: "Zoom · Xuanzang's Tower", where_en: "Zoom · Xuanzang's Tower",
-    who: "Word", lang: "RU · EN · VI",
+    program: "xuanzang", format: "online",
+    title_ru: "Комментарий Васубандху о взаимозависимом возникновении", title_en: "Master Vasubandhu's Commentary on Dependence",
+    az_ru: "Пн, 17 августа 2026, 16:00", az_en: "Mon, Aug 17, 2026, 16:00",
+    msk_ru: "Вт, 18 августа 2026, 02:00", msk_en: "Tue, Aug 18, 2026, 02:00",
+    who: "Sugeng",
     link: "https://xuanzang.live/class"
   },
   {
-    format: "online", cat: "med",
-    title_ru: "Медитация с геше Майклом Роучем", title_en: "Meditation with Geshe Michael Roach",
-    when: "Понедельник, 6:45 вечера",
-    where_ru: "Zoom · Xuanzang's Tower", where_en: "Zoom · Xuanzang's Tower",
-    who: "Geshe Michael Roach", lang: "EN · RU",
+    program: "xuanzang", format: "online",
+    title_ru: "Сущность красноречия", title_en: "Essence of Eloquence",
+    az_ru: "Сб, 22 августа 2026, 11:00", az_en: "Sat, Aug 22, 2026, 11:00",
+    msk_ru: "Сб, 22 августа 2026, 21:00", msk_en: "Sat, Aug 22, 2026, 21:00",
+    who: "Gibson",
     link: "https://xuanzang.live/class"
   },
   {
-    format: "online", cat: "lamrim",
-    title_ru: "Путь к Пробуждению — курс Ламрим", title_en: "Path to Enlightenment — Lamrim course",
-    when: "По расписанию, см. таблицу", when_en:"See schedule table",
-    where_ru: "Zoom", where_en: "Zoom",
-    who: "Nick Lashaw", lang: "EN · RU",
-    link: "#"
-  },
-  {
-    format: "online", cat: "isa",
-    title_ru: "Драгоценность истинного намерения — курс ACI", title_en: "A Gemstone of the True Intent — ACI course",
-    when: "Понедельник, 5:30 вечера (Баку)",
-    where_ru: "Zoom · Xuanzang's Tower", where_en: "Zoom · Xuanzang's Tower",
-    who: "Xiaoping", lang: "RU · EN · VI",
+    program: "xuanzang", format: "online",
+    title_ru: "Путь бодхисаттвы", title_en: "Bodhisattva's Way of Life",
+    az_ru: "Пн, 24 августа 2026, 16:00", az_en: "Mon, Aug 24, 2026, 16:00",
+    msk_ru: "Вт, 25 августа 2026, 02:00", msk_en: "Tue, Aug 25, 2026, 02:00",
+    who: "Seiji",
     link: "https://xuanzang.live/class"
   },
+  // --- ACI with Timothy Lowenhaupt ---
   {
-    format: "online", cat: "isa",
-    title_ru: "Сущность красноречия — курс ACI", title_en: "Essence of Eloquence — ACI course",
-    when: "Суббота, 11:00 утра (Баку)",
-    where_ru: "Zoom · Xuanzang's Tower", where_en: "Zoom · Xuanzang's Tower",
-    who: "Gibson", lang: "RU · EN · DE",
-    link: "https://xuanzang.live/class"
+    program: "timothy", format: "online",
+    title_ru: "ACI 17, занятие 9", title_en: "ACI 17, Class 9",
+    az_ru: "Вс, 23 августа 2026, 05:30", az_en: "Sun, Aug 23, 2026, 05:30",
+    msk_ru: "Вс, 23 августа 2026, 15:30", msk_en: "Sun, Aug 23, 2026, 15:30",
+    who: "Timothy D. Lowenhaupt",
+    link: "https://us02web.zoom.us/meeting/register/b8sHOoSYTgK-pf3zk_9B1A"
   },
   {
-    format: "online", cat: "isa",
-    title_ru: "Путь бодхисаттвы — курс ACI", title_en: "Bodhisattva's Way of Life — ACI course",
-    when: "Понедельник, 4:00 дня (Баку)",
-    where_ru: "Zoom · Xuanzang's Tower", where_en: "Zoom · Xuanzang's Tower",
-    who: "Seiji", lang: "RU · EN",
-    link: "https://xuanzang.live/class"
+    program: "timothy", format: "online",
+    title_ru: "ACI 17, занятие 10", title_en: "ACI 17, Class 10",
+    az_ru: "Вс, 23 августа 2026, 07:30", az_en: "Sun, Aug 23, 2026, 07:30",
+    msk_ru: "Вс, 23 августа 2026, 17:30", msk_en: "Sun, Aug 23, 2026, 17:30",
+    who: "Timothy D. Lowenhaupt",
+    link: "https://us02web.zoom.us/meeting/register/b8sHOoSYTgK-pf3zk_9B1A"
   },
   {
-    format: "offline", cat: "isa",
-    title_ru: "Живая встреча группы — пример", title_en: "In-person group meeting — sample",
-    when: "Уточняется", when_en:"TBD",
-    where_ru: "Москва (пример)", where_en: "Moscow (sample)",
-    who: "—", lang: "RU",
-    link: "#"
+    program: "timothy", format: "online",
+    title_ru: "ACI 18, занятие 1", title_en: "ACI 18, Class 1",
+    az_ru: "Вс, 20 сентября 2026, 05:30", az_en: "Sun, Sep 20, 2026, 05:30",
+    msk_ru: "Вс, 20 сентября 2026, 15:30", msk_en: "Sun, Sep 20, 2026, 15:30",
+    who: "Timothy D. Lowenhaupt",
+    link: "https://us02web.zoom.us/meeting/register/b8sHOoSYTgK-pf3zk_9B1A"
   },
   {
-    format: "offline", cat: "retreat",
-    title_ru: "Ретрит выходного дня — пример", title_en: "Weekend retreat — sample",
-    when: "Уточняется", when_en:"TBD",
-    where_ru: "Казань (пример)", where_en: "Kazan (sample)",
-    who: "—", lang: "RU",
-    link: "#"
+    program: "timothy", format: "online",
+    title_ru: "ACI 18, занятие 2", title_en: "ACI 18, Class 2",
+    az_ru: "Вс, 20 сентября 2026, 07:30", az_en: "Sun, Sep 20, 2026, 07:30",
+    msk_ru: "Вс, 20 сентября 2026, 17:30", msk_en: "Sun, Sep 20, 2026, 17:30",
+    who: "Timothy D. Lowenhaupt",
+    link: "https://us02web.zoom.us/meeting/register/b8sHOoSYTgK-pf3zk_9B1A"
+  },
+  // --- Blue Sky Friends ---
+  {
+    program: "bluesky", format: "online",
+    title_ru: "Забота о тех, кто заботится: осознанная поддержка ухаживающих", title_en: "Caring for Caregivers: Consciously Supporting Those Who Care for Others",
+    az_ru: "Пт, 14 августа 2026, 07:00", az_en: "Fri, Aug 14, 2026, 07:00",
+    msk_ru: "Пт, 14 августа 2026, 17:00", msk_en: "Fri, Aug 14, 2026, 17:00",
+    who: "Añjali Nicole Vigna",
+    link: "https://zoom.us/meeting/register/GUy9nOi3Tmm2Ae88O3J_iA"
+  },
+  {
+    program: "bluesky", format: "online",
+    title_ru: "Тема уточняется", title_en: "Topic to be announced",
+    az_ru: "Пт, 21 августа 2026, 07:00", az_en: "Fri, Aug 21, 2026, 07:00",
+    msk_ru: "Пт, 21 августа 2026, 17:00", msk_en: "Fri, Aug 21, 2026, 17:00",
+    who: "—",
+    link: "https://zoom.us/meeting/register/GUy9nOi3Tmm2Ae88O3J_iA"
+  },
+  {
+    program: "bluesky", format: "online",
+    title_ru: "Тема уточняется", title_en: "Topic to be announced",
+    az_ru: "Пт, 4 сентября 2026, 07:00", az_en: "Fri, Sep 4, 2026, 07:00",
+    msk_ru: "Пт, 4 сентября 2026, 17:00", msk_en: "Fri, Sep 4, 2026, 17:00",
+    who: "—",
+    link: "https://zoom.us/meeting/register/GUy9nOi3Tmm2Ae88O3J_iA"
+  },
+  {
+    program: "bluesky", format: "online",
+    title_ru: "Тема уточняется", title_en: "Topic to be announced",
+    az_ru: "Пт, 11 сентября 2026, 07:00", az_en: "Fri, Sep 11, 2026, 07:00",
+    msk_ru: "Пт, 11 сентября 2026, 17:00", msk_en: "Fri, Sep 11, 2026, 17:00",
+    who: "—",
+    link: "https://zoom.us/meeting/register/GUy9nOi3Tmm2Ae88O3J_iA"
+  },
+  // --- ACI with Ven. Utpala ---
+  {
+    program: "utpala", format: "online",
+    title_ru: "ACI 8, занятие 10 — завершающее занятие курса", title_en: "ACI 8, Class 10 — final class of the course",
+    az_ru: "Пт, 14 августа 2026, 06:30", az_en: "Fri, Aug 14, 2026, 06:30",
+    msk_ru: "Пт, 14 августа 2026, 16:30", msk_en: "Fri, Aug 14, 2026, 16:30",
+    who: "Ven. Utpala",
+    link: "https://us02web.zoom.us/j/86006642443?pwd=uhHcax4cMRl8NthztDKkYUjd2z9iaZ.1"
   }
 ];
 
 let currentLang = "ru";
-let currentCat = "all";
-let currentFormat = "all";
+let currentProgram = "all";
+let currentFormat = "online";
+
+function programById(id){
+  return programs.find(p => p.id === id);
+}
+
+function renderProgramNav(){
+  const nav = document.getElementById("program-nav");
+  nav.innerHTML = programs.map(p => `
+    <div class="path-dot${p.id === currentProgram ? " active" : ""}" data-program="${p.id}">
+      <div class="star"></div>
+      <span class="label">${p.id === "all" ? i18n[currentLang].navAll : p.nav[currentLang]}</span>
+    </div>
+  `).join("");
+  nav.querySelectorAll(".path-dot").forEach(dot => {
+    dot.addEventListener("click", () => {
+      currentProgram = dot.getAttribute("data-program");
+      renderProgramNav();
+      renderProgramHeader();
+      render();
+    });
+  });
+}
+
+function renderProgramHeader(){
+  const headerEl = document.getElementById("program-header");
+  const aboutWrap = document.getElementById("about-wrap");
+
+  if(currentProgram === "all"){
+    headerEl.innerHTML = "";
+    aboutWrap.innerHTML = "";
+    return;
+  }
+
+  const p = programById(currentProgram);
+  headerEl.innerHTML = `
+    <h2>${p.title[currentLang]}</h2>
+    <div class="program-subtitle">${p.subtitle[currentLang]}</div>
+  `;
+
+  const about = aboutTexts[currentProgram];
+  const isPlaceholder = about === placeholderAbout;
+  aboutWrap.innerHTML = `
+    <div class="about-card">
+      <div class="about-label">${i18n[currentLang].aboutLabel}</div>
+      <div class="about-body${isPlaceholder ? " placeholder" : ""}">${isPlaceholder ? about[currentLang] : about[currentLang]}</div>
+    </div>
+  `;
+}
 
 function setLang(l){
   currentLang = l;
@@ -364,17 +643,10 @@ function setLang(l){
     const key = el.getAttribute("data-i18n");
     if(i18n[l][key]) el.textContent = i18n[l][key];
   });
+  renderProgramNav();
+  renderProgramHeader();
   render();
 }
-
-document.querySelectorAll(".path-dot").forEach(dot=>{
-  dot.addEventListener("click", ()=>{
-    document.querySelectorAll(".path-dot").forEach(d=>d.classList.remove("active"));
-    dot.classList.add("active");
-    currentCat = dot.getAttribute("data-cat");
-    render();
-  });
-});
 
 document.querySelectorAll(".format-tabs button").forEach(btn=>{
   btn.addEventListener("click", ()=>{
@@ -385,43 +657,54 @@ document.querySelectorAll(".format-tabs button").forEach(btn=>{
   });
 });
 
+function getEmptyMessage(){
+  if(currentProgram !== "all"){
+    const progMsgs = emptyMessages[currentProgram];
+    if(progMsgs && progMsgs[currentFormat]) return progMsgs[currentFormat][currentLang];
+  }
+  return i18n[currentLang].emptyDefault;
+}
+
 function render(){
-  const container = document.getElementById("cards");
   const t = i18n[currentLang];
+  const container = document.getElementById("cards");
   const filtered = events.filter(e=>{
-    const catOk = currentCat === "all" || e.cat === currentCat;
-    const fmtOk = currentFormat === "all" || e.format === currentFormat;
-    return catOk && fmtOk;
+    const progOk = currentProgram === "all" || e.program === currentProgram;
+    const fmtOk = e.format === currentFormat;
+    return progOk && fmtOk;
   });
   if(filtered.length === 0){
-    container.innerHTML = `<div class="empty-note">${t.empty}</div>`;
+    container.innerHTML = `<div class="empty-note">${getEmptyMessage()}</div>`;
     return;
   }
   container.innerHTML = filtered.map(e=>{
     const title = currentLang === "ru" ? e.title_ru : e.title_en;
-    const where = currentLang === "ru" ? e.where_ru : e.where_en;
-    const when = currentLang === "en" && e.when_en ? e.when_en : e.when;
-    const fmtLabel = e.format === "online" ? t["fmt-online"] : t["fmt-offline"];
-    const catLabel = t["cat-"+e.cat] || e.cat;
+    const az = currentLang === "ru" ? e.az_ru : e.az_en;
+    const msk = currentLang === "ru" ? e.msk_ru : e.msk_en;
+    const fmtLabel = t["fmt-" + e.format];
+    const programTag = currentProgram === "all"
+      ? `<span class="tag program">${programById(e.program).nav[currentLang]}</span>`
+      : "";
     return `
       <div class="card ${e.format}">
         <div class="tag-row">
-          <span class="tag category">${catLabel}</span>
+          ${programTag}
           <span class="tag format-${e.format}">${fmtLabel}</span>
         </div>
         <h3>${title}</h3>
         <div class="meta">
-          <div><b>${t.when}:</b> ${when}</div>
-          <div><b>${t.where}:</b> ${where}</div>
-          <div><b>${t.who}:</b> ${e.who}</div>
-          <div><b>${t.lang}:</b> ${e.lang}</div>
+          <div><b>${t.labelAZ}:</b> ${az}</div>
+          <div><b>${t.labelMSK}:</b> ${msk}</div>
+          <div><b>${t.labelWho}:</b> ${e.who}</div>
         </div>
-        <a class="link" href="${e.link}" target="_blank">${t.open}</a>
+        <a class="link" href="${e.link}" target="_blank" rel="noopener noreferrer">${t.labelOpen}</a>
       </div>
     `;
   }).join("");
 }
 
+renderProgramNav();
+renderProgramHeader();
 render();
 </script>
 </body>
