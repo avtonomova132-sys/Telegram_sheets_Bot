@@ -1,9 +1,16 @@
+const path = require('path');
+const express = require('express');
 const cron = require('node-cron');
 const TelegramBot = require('node-telegram-bot-api');
 const { OpenAI, toFile } = require('openai');
 const { generateWeeklyReport, generateCheckReport, chunkMessage } = require('./report');
 const { generateVerseImageBuffer } = require('./verse/generateVerseImage');
 const { getNextVerseNumber, setLastSent, ensureProgressSeeded, applyForceOverride } = require('./verse/progress');
+
+const app = express();
+app.use(express.static(path.join(__dirname, 'public')));
+const port = process.env.PORT || 3000;
+app.listen(port, () => console.log(`HTTP-сервер запущен на порту ${port}`));
 
 const token = process.env.BOT_TOKEN;
 const openaiKey = process.env.OPENAI_API_KEY;

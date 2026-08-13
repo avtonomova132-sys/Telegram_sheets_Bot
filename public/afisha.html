@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Афиша Алмазного пути</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --night: #1c2438;
+    --night-deep: #141a2b;
+    --gold: #c8a24d;
+    --gold-soft: #e4c877;
+    --parchment: #f4ecda;
+    --maroon: #7a3226;
+    --sage: #5c7a63;
+    --ink: #2a2620;
+    --muted: #8b93a8;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{
+    background: var(--night-deep);
+    background-image:
+      radial-gradient(1px 1px at 10% 20%, rgba(200,162,77,0.4) 0%, transparent 60%),
+      radial-gradient(1px 1px at 80% 15%, rgba(200,162,77,0.3) 0%, transparent 60%),
+      radial-gradient(1.5px 1.5px at 60% 40%, rgba(200,162,77,0.35) 0%, transparent 60%),
+      radial-gradient(1px 1px at 30% 70%, rgba(200,162,77,0.3) 0%, transparent 60%),
+      radial-gradient(1px 1px at 90% 80%, rgba(200,162,77,0.25) 0%, transparent 60%);
+    font-family: 'Inter', sans-serif;
+    color: var(--parchment);
+    min-height: 100vh;
+    padding-bottom: 60px;
+  }
+  header{
+    padding: 36px 20px 24px;
+    text-align: center;
+    border-bottom: 1px solid rgba(200,162,77,0.25);
+  }
+  .eyebrow{
+    font-size: 12px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--gold);
+    margin-bottom: 10px;
+  }
+  h1{
+    font-family: 'Cormorant Garamond', serif;
+    font-weight: 600;
+    font-size: 38px;
+    color: var(--gold-soft);
+    line-height: 1.15;
+  }
+  .subtitle{
+    font-family: 'Cormorant Garamond', serif;
+    font-style: italic;
+    font-size: 17px;
+    color: var(--muted);
+    margin-top: 8px;
+    max-width: 480px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  .lang-toggle{
+    display: inline-flex;
+    margin-top: 18px;
+    border: 1px solid rgba(200,162,77,0.4);
+    border-radius: 20px;
+    overflow: hidden;
+  }
+  .lang-toggle button{
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-family: 'Inter';
+    font-size: 13px;
+    font-weight: 600;
+    padding: 7px 18px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .lang-toggle button.active{
+    background: var(--gold);
+    color: var(--night-deep);
+  }
+
+  .path-nav{
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 4px;
+    padding: 26px 12px 6px;
+    flex-wrap: wrap;
+    position: relative;
+  }
+  .path-dot{
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    padding: 6px 10px;
+  }
+  .path-dot .star{
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--muted);
+    box-shadow: 0 0 0 3px rgba(255,255,255,0.03);
+    transition: all 0.25s;
+  }
+  .path-dot.active .star{
+    background: var(--gold-soft);
+    box-shadow: 0 0 12px 3px rgba(228,200,119,0.5);
+  }
+  .path-dot span.label{
+    font-size: 12px;
+    color: var(--muted);
+    text-align: center;
+    white-space: nowrap;
+  }
+  .path-dot.active span.label{ color: var(--gold-soft); font-weight: 600; }
+  .path-line{
+    position:absolute;
+    top: 32px; left: 8%; right: 8%;
+    height: 1px;
+    background: repeating-linear-gradient(90deg, rgba(200,162,77,0.35) 0 6px, transparent 6px 12px);
+    z-index: 0;
+  }
+
+  .format-tabs{
+    display:flex;
+    justify-content:center;
+    gap: 10px;
+    margin: 22px auto 4px;
+  }
+  .format-tabs button{
+    font-family:'Inter'; font-weight:600; font-size:14px;
+    background: transparent;
+    border: 1px solid rgba(200,162,77,0.4);
+    color: var(--parchment);
+    padding: 9px 22px;
+    border-radius: 999px;
+    cursor:pointer;
+    transition: all .2s;
+  }
+  .format-tabs button.active{
+    background: var(--maroon);
+    border-color: var(--maroon);
+    color: var(--parchment);
+  }
+
+  main{
+    max-width: 680px;
+    margin: 0 auto;
+    padding: 20px 16px;
+  }
+  .card{
+    background: var(--parchment);
+    color: var(--ink);
+    border-radius: 10px;
+    padding: 18px 20px;
+    margin-bottom: 14px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+    border-left: 4px solid var(--gold);
+    position: relative;
+  }
+  .card.offline{ border-left-color: var(--sage); }
+  .tag-row{
+    display:flex; gap:8px; align-items:center; margin-bottom:8px; flex-wrap: wrap;
+  }
+  .tag{
+    font-size: 11px; font-weight:600; letter-spacing:0.03em;
+    text-transform: uppercase;
+    padding: 3px 9px;
+    border-radius: 5px;
+  }
+  .tag.category{ background: rgba(122,50,38,0.1); color: var(--maroon); }
+  .tag.format-online{ background: rgba(200,162,77,0.15); color: #8a6d1f; }
+  .tag.format-offline{ background: rgba(92,122,99,0.15); color: var(--sage); }
+  .card h3{
+    font-family: 'Cormorant Garamond', serif;
+    font-weight: 600;
+    font-size: 21px;
+    line-height: 1.3;
+    margin-bottom: 6px;
+    color: var(--ink);
+  }
+  .meta{
+    font-size: 13px;
+    color: #5a5548;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin-bottom: 10px;
+  }
+  .meta b{ color: var(--ink); }
+  .card a.link{
+    display:inline-block;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--maroon);
+    text-decoration: none;
+    border-bottom: 1px solid var(--maroon);
+  }
+  .empty-note{
+    text-align:center;
+    color: var(--muted);
+    font-family: 'Cormorant Garamond', serif;
+    font-style: italic;
+    font-size: 16px;
+    padding: 40px 20px;
+  }
+  footer{
+    text-align:center;
+    padding: 30px 20px 10px;
+    font-size: 12px;
+    color: var(--muted);
+    font-style: italic;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="eyebrow" data-i18n="eyebrow">Маршрутная карта</div>
+  <h1 data-i18n="title">Афиша Алмазного пути</h1>
+  <p class="subtitle" data-i18n="subtitle">Где встретиться с Дхармой — онлайн и вживую, на разных языках мира</p>
+  <div class="lang-toggle">
+    <button id="btn-ru" class="active" onclick="setLang('ru')">РУС</button>
+    <button id="btn-en" onclick="setLang('en')">ENG</button>
+  </div>
+</header>
+
+<div class="path-nav">
+  <div class="path-line"></div>
+  <div class="path-dot active" data-cat="all"><div class="star"></div><span class="label" data-i18n="cat-all">Всё</span></div>
+  <div class="path-dot" data-cat="isa"><div class="star"></div><span class="label" data-i18n="cat-isa">ACI</span></div>
+  <div class="path-dot" data-cat="domov"><div class="star"></div><span class="label" data-i18n="cat-domov">Пять домов</span></div>
+  <div class="path-dot" data-cat="lamrim"><div class="star"></div><span class="label" data-i18n="cat-lamrim">Ламрим</span></div>
+  <div class="path-dot" data-cat="med"><div class="star"></div><span class="label" data-i18n="cat-med">Медитация</span></div>
+  <div class="path-dot" data-cat="retreat"><div class="star"></div><span class="label" data-i18n="cat-retreat">Ретрит</span></div>
+</div>
+
+<div class="format-tabs">
+  <button class="active" data-format="all" data-i18n="fmt-all">Все</button>
+  <button data-format="online" data-i18n="fmt-online">Онлайн</button>
+  <button data-format="offline" data-i18n="fmt-offline">Офлайн</button>
+</div>
+
+<main id="cards"></main>
+
+<footer data-i18n="footer">Черновик · WVP 2026 · данные будут дополняться</footer>
+
+<script>
+const i18n = {
+  ru: {
+    eyebrow: "Маршрутная карта",
+    title: "Афиша Алмазного пути",
+    subtitle: "Где встретиться с Дхармой — онлайн и вживую, на разных языках мира",
+    "cat-all":"Всё", "cat-isa":"ACI", "cat-domov":"Пять домов", "cat-lamrim":"Ламрим", "cat-med":"Медитация", "cat-retreat":"Ретрит",
+    "fmt-all":"Все", "fmt-online":"Онлайн", "fmt-offline":"Офлайн",
+    where:"Где", when:"Когда", who:"Ведёт", lang:"Язык", open:"Открыть →",
+    footer:"Черновик · WVP 2026 · данные будут дополняться",
+    empty:"Пока нет событий в этой категории — скоро добавим"
+  },
+  en: {
+    eyebrow: "A route map",
+    title: "Diamond Way Guide",
+    subtitle: "Where to meet the Dharma — online and in person, in many languages",
+    "cat-all":"All", "cat-isa":"ACI", "cat-domov":"Five Houses", "cat-lamrim":"Lamrim", "cat-med":"Meditation", "cat-retreat":"Retreat",
+    "fmt-all":"All", "fmt-online":"Online", "fmt-offline":"In person",
+    where:"Where", when:"When", who:"Teacher", lang:"Language", open:"Open →",
+    footer:"Draft · WVP 2026 · content will keep growing",
+    empty:"Nothing here yet — more coming soon"
+  }
+};
+
+// Пример данных: часть — реальные названия сессий из таблицы Xuanzang's Tower,
+// офлайн-события — плейсхолдеры для демонстрации структуры.
+const events = [
+  {
+    format: "online", cat: "isa",
+    title_ru: "Учение о Пустоте (Dependence) — с переводом", title_en: "Teaching on Dependence — translated",
+    when: "Суббота, 11:00 (Баку) / 21:00 МСК",
+    where_ru: "Zoom · Xuanzang's Tower", where_en: "Zoom · Xuanzang's Tower",
+    who: "Sugeng", lang: "RU · EN · ZH · VI · ES · UA · DE",
+    link: "https://xuanzang.live/class"
+  },
+  {
+    format: "online", cat: "isa",
+    title_ru: "Углублённое объяснение только-ума-школы", title_en: "A Deeper Explanation of Mind Only",
+    when: "Суббота, 6:00 вечера (Баку)",
+    where_ru: "Zoom · Xuanzang's Tower", where_en: "Zoom · Xuanzang's Tower",
+    who: "Word", lang: "RU · EN · VI",
+    link: "https://xuanzang.live/class"
+  },
+  {
+    format: "online", cat: "med",
+    title_ru: "Медитация с геше Майклом Роучем", title_en: "Meditation with Geshe Michael Roach",
+    when: "Понедельник, 6:45 вечера",
+    where_ru: "Zoom · Xuanzang's Tower", where_en: "Zoom · Xuanzang's Tower",
+    who: "Geshe Michael Roach", lang: "EN · RU",
+    link: "https://xuanzang.live/class"
+  },
+  {
+    format: "online", cat: "lamrim",
+    title_ru: "Путь к Пробуждению — курс Ламрим", title_en: "Path to Enlightenment — Lamrim course",
+    when: "По расписанию, см. таблицу", when_en:"See schedule table",
+    where_ru: "Zoom", where_en: "Zoom",
+    who: "Nick Lashaw", lang: "EN · RU",
+    link: "#"
+  },
+  {
+    format: "online", cat: "isa",
+    title_ru: "Драгоценность истинного намерения — курс ACI", title_en: "A Gemstone of the True Intent — ACI course",
+    when: "Понедельник, 5:30 вечера (Баку)",
+    where_ru: "Zoom · Xuanzang's Tower", where_en: "Zoom · Xuanzang's Tower",
+    who: "Xiaoping", lang: "RU · EN · VI",
+    link: "https://xuanzang.live/class"
+  },
+  {
+    format: "online", cat: "isa",
+    title_ru: "Сущность красноречия — курс ACI", title_en: "Essence of Eloquence — ACI course",
+    when: "Суббота, 11:00 утра (Баку)",
+    where_ru: "Zoom · Xuanzang's Tower", where_en: "Zoom · Xuanzang's Tower",
+    who: "Gibson", lang: "RU · EN · DE",
+    link: "https://xuanzang.live/class"
+  },
+  {
+    format: "online", cat: "isa",
+    title_ru: "Путь бодхисаттвы — курс ACI", title_en: "Bodhisattva's Way of Life — ACI course",
+    when: "Понедельник, 4:00 дня (Баку)",
+    where_ru: "Zoom · Xuanzang's Tower", where_en: "Zoom · Xuanzang's Tower",
+    who: "Seiji", lang: "RU · EN",
+    link: "https://xuanzang.live/class"
+  },
+  {
+    format: "offline", cat: "isa",
+    title_ru: "Живая встреча группы — пример", title_en: "In-person group meeting — sample",
+    when: "Уточняется", when_en:"TBD",
+    where_ru: "Москва (пример)", where_en: "Moscow (sample)",
+    who: "—", lang: "RU",
+    link: "#"
+  },
+  {
+    format: "offline", cat: "retreat",
+    title_ru: "Ретрит выходного дня — пример", title_en: "Weekend retreat — sample",
+    when: "Уточняется", when_en:"TBD",
+    where_ru: "Казань (пример)", where_en: "Kazan (sample)",
+    who: "—", lang: "RU",
+    link: "#"
+  }
+];
+
+let currentLang = "ru";
+let currentCat = "all";
+let currentFormat = "all";
+
+function setLang(l){
+  currentLang = l;
+  document.getElementById("btn-ru").classList.toggle("active", l==="ru");
+  document.getElementById("btn-en").classList.toggle("active", l==="en");
+  document.querySelectorAll("[data-i18n]").forEach(el=>{
+    const key = el.getAttribute("data-i18n");
+    if(i18n[l][key]) el.textContent = i18n[l][key];
+  });
+  render();
+}
+
+document.querySelectorAll(".path-dot").forEach(dot=>{
+  dot.addEventListener("click", ()=>{
+    document.querySelectorAll(".path-dot").forEach(d=>d.classList.remove("active"));
+    dot.classList.add("active");
+    currentCat = dot.getAttribute("data-cat");
+    render();
+  });
+});
+
+document.querySelectorAll(".format-tabs button").forEach(btn=>{
+  btn.addEventListener("click", ()=>{
+    document.querySelectorAll(".format-tabs button").forEach(b=>b.classList.remove("active"));
+    btn.classList.add("active");
+    currentFormat = btn.getAttribute("data-format");
+    render();
+  });
+});
+
+function render(){
+  const container = document.getElementById("cards");
+  const t = i18n[currentLang];
+  const filtered = events.filter(e=>{
+    const catOk = currentCat === "all" || e.cat === currentCat;
+    const fmtOk = currentFormat === "all" || e.format === currentFormat;
+    return catOk && fmtOk;
+  });
+  if(filtered.length === 0){
+    container.innerHTML = `<div class="empty-note">${t.empty}</div>`;
+    return;
+  }
+  container.innerHTML = filtered.map(e=>{
+    const title = currentLang === "ru" ? e.title_ru : e.title_en;
+    const where = currentLang === "ru" ? e.where_ru : e.where_en;
+    const when = currentLang === "en" && e.when_en ? e.when_en : e.when;
+    const fmtLabel = e.format === "online" ? t["fmt-online"] : t["fmt-offline"];
+    const catLabel = t["cat-"+e.cat] || e.cat;
+    return `
+      <div class="card ${e.format}">
+        <div class="tag-row">
+          <span class="tag category">${catLabel}</span>
+          <span class="tag format-${e.format}">${fmtLabel}</span>
+        </div>
+        <h3>${title}</h3>
+        <div class="meta">
+          <div><b>${t.when}:</b> ${when}</div>
+          <div><b>${t.where}:</b> ${where}</div>
+          <div><b>${t.who}:</b> ${e.who}</div>
+          <div><b>${t.lang}:</b> ${e.lang}</div>
+        </div>
+        <a class="link" href="${e.link}" target="_blank">${t.open}</a>
+      </div>
+    `;
+  }).join("");
+}
+
+render();
+</script>
+</body>
+</html>
