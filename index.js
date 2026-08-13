@@ -289,7 +289,7 @@ bot.onText(/^\/добавить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) 
         blocks.push(`🔄 Обновлено (дополнены данными): ${updated.length}\n${updated.map(describe).join('\n')}`);
       }
       if (skipped.length > 0) {
-        blocks.push(`⏭️ Пропущено как дубли: ${skipped.length}\n${skipped.map(describe).join('\n')}`);
+        blocks.push(`✅ Уже было в расписании: ${skipped.length}\n${skipped.map(describe).join('\n')}`);
       }
     }
 
