@@ -22,17 +22,46 @@ function getLastSent() {
 
 function setLastSent(n) {
   fs.mkdirSync(path.dirname(PROGRESS_PATH), { recursive: true });
-  fs.writeFileSync(PROGRESS_PATH, JSON.stringify({ lastSent: n }, null, 2));
+  // Атомарная запись (tmp + rename), чтобы обрыв процесса на полпути записи
+  // (например, при рестарте контейнера) не оставил битый/пустой JSON.
+  const tmpPath = `${PROGRESS_PATH}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify({ lastSent: n }, null, 2));
+  fs.renameSync(tmpPath, PROGRESS_PATH);
+  console.log(`[verse] прогресс сохранён: lastSent=${n} (${PROGRESS_PATH})`);
 }
 
 // Разовая инициализация: если файла прогресса на volume ещё нет (новый volume
 // или первый запуск), создаёт его со значением из VERSE_SEED_LAST_SENT вместо
-// умолчания 0 — нужно было один раз выставить lastSent=1 (уже отправляли
-// изречение №1), чтобы дальше не отправлять его повторно после сброса диска.
+// умолчания 0. Если файл уже существует — значит прогресс уже персистентный,
+// переменная окружения полностью игнорируется (иначе прогресс откатывался бы
+// назад при каждом передеплое).
 function ensureProgressSeeded() {
-  if (fs.existsSync(PROGRESS_PATH)) return;
+  if (fs.existsSync(PROGRESS_PATH)) {
+    console.log(`[verse] файл прогресса уже существует, lastSent=${getLastSent()} (посев из VERSE_SEED_LAST_SENT пропущен)`);
+    return;
+  }
   const seed = Number(process.env.VERSE_SEED_LAST_SENT || 0);
+  console.log(`[verse] файла прогресса нет — первичный посев из VERSE_SEED_LAST_SENT=${seed}`);
   setLastSent(seed);
+}
+
+// Разовая РУЧНАЯ коррекция прогресса, если он уже сбился (например, из-за
+// прошлого бага со сбросом volume). В отличие от ensureProgressSeeded — эта
+// функция срабатывает, даже если файл уже существует, но только один раз на
+// каждое НОВОЕ значение VERSE_FORCE_LAST_SENT (отслеживается через соседний
+// .force-applied файл), поэтому не откатывает прогресс назад при обычных
+// последующих передеплоях, если переменную забыли убрать.
+function applyForceOverride() {
+  const raw = process.env.VERSE_FORCE_LAST_SENT;
+  if (raw === undefined) return;
+
+  const markerPath = `${PROGRESS_PATH}.force-applied`;
+  const alreadyApplied = fs.existsSync(markerPath) ? fs.readFileSync(markerPath, 'utf8').trim() : null;
+  if (alreadyApplied === raw) return;
+
+  setLastSent(Number(raw));
+  fs.writeFileSync(markerPath, raw);
+  console.log(`[verse] VERSE_FORCE_LAST_SENT=${raw} применён — прогресс принудительно исправлен на lastSent=${raw}`);
 }
 
 // Номер следующего неотправленного изречения, или null, если в verses.json
@@ -42,4 +71,4 @@ function getNextVerseNumber() {
   return next <= getVerseCount() ? next : null;
 }
 
-module.exports = { getVerseCount, getLastSent, setLastSent, getNextVerseNumber, ensureProgressSeeded };
+module.exports = { getVerseCount, getLastSent, setLastSent, getNextVerseNumber, ensureProgressSeeded, applyForceOverride };

@@ -3,7 +3,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const { OpenAI, toFile } = require('openai');
 const { generateWeeklyReport, generateCheckReport, chunkMessage } = require('./report');
 const { generateVerseImageBuffer } = require('./verse/generateVerseImage');
-const { getNextVerseNumber, setLastSent, ensureProgressSeeded } = require('./verse/progress');
+const { getNextVerseNumber, setLastSent, ensureProgressSeeded, applyForceOverride } = require('./verse/progress');
 
 const token = process.env.BOT_TOKEN;
 const openaiKey = process.env.OPENAI_API_KEY;
@@ -19,6 +19,7 @@ if (!myChatId) {
 }
 
 ensureProgressSeeded();
+applyForceOverride();
 
 const bot = new TelegramBot(token, { polling: true });
 // maxRetries: 0 — встроенный ретрай openai-node переиспользует тот же поток
@@ -144,11 +145,13 @@ bot.onText(/\/(check|report)\b/, (msg) => {
 
 async function sendVerseImage(chatId, verseNumber) {
   const buffer = await generateVerseImageBuffer(verseNumber);
-  await bot.sendDocument(
+  // send_sticker (не send_document) — так карточка приходит "парящей" на фоне
+  // чата, без рамки файла, которую Telegram рисует для обычных документов.
+  await bot.sendSticker(
     chatId,
     buffer,
     {},
-    { filename: `verse-${verseNumber}.png`, contentType: 'image/png' }
+    { filename: `verse-${verseNumber}.webp`, contentType: 'image/webp' }
   );
 }
 

@@ -7,11 +7,11 @@ const SCRIPT_PATH = path.join(__dirname, 'generate_verse_image.py');
 const PYTHON_BIN = process.env.PYTHON_BIN || 'python3';
 
 // Запускает generate_verse_image.py в отдельном процессе (логика наложения
-// текста/шрифтов там не трогается) и возвращает готовый PNG (с альфа-каналом)
-// в виде Buffer.
+// текста/шрифтов там не трогается) и возвращает готовый WEBP (с альфа-каналом,
+// в размере Telegram-стикера) в виде Buffer.
 function generateVerseImageBuffer(verseNumber) {
   return new Promise((resolve, reject) => {
-    const outPath = path.join(os.tmpdir(), `verse-${verseNumber}-${Date.now()}.png`);
+    const outPath = path.join(os.tmpdir(), `verse-${verseNumber}-${Date.now()}.webp`);
     const proc = spawn(PYTHON_BIN, [SCRIPT_PATH, String(verseNumber), outPath]);
 
     let stderr = '';
