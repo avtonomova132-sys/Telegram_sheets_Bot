@@ -94,24 +94,26 @@ function formatRecordBlock(record) {
   return lines.join('\n');
 }
 
-function formatCourseSection(kurs, records) {
-  const header = `📖 *Курс ${escapeMarkdown(kurs)} — ближайшие передачи:*`;
-  return `${header}\n\n${records.map(formatRecordBlock).join('\n\n')}`;
+// "медитация" — отдельная категория (не привязана к курсу 1-6), заголовок
+// для неё формулируется иначе, чем "Курс {N}".
+function sectionTitle(kursKey) {
+  if (String(kursKey).trim() === 'медитация') return '🧘 *Медитации — ближайшие:*';
+  return `📖 *Курс ${escapeMarkdown(kursKey)} — ближайшие передачи:*`;
 }
 
-// kursArg — строка курса из аргумента команды, или null/пусто для сводки по всем курсам.
-function formatPeredachiReply(all, kursArg) {
+function formatSection(title, records) {
+  return `${title}\n\n${records.map(formatRecordBlock).join('\n\n')}`;
+}
+
+function upcomingSorted(all) {
   const now = getNowMsk();
-  const upcoming = sortRecords(all.filter((r) => isUpcoming(r, now)));
+  return sortRecords(all.filter((r) => isUpcoming(r, now)));
+}
 
-  if (kursArg) {
-    const filtered = upcoming.filter((r) => recordMatchesKurs(r, kursArg));
-    if (filtered.length === 0) {
-      return `По курсу ${kursArg} пока нет данных о передачах. Появится информация — сразу будет здесь.`;
-    }
-    return formatCourseSection(kursArg, filtered);
-  }
-
+// /курсы — сводка по всем группам (курсы 1-6 и "медитация" отдельно),
+// по 2-3 ближайшие записи на группу.
+function formatKursOverview(all) {
+  const upcoming = upcomingSorted(all);
   if (upcoming.length === 0) {
     return 'Пока нет данных о предстоящих передачах. Появится информация — сразу будет здесь.';
   }
@@ -132,7 +134,28 @@ function formatPeredachiReply(all, kursArg) {
     return na - nb;
   });
 
-  return sortedKeys.map((key) => formatCourseSection(key, groups.get(key).slice(0, 3))).join('\n\n\n');
+  return sortedKeys.map((key) => formatSection(sectionTitle(key), groups.get(key).slice(0, 3))).join('\n\n\n');
+}
+
+// /курс1.../курс6 — все ближайшие передачи конкретного курса, включая
+// вхождение в postfix экспресс-курсов (например "1-5").
+function formatKursDetail(all, kursNumber) {
+  const upcoming = upcomingSorted(all);
+  const filtered = upcoming.filter((r) => recordMatchesKurs(r, kursNumber));
+  if (filtered.length === 0) {
+    return `По курсу ${kursNumber} пока нет данных о передачах. Появится информация — сразу будет здесь.`;
+  }
+  return formatSection(sectionTitle(String(kursNumber)), filtered);
+}
+
+// /медитации — записи с kurs === "медитация" (самостоятельные медитации,
+// не встроенные в занятие курса).
+function formatMeditations(all) {
+  const upcoming = upcomingSorted(all).filter((r) => String(r.kurs || '').trim() === 'медитация');
+  if (upcoming.length === 0) {
+    return 'Пока нет данных о ближайших медитациях. Появится информация — сразу будет здесь.';
+  }
+  return formatSection(sectionTitle('медитация'), upcoming);
 }
 
 module.exports = {
@@ -142,5 +165,7 @@ module.exports = {
   isUpcoming,
   sortRecords,
   formatDateRu,
-  formatPeredachiReply,
+  formatKursOverview,
+  formatKursDetail,
+  formatMeditations,
 };

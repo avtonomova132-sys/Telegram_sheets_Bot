@@ -8,7 +8,7 @@ const { generateVerseImageBuffer } = require('./verse/generateVerseImage');
 const { getNextVerseNumber, setLastSent, ensureProgressSeeded, applyForceOverride } = require('./verse/progress');
 const { extractPeredachi } = require('./peredachi/extract');
 const { addRecords, readAll: readPeredachi, saveAll: savePeredachi } = require('./peredachi/store');
-const { formatPeredachiReply } = require('./peredachi/query');
+const { formatKursOverview, formatKursDetail, formatMeditations } = require('./peredachi/query');
 const { analyzeDuplicates } = require('./peredachi/dedupe');
 const { validateEntry, describeEntry } = require('./peredachi/validate');
 
@@ -311,17 +311,40 @@ bot.onText(/^\/добавить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) 
   }
 });
 
-bot.onText(/^\/передачи(?:@\S+)?(?:\s+(\S+))?$/, async (msg, match) => {
+bot.onText(/^\/курсы(?:@\S+)?$/, async (msg) => {
   const chatId = msg.chat.id;
-  const kursArg = match[1] ? match[1].trim() : null;
 
   try {
     const all = readPeredachi();
-    const reply = formatPeredachiReply(all, kursArg);
-    await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
+    await bot.sendMessage(chatId, formatKursOverview(all), { parse_mode: 'Markdown' });
   } catch (err) {
-    console.error('[peredachi] ошибка формирования списка передач:', err.message);
+    console.error('[peredachi] ошибка формирования списка курсов:', err.message);
     await bot.sendMessage(chatId, 'Не получилось получить список передач 😔');
+  }
+});
+
+bot.onText(/^\/курс([1-6])(?:@\S+)?$/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const kursNumber = match[1];
+
+  try {
+    const all = readPeredachi();
+    await bot.sendMessage(chatId, formatKursDetail(all, kursNumber), { parse_mode: 'Markdown' });
+  } catch (err) {
+    console.error('[peredachi] ошибка формирования списка по курсу:', err.message);
+    await bot.sendMessage(chatId, 'Не получилось получить список передач 😔');
+  }
+});
+
+bot.onText(/^\/медитации(?:@\S+)?$/, async (msg) => {
+  const chatId = msg.chat.id;
+
+  try {
+    const all = readPeredachi();
+    await bot.sendMessage(chatId, formatMeditations(all), { parse_mode: 'Markdown' });
+  } catch (err) {
+    console.error('[peredachi] ошибка формирования списка медитаций:', err.message);
+    await bot.sendMessage(chatId, 'Не получилось получить список медитаций 😔');
   }
 });
 
