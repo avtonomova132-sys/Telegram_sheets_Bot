@@ -11,6 +11,7 @@ const { addRecords, readAll: readPeredachi, saveAll: savePeredachi } = require('
 const { formatKursOverview, formatKursDetail, formatMeditations } = require('./peredachi/query');
 const { analyzeDuplicates } = require('./peredachi/dedupe');
 const { validateEntry, describeEntry } = require('./peredachi/validate');
+const { analyzeSplits } = require('./peredachi/split');
 
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
@@ -417,6 +418,63 @@ bot.onText(/^\/дубли(?:@\S+)?$/, async (msg) => {
   } catch (err) {
     console.error('[peredachi] ошибка поиска дублей:', err.message);
     await bot.sendMessage(chatId, 'Не получилось проверить дубли 😔');
+  }
+});
+
+// Разовая/повторная проверка volume на записи, сохранённые ещё до того, как
+// /добавить стал разбивать "Занятие N + Медитация M" на две записи. Находит
+// такие комбинированные zanyatie, уверенно делимые — разбивает на две записи
+// (сохраняя дату/время/ссылки) и удаляет исходную; неуверенно делимые —
+// оставляет как есть и показывает текстом, чтобы разобрать вручную.
+bot.onText(/^\/разделить(?:@\S+)?$/, async (msg) => {
+  const chatId = msg.chat.id;
+
+  if (myChatId && String(chatId) !== String(myChatId)) {
+    await bot.sendMessage(chatId, 'Эта команда доступна только администратору.');
+    return;
+  }
+
+  try {
+    const all = readPeredachi();
+    const { splittable, unresolved } = analyzeSplits(all);
+
+    if (splittable.length === 0 && unresolved.length === 0) {
+      await bot.sendMessage(chatId, 'Комбинированных записей не найдено.');
+      return;
+    }
+
+    if (splittable.length > 0) {
+      const removeIds = new Set(splittable.map((s) => s.original.id));
+      const additions = splittable.flatMap((s) => s.parts);
+      const next = all.filter((r) => !removeIds.has(r.id)).concat(additions);
+      savePeredachi(next);
+    }
+
+    const lines = [];
+
+    if (splittable.length > 0) {
+      lines.push(`✅ Разделено записей: ${splittable.length}`);
+      for (const s of splittable) {
+        const dateLabel = s.original.dateISO || 'дата неизвестна';
+        const timeLabel = s.original.timeMSK ? `, ${s.original.timeMSK} МСК` : '';
+        lines.push(`• ${dateLabel}${timeLabel} — было: "${s.original.zanyatie}"`);
+      }
+    }
+
+    if (unresolved.length > 0) {
+      lines.push('');
+      lines.push('⚠️ Не удалось разделить автоматически — раздели вручную:');
+      unresolved.forEach((r) => {
+        lines.push(`— id=${r.id}, ${r.dateISO || '?'} ${r.timeMSK || ''} МСК — "${r.zanyatie}"`);
+      });
+    }
+
+    for (const chunk of chunkMessage(lines.join('\n'))) {
+      await bot.sendMessage(chatId, chunk);
+    }
+  } catch (err) {
+    console.error('[peredachi] ошибка разделения комбинированных записей:', err.message);
+    await bot.sendMessage(chatId, 'Не получилось выполнить разделение 😔');
   }
 });
 
