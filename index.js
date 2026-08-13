@@ -12,6 +12,12 @@ const { formatKursOverview, formatKursDetail, formatMeditations } = require('./p
 const { analyzeDuplicates } = require('./peredachi/dedupe');
 const { validateEntry, describeEntry } = require('./peredachi/validate');
 const { analyzeSplits } = require('./peredachi/split');
+const {
+  readGroupLinks,
+  setGroupLink,
+  ensureGroupLinksSeeded,
+  resolveInviteLink,
+} = require('./peredachi/groupLinks');
 
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
@@ -33,6 +39,7 @@ if (!myChatId) {
 
 ensureProgressSeeded();
 applyForceOverride();
+ensureGroupLinksSeeded();
 
 const bot = new TelegramBot(token, { polling: true });
 const openai = openaiKey ? new OpenAI({ apiKey: openaiKey, maxRetries: 0, timeout: 60000 }) : null;
@@ -260,9 +267,20 @@ bot.onText(/^\/добавить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) 
       return;
     }
 
+    // Внутренние ссылки вида https://t.me/c/<id>/<номер> не открываются у тех,
+    // кто не состоит в группе — подменяем на пригласительную по таблице
+    // соответствий (/группы), если для этого id она известна.
+    let replacedLinksCount = 0;
+    const resolvedEntries = entries.map((entry) => {
+      const invite = resolveInviteLink(entry.groupLink);
+      if (!invite) return entry;
+      replacedLinksCount += 1;
+      return { ...entry, groupLink: invite };
+    });
+
     const validEntries = [];
     const invalidEntries = [];
-    for (const entry of entries) {
+    for (const entry of resolvedEntries) {
       const { valid, missing } = validateEntry(entry);
       if (valid) {
         validEntries.push(entry);
@@ -300,6 +318,10 @@ bot.onText(/^\/добавить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) 
       blocks.push(
         `⚠️ Не удалось сохранить (не хватает данных):\n${lines.join('\n')}\n\nДополни текст этой информацией и отправь через /добавить ещё раз.`
       );
+    }
+
+    if (replacedLinksCount > 0) {
+      blocks.push(`🔄 Автоматически заменено ссылок на пригласительные: ${replacedLinksCount}`);
     }
 
     await bot.sendMessage(chatId, blocks.join('\n\n') || 'Ничего не изменилось.');
@@ -475,6 +497,51 @@ bot.onText(/^\/разделить(?:@\S+)?$/, async (msg) => {
   } catch (err) {
     console.error('[peredachi] ошибка разделения комбинированных записей:', err.message);
     await bot.sendMessage(chatId, 'Не получилось выполнить разделение 😔');
+  }
+});
+
+// Таблица соответствий "internal group id → пригласительная ссылка" — нужна,
+// чтобы /добавить мог автоматически подменять внутренние ссылки
+// (https://t.me/c/<id>/<номер>, не открываются у тех, кто не в группе) на
+// рабочие пригласительные. Без аргументов — показывает весь список.
+bot.onText(/^\/группы(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) => {
+  const chatId = msg.chat.id;
+
+  if (myChatId && String(chatId) !== String(myChatId)) {
+    await bot.sendMessage(chatId, 'Эта команда доступна только администратору.');
+    return;
+  }
+
+  const argText = match[1] ? match[1].trim() : '';
+
+  try {
+    if (!argText) {
+      const map = readGroupLinks();
+      const rows = Object.entries(map);
+      if (rows.length === 0) {
+        await bot.sendMessage(chatId, 'Список соответствий пуст.');
+        return;
+      }
+      const lines = rows.map(([id, link]) => `${id} → ${link}`);
+      await bot.sendMessage(chatId, `Текущие соответствия:\n${lines.join('\n')}`);
+      return;
+    }
+
+    const parts = argText.split(/\s+/);
+    if (parts.length !== 2) {
+      await bot.sendMessage(
+        chatId,
+        'Использование: /группы <internal_id> <пригласительная_ссылка>\nНапример: /группы 3698510352 https://t.me/+Va-z6dHKYT81OWVk'
+      );
+      return;
+    }
+
+    const [internalId, inviteLink] = parts;
+    setGroupLink(internalId, inviteLink);
+    await bot.sendMessage(chatId, `Добавлено соответствие: ID ${internalId} → ${inviteLink}`);
+  } catch (err) {
+    console.error('[group-links] ошибка сохранения соответствия:', err.message);
+    await bot.sendMessage(chatId, 'Не получилось сохранить соответствие 😔');
   }
 });
 
