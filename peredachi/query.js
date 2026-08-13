@@ -110,8 +110,9 @@ function upcomingSorted(all) {
   return sortRecords(all.filter((r) => isUpcoming(r, now)));
 }
 
-// /курсы — сводка по всем группам (курсы 1-6 и "медитация" отдельно),
-// по 2-3 ближайшие записи на группу.
+// /курсы — сводка по всем группам (курсы 1-6 и "медитация" отдельно), все
+// актуальные записи на группу — объединение полного вывода /курс1...курс6
+// и /медитации подряд, без сокращения.
 function formatKursOverview(all) {
   const upcoming = upcomingSorted(all);
   if (upcoming.length === 0) {
@@ -134,7 +135,7 @@ function formatKursOverview(all) {
     return na - nb;
   });
 
-  return sortedKeys.map((key) => formatSection(sectionTitle(key), groups.get(key).slice(0, 3))).join('\n\n\n');
+  return sortedKeys.map((key) => formatSection(sectionTitle(key), groups.get(key))).join('\n\n\n');
 }
 
 // /курс1.../курс6 — все ближайшие передачи конкретного курса, включая
