@@ -5,7 +5,17 @@ const TelegramBot = require('node-telegram-bot-api');
 const { OpenAI, toFile } = require('openai');
 const { generateWeeklyReport, generateCheckReport, chunkMessage } = require('./report');
 const { generateVerseImageBuffer } = require('./verse/generateVerseImage');
-const { getNextVerseNumber, setLastSent, ensureProgressSeeded, applyForceOverride } = require('./verse/progress');
+const {
+  getVerseCount,
+  getLastSent,
+  getLastSentDate,
+  getNextVerseNumber,
+  setLastSent,
+  ensureProgressSeeded,
+  applyForceOverride,
+  baliDateString,
+  baliHour,
+} = require('./verse/progress');
 const { extractPeredachi } = require('./peredachi/extract');
 const { addRecords, readAll: readPeredachi, saveAll: savePeredachi } = require('./peredachi/store');
 const { formatKursOverview, formatKursDetail, formatMeditations } = require('./peredachi/query');
@@ -225,23 +235,43 @@ bot.onText(/\/verse\b/, async (msg) => {
   }
 });
 
-// Ежедневная отправка следующего изречения в 6:00 по Бали (Asia/Makassar, UTC+8, без DST).
-if (myChatId) {
-  cron.schedule(
-    '0 6 * * *',
-    async () => {
-      const next = getNextVerseNumber();
-      if (next === null) return; // изречения в verses.json закончились — ничего не отправляем
-
-      try {
-        await sendVerseImage(myChatId, next);
-        setLastSent(next);
-      } catch (err) {
-        console.error('Ошибка ежедневной отправки изречения:', err.message);
-      }
-    },
-    { timezone: 'Asia/Makassar' }
+// Показывает текущий прогресс — быстрая проверка "растёт ли счётчик", не
+// дожидаясь следующего утра, чтобы поймать регресс сразу, а не через дни.
+bot.onText(/^\/прогресс(?:@\S+)?$/, async (msg) => {
+  const chatId = msg.chat.id;
+  const lastSent = getLastSent();
+  const lastSentDate = getLastSentDate() || '— (ещё не отправляли по расписанию)';
+  const next = getNextVerseNumber();
+  const nextLabel = next === null ? 'изречения закончились' : `№${next} (всего в базе: ${getVerseCount()})`;
+  await bot.sendMessage(
+    chatId,
+    `📊 Прогресс изречений\nПоследнее отправленное: №${lastSent}\nДата последней авто-отправки (Бали): ${lastSentDate}\nСледующее к отправке: ${nextLabel}`
   );
+});
+
+// Ежедневная отправка следующего изречения. Вместо точного выстрела cron'ом
+// ровно в 6:00 (одиночный пропущенный тик — например, из-за рестарта
+// контейнера в нужную минуту — раньше означал пропуск всего дня) — проверка
+// каждые 5 минут: "уже наступило ли 6:00 по Бали и отправляли ли мы сегодня".
+// Если тик пропущен, следующая проверка через 5 минут сама досылает изречение.
+async function checkAndSendDailyVerse() {
+  const today = baliDateString();
+  if (getLastSentDate() === today) return; // сегодня уже отправляли
+  if (baliHour() < 6) return; // ещё не наступило 6:00 по Бали
+
+  const next = getNextVerseNumber();
+  if (next === null) return; // изречения в verses.json закончились — ничего не отправляем
+
+  try {
+    await sendVerseImage(myChatId, next);
+    setLastSent(next, today);
+  } catch (err) {
+    console.error('Ошибка ежедневной отправки изречения:', err.message);
+  }
+}
+
+if (myChatId) {
+  cron.schedule('*/5 * * * *', checkAndSendDailyVerse);
 }
 
 // Проверка каждую минуту: если до начала какой-то передачи осталось 14-15
