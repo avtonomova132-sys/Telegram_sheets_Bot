@@ -564,6 +564,46 @@ bot.onText(/^\/группы(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) => {
   }
 });
 
+// Разовая/повторная проверка volume на записи с внутренней ссылкой
+// (https://t.me/c/<id>/<номер>), для которой к этому моменту уже появилось
+// соответствие в /data/group-links.json — например, добавили его через
+// /группы уже после того, как эти записи были сохранены.
+bot.onText(/^\/обновитьссылки(?:@\S+)?$/, async (msg) => {
+  const chatId = msg.chat.id;
+
+  if (myChatId && String(chatId) !== String(myChatId)) {
+    await bot.sendMessage(chatId, 'Эта команда доступна только администратору.');
+    return;
+  }
+
+  try {
+    const all = readPeredachi();
+    const updated = [];
+
+    for (const record of all) {
+      const invite = resolveInviteLink(record.groupLink);
+      if (!invite) continue;
+      record.groupLink = invite;
+      updated.push(record);
+    }
+
+    if (updated.length === 0) {
+      await bot.sendMessage(chatId, 'Записей для обновления не найдено.');
+      return;
+    }
+
+    savePeredachi(all);
+
+    const lines = updated.map(
+      (r) => `• Курс ${r.kurs}${r.postfix ? ` (${r.postfix})` : ''} — ${r.dateISO || 'дата неизвестна'}`
+    );
+    await bot.sendMessage(chatId, `✅ Обновлено записей: ${updated.length}\n${lines.join('\n')}`);
+  } catch (err) {
+    console.error('[peredachi] ошибка обновления ссылок:', err.message);
+    await bot.sendMessage(chatId, 'Не получилось обновить ссылки 😔');
+  }
+});
+
 bot.on('polling_error', (err) => {
   console.error('Ошибка polling:', err.message);
 });
