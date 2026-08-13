@@ -1,6 +1,9 @@
 const TelegramBot = require('node-telegram-bot-api');
 const { OpenAI, toFile } = require('openai');
 const { generateWeeklyReport, generateCheckReport, chunkMessage } = require('./report');
+const { extractPeredachi } = require('./peredachi/extract');
+const { addRecords, readAll: readPeredachi } = require('./peredachi/store');
+const { formatPeredachiReply } = require('./peredachi/query');
 
 const token = process.env.BOT_TOKEN;
 const openaiKey = process.env.OPENAI_API_KEY;
@@ -157,6 +160,62 @@ bot.onText(/\/weekly\b/, (msg) => {
 
 bot.onText(/\/(check|report)\b/, (msg) => {
   handleReportCommand(msg.chat.id, 'проверку по текущей неделе', generateCheckReport);
+});
+
+// ===== Прямые передачи курсов "Пять домов" =====
+bot.onText(/^\/добавить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const argText = match[1] ? match[1].trim() : '';
+  const replyText = msg.reply_to_message?.text || msg.reply_to_message?.caption || '';
+  const rawText = argText || replyText;
+
+  if (!rawText) {
+    await bot.sendMessage(
+      chatId,
+      'Использование: /добавить <текст сообщения от учителя>\nили ответь командой /добавить на сообщение с текстом.'
+    );
+    return;
+  }
+
+  try {
+    await bot.sendMessage(chatId, 'Распознаю текст... 🧠');
+
+    const entries = await extractPeredachi(rawText);
+    if (entries.length === 0) {
+      await bot.sendMessage(chatId, 'Не нашёл в тексте информации о передачах. Проверь текст или добавь вручную.');
+      return;
+    }
+
+    const saved = addRecords(entries, rawText);
+    const lines = saved.map((r) => {
+      const kursLabel = r.postfix ? `${r.kurs} (${r.postfix})` : r.kurs || '?';
+      const dateLabel = r.dateISO || 'дата неизвестна';
+      const timeLabel = r.timeMSK ? `, ${r.timeMSK} МСК` : '';
+      return `• Курс ${kursLabel} — ${dateLabel}${timeLabel}`;
+    });
+
+    await bot.sendMessage(chatId, `✅ Добавлено записей: ${saved.length}\n\n${lines.join('\n')}`);
+  } catch (err) {
+    console.error('[peredachi] ошибка распознавания/сохранения:', err.message);
+    await bot.sendMessage(
+      chatId,
+      'Не смог распознать 😔 Попробуй переслать текст ещё раз или добавь вручную командой /добавить_вручную.'
+    );
+  }
+});
+
+bot.onText(/^\/передачи(?:@\S+)?(?:\s+(\S+))?$/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const kursArg = match[1] ? match[1].trim() : null;
+
+  try {
+    const all = readPeredachi();
+    const reply = formatPeredachiReply(all, kursArg);
+    await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
+  } catch (err) {
+    console.error('[peredachi] ошибка формирования списка передач:', err.message);
+    await bot.sendMessage(chatId, 'Не получилось получить список передач 😔');
+  }
 });
 
 bot.on('polling_error', (err) => {
