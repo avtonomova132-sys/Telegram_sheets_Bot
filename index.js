@@ -152,13 +152,14 @@ bot.onText(/\/(check|report)\b/, (msg) => {
 
 async function sendVerseImage(chatId, verseNumber) {
   const buffer = await generateVerseImageBuffer(verseNumber);
-  // send_sticker (не send_document) — так карточка приходит "парящей" на фоне
-  // чата, без рамки файла, которую Telegram рисует для обычных документов.
-  await bot.sendSticker(
+  // send_photo (не send_document/send_sticker) — Telegram сожмёт PNG в JPEG
+  // и зальёт прозрачные углы белым, это осознанный компромисс: зато фото
+  // открывается на весь экран с приближением текста и без рамки файла.
+  await bot.sendPhoto(
     chatId,
     buffer,
     {},
-    { filename: `verse-${verseNumber}.webp`, contentType: 'image/webp' }
+    { filename: `verse-${verseNumber}.png`, contentType: 'image/png' }
   );
 }
 

@@ -21,11 +21,11 @@
 
 Чёрный фон вокруг листа — прозрачный (плавное затухание к рваным краям).
 
-generate_verse_image() возвращает RGBA-изображение в исходном размере листа.
-При запуске из командной строки (см. ниже) картинка дополнительно
-уменьшается под формат Telegram-стикера (одна сторона ровно 512px) и
-сохраняется как WEBP — чтобы бот мог отправить её через send_sticker и
-получить "парящую" карточку без рамки файла, вместо send_document.
+Результат: RGBA PNG в исходном размере листа. Отправляется в Telegram через
+send_photo — прозрачность при этом теряется (Telegram сжимает фото в JPEG,
+углы станут белыми), это осознанный выбор: photo, в отличие от document и
+sticker, открывается на весь экран с приближением текста и не обрамляется
+рамкой файла.
 """
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import numpy as np
@@ -231,17 +231,8 @@ if __name__ == "__main__":
     import sys
 
     verse_number = int(sys.argv[1]) if len(sys.argv) > 1 else 1
-    out_path = sys.argv[2] if len(sys.argv) > 2 else "test_output.webp"
+    out_path = sys.argv[2] if len(sys.argv) > 2 else "test_output.png"
 
     img = generate_verse_image(verse_number)
-
-    # Формат стикера Telegram: одна сторона ровно 512px, другая — пропорционально.
-    w, h = img.size
-    if w >= h:
-        new_size = (512, round(h * 512 / w))
-    else:
-        new_size = (round(w * 512 / h), 512)
-    img = img.resize(new_size, Image.LANCZOS)
-
-    img.save(out_path, "WEBP", quality=90)
+    img.save(out_path)
     print(f"OK, saved {out_path}")
