@@ -10,6 +10,7 @@ const { extractPeredachi } = require('./peredachi/extract');
 const { addRecords, readAll: readPeredachi, saveAll: savePeredachi } = require('./peredachi/store');
 const { formatPeredachiReply } = require('./peredachi/query');
 const { analyzeDuplicates } = require('./peredachi/dedupe');
+const { validateEntry, describeEntry } = require('./peredachi/validate');
 
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
@@ -258,7 +259,17 @@ bot.onText(/^\/добавить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) 
       return;
     }
 
-    const { added, updated, skipped } = addRecords(entries, rawText);
+    const validEntries = [];
+    const invalidEntries = [];
+    for (const entry of entries) {
+      const { valid, missing } = validateEntry(entry);
+      if (valid) {
+        validEntries.push(entry);
+      } else {
+        invalidEntries.push({ entry, missing });
+      }
+    }
+
     const describe = (r) => {
       const kursLabel = r.postfix ? `${r.kurs} (${r.postfix})` : r.kurs || '?';
       const dateLabel = r.dateISO || 'дата неизвестна';
@@ -267,14 +278,27 @@ bot.onText(/^\/добавить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) 
     };
 
     const blocks = [];
-    if (added.length > 0) {
-      blocks.push(`✅ Добавлено новых: ${added.length}\n${added.map(describe).join('\n')}`);
+
+    if (validEntries.length > 0) {
+      const { added, updated, skipped } = addRecords(validEntries, rawText);
+      if (added.length > 0) {
+        blocks.push(`✅ Добавлено новых: ${added.length}\n${added.map(describe).join('\n')}`);
+      }
+      if (updated.length > 0) {
+        blocks.push(`🔄 Обновлено (дополнены данными): ${updated.length}\n${updated.map(describe).join('\n')}`);
+      }
+      if (skipped.length > 0) {
+        blocks.push(`⏭️ Пропущено как дубли: ${skipped.length}\n${skipped.map(describe).join('\n')}`);
+      }
     }
-    if (updated.length > 0) {
-      blocks.push(`🔄 Обновлено (дополнены данными): ${updated.length}\n${updated.map(describe).join('\n')}`);
-    }
-    if (skipped.length > 0) {
-      blocks.push(`⏭️ Пропущено как дубли: ${skipped.length}\n${skipped.map(describe).join('\n')}`);
+
+    if (invalidEntries.length > 0) {
+      const lines = invalidEntries.map(
+        ({ entry, missing }) => `— ${describeEntry(entry)} — не хватает: ${missing.join(' / ')}`
+      );
+      blocks.push(
+        `⚠️ Не удалось сохранить (не хватает данных):\n${lines.join('\n')}\n\nДополни текст этой информацией и отправь через /добавить ещё раз.`
+      );
     }
 
     await bot.sendMessage(chatId, blocks.join('\n\n') || 'Ничего не изменилось.');
