@@ -37,6 +37,7 @@ const { readAll: readEvents, addEvent } = require('./events/store');
 const { analyzePhoto, isConfigured: gabarityConfigured } = require('./gabarity/extract');
 const { saveArticlesFile, findArticle } = require('./gabarity/articles');
 const { buildResultText: buildGabarityText } = require('./gabarity/format');
+const { isTrustedUser } = require('./auth');
 
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
@@ -379,6 +380,12 @@ if (myChatId) {
 // ===== Прямые передачи курсов "Пять домов" =====
 bot.onText(/^\/добавить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) => {
   const chatId = msg.chat.id;
+
+  if (!isTrustedUser(chatId)) {
+    await bot.sendMessage(chatId, 'Эта команда доступна только организаторам.');
+    return;
+  }
+
   const argText = match[1] ? match[1].trim() : '';
   const replyText = msg.reply_to_message?.text || msg.reply_to_message?.caption || '';
   const rawText = argText || replyText;
@@ -512,8 +519,8 @@ bot.onText(/^\/медитаци[яи](?:@\S+)?$/, async (msg) => {
 bot.onText(/^\/дубли(?:@\S+)?$/, async (msg) => {
   const chatId = msg.chat.id;
 
-  if (myChatId && String(chatId) !== String(myChatId)) {
-    await bot.sendMessage(chatId, 'Эта команда доступна только администратору.');
+  if (!isTrustedUser(chatId)) {
+    await bot.sendMessage(chatId, 'Эта команда доступна только организаторам.');
     return;
   }
 
@@ -584,8 +591,8 @@ bot.onText(/^\/дубли(?:@\S+)?$/, async (msg) => {
 bot.onText(/^\/разделить(?:@\S+)?$/, async (msg) => {
   const chatId = msg.chat.id;
 
-  if (myChatId && String(chatId) !== String(myChatId)) {
-    await bot.sendMessage(chatId, 'Эта команда доступна только администратору.');
+  if (!isTrustedUser(chatId)) {
+    await bot.sendMessage(chatId, 'Эта команда доступна только организаторам.');
     return;
   }
 
@@ -640,8 +647,8 @@ bot.onText(/^\/разделить(?:@\S+)?$/, async (msg) => {
 bot.onText(/^\/группы(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) => {
   const chatId = msg.chat.id;
 
-  if (myChatId && String(chatId) !== String(myChatId)) {
-    await bot.sendMessage(chatId, 'Эта команда доступна только администратору.');
+  if (!isTrustedUser(chatId)) {
+    await bot.sendMessage(chatId, 'Эта команда доступна только организаторам.');
     return;
   }
 
@@ -685,8 +692,8 @@ bot.onText(/^\/группы(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) => {
 bot.onText(/^\/обновитьссылки(?:@\S+)?$/, async (msg) => {
   const chatId = msg.chat.id;
 
-  if (myChatId && String(chatId) !== String(myChatId)) {
-    await bot.sendMessage(chatId, 'Эта команда доступна только администратору.');
+  if (!isTrustedUser(chatId)) {
+    await bot.sendMessage(chatId, 'Эта команда доступна только организаторам.');
     return;
   }
 
