@@ -722,6 +722,65 @@ async function generateCheckReport(now = new Date()) {
   return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
 }
 
+// Bali (Asia/Makassar) is a fixed UTC+8 zone, no DST — same shift-the-clock
+// trick used for the verse schedule in verse/progress.js, kept independent
+// here so the periodic host check reads "this week" the way a person in
+// Bali would, regardless of what the container's own clock/timezone is.
+const BALI_OFFSET_MS = 8 * 60 * 60 * 1000;
+
+function baliNow(now = new Date()) {
+  return new Date(now.getTime() + BALI_OFFSET_MS);
+}
+
+// The week containing `now`, Monday to Sunday, using the Bali calendar date
+// rather than the server's/UTC's — used by the periodic auto-check so the
+// day boundary matches Elena's own "today".
+function getCurrentWeekRangeBali(now = new Date()) {
+  const bali = baliNow(now);
+  const day = bali.getUTCDay();
+  const daysSinceMonday = (day + 6) % 7;
+  const start = new Date(Date.UTC(bali.getUTCFullYear(), bali.getUTCMonth(), bali.getUTCDate() - daysSinceMonday));
+  const end = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate() + 6));
+  return { start, end };
+}
+
+function formatBaliStamp(now = new Date()) {
+  const bali = baliNow(now);
+  const day = bali.getUTCDate();
+  const month = MONTHS_RU_GENITIVE[bali.getUTCMonth()];
+  const hh = pad2(bali.getUTCHours());
+  const mm = pad2(bali.getUTCMinutes());
+  return `${day} ${month}, ${hh}:${mm} по Бали`;
+}
+
+// Periodic background check (see CHECK_INTERVAL_HOURS in index.js) — same
+// underlying data as /check, but always for the CURRENT week by Bali time,
+// and it never posts anywhere on its own. When something is missing it hands
+// back a copy-pasteable announcement (the same /check text) prefixed with a
+// short heads-up, so Elena can review it privately before sending it to the
+// group herself.
+async function generateAutoHostCheck(now = new Date()) {
+  const range = getCurrentWeekRangeBali(now);
+  const { events, failedTabs, hostSignupUrl, debugCounts } = await collectWeekEvents(range);
+  const missing = events.filter((e) => !e.hasHost).length;
+  const stamp = formatBaliStamp(now);
+
+  const text =
+    missing === 0
+      ? `✅ Проверка ${stamp}: все хосты на месте (${events.length} эфиров за неделю).`
+      : `Готово для отправки в группу 👇\n\n${buildCheckMessage(events, range, hostSignupUrl, loadCommunityTags())}`;
+
+  return {
+    text,
+    allClear: missing === 0,
+    total: events.length,
+    missing,
+    range,
+    failedTabs,
+    debug: formatDebugCounts(debugCounts, range),
+  };
+}
+
 function chunkMessage(text, maxLen = 3500) {
   const paragraphs = text.split('\n\n');
   const chunks = [];
@@ -748,8 +807,10 @@ module.exports = {
   parseTimeToMinutes,
   parseTabEvents,
   getCurrentWeekRange,
+  getCurrentWeekRangeBali,
   getNextWeekRange,
   collectWeekEvents,
+  generateAutoHostCheck,
   buildWeeklyMessage,
   buildCheckMessage,
   generateWeeklyReport,

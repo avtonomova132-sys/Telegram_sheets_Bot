@@ -3,7 +3,7 @@ const express = require('express');
 const cron = require('node-cron');
 const TelegramBot = require('node-telegram-bot-api');
 const { OpenAI, toFile } = require('openai');
-const { generateWeeklyReport, generateCheckReport, chunkMessage } = require('./report');
+const { generateWeeklyReport, generateCheckReport, generateAutoHostCheck, chunkMessage } = require('./report');
 const { generateVerseImageBuffer } = require('./verse/generateVerseImage');
 const {
   getVerseCount,
@@ -38,6 +38,10 @@ app.listen(port, () => console.log(`HTTP-сервер запущен на пор
 const token = process.env.BOT_TOKEN;
 const openaiKey = process.env.OPENAI_API_KEY;
 const myChatId = process.env.MY_CHAT_ID;
+// Как часто фоново перепроверять хостов на текущую неделю — только себе в
+// личку (см. секцию "Автопроверка хостов" ниже). Поменять на 3 часа:
+// CHECK_INTERVAL_HOURS=3 в переменных окружения Railway, без правки кода.
+const CHECK_INTERVAL_HOURS = Number(process.env.CHECK_INTERVAL_HOURS) || 4;
 
 if (!token) {
   console.error('BOT_TOKEN не задан! Добавьте переменную окружения BOT_TOKEN.');
@@ -200,6 +204,49 @@ bot.onText(/\/weekly\b/, (msg) => {
 bot.onText(/\/(check|report)\b/, (msg) => {
   handleReportCommand(msg.chat.id, 'проверку по текущей неделе', generateCheckReport);
 });
+
+// ===== Автопроверка хостов =====
+// Периодически (раз в CHECK_INTERVAL_HOURS) пересчитывает хостов на текущую
+// (по Бали) неделю и присылает результат только Елене в личку — если чего-то
+// не хватает, текст уже готов для копирования в группу, но бот сам его
+// никуда, кроме личного чата, не отправляет.
+async function runAutoHostCheck(chatId) {
+  const { text, failedTabs, debug } = await generateAutoHostCheck();
+
+  for (const chunk of chunkMessage(text)) {
+    await bot.sendMessage(chatId, chunk);
+  }
+
+  if (failedTabs.length > 0) {
+    await bot.sendMessage(
+      chatId,
+      `⚠️ Не удалось загрузить данные из вкладок:\n${failedTabs.join('\n')}\n\nПроверка проведена по остальным вкладкам.`
+    );
+  }
+
+  if (debug) console.log(debug);
+}
+
+// Ручной запуск вне расписания — чтобы свериться с реальным результатом, не
+// дожидаясь ближайшего тика cron'а, пока формат/точность ещё проверяются.
+bot.onText(/^\/автопроверка(?:@\S+)?$/, async (msg) => {
+  try {
+    await runAutoHostCheck(msg.chat.id);
+  } catch (err) {
+    console.error('[auto-host-check] ошибка ручного запуска:', err.message);
+    await bot.sendMessage(msg.chat.id, `Не получилось выполнить проверку 😔 ${err.message}`);
+  }
+});
+
+if (myChatId) {
+  cron.schedule(`0 */${CHECK_INTERVAL_HOURS} * * *`, async () => {
+    try {
+      await runAutoHostCheck(myChatId);
+    } catch (err) {
+      console.error('[auto-host-check] ошибка фоновой проверки:', err.message);
+    }
+  });
+}
 
 // ===== Изречения =====
 async function sendVerseImage(chatId, verseNumber) {
