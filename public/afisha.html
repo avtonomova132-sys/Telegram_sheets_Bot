@@ -340,6 +340,7 @@ const i18n = {
     "fmt-online":"Онлайн", "fmt-offline":"Офлайн", "fmt-records":"Записи",
     labelAZ: "Аризона (MST)", labelMSK: "Москва (MSK)",
     labelWho: "Ведёт", labelWhere: "Где", labelOpen: "Открыть →",
+    labelCity: "Город", labelLang: "Языки",
     aboutLabel: "О программе",
     footer: "Черновик · WVP 2026 · данные будут дополняться",
     emptyDefault: "Пока нет событий в этой категории — скоро добавим"
@@ -352,6 +353,7 @@ const i18n = {
     "fmt-online":"Online", "fmt-offline":"In person", "fmt-records":"Recordings",
     labelAZ: "Arizona (MST)", labelMSK: "Moscow (MSK)",
     labelWho: "Teacher", labelWhere: "Where", labelOpen: "Open →",
+    labelCity: "City", labelLang: "Languages",
     aboutLabel: "About the program",
     footer: "Draft · WVP 2026 · content will keep growing",
     emptyDefault: "Nothing here yet — more coming soon"
@@ -693,9 +695,11 @@ function render(){
         </div>
         <h3>${title}</h3>
         <div class="meta">
-          <div><b>${t.labelAZ}:</b> ${az}</div>
-          <div><b>${t.labelMSK}:</b> ${msk}</div>
+          ${az ? `<div><b>${t.labelAZ}:</b> ${az}</div>` : ""}
+          ${msk ? `<div><b>${t.labelMSK}:</b> ${msk}</div>` : ""}
           <div><b>${t.labelWho}:</b> ${e.who}</div>
+          ${e.city ? `<div><b>${t.labelCity}:</b> ${e.city}</div>` : ""}
+          ${e.lang ? `<div><b>${t.labelLang}:</b> ${e.lang}</div>` : ""}
         </div>
         <a class="link" href="${e.link}" target="_blank" rel="noopener noreferrer">${t.labelOpen}</a>
       </div>
@@ -703,9 +707,84 @@ function render(){
   }).join("");
 }
 
+// Соответствие названий программ, которые хранит /api/events (см. events/
+// constants.js на сервере), внутренним id, которыми оперирует эта страница.
+const PROGRAM_ID_BY_NAME = {
+  "Пять домов": "domov",
+  "Xuanzang's Tower": "xuanzang",
+  "ACI with Timothy Lowenhaupt": "timothy",
+  "Blue Sky Friends": "bluesky",
+  "ACI with Ven. Utpala": "utpala",
+  "Peach Tree": "peachtree"
+};
+
+const WEEKDAYS = {
+  ru: ["Вс","Пн","Вт","Ср","Чт","Пт","Сб"],
+  en: ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]
+};
+const MONTHS = {
+  ru: ["января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"],
+  en: ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+};
+
+function formatApiDate(iso, time, lang){
+  if(!iso || !time) return "";
+  const [y, m, d] = iso.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  const wd = WEEKDAYS[lang][dt.getUTCDay()];
+  const mo = MONTHS[lang][m - 1];
+  return lang === "ru" ? `${wd}, ${d} ${mo} ${y}, ${time}` : `${wd}, ${mo} ${d}, ${y}, ${time}`;
+}
+
+// Приводит запись из /api/events (схема events/store.js на сервере) к
+// формату карточки, которым уже оперирует render(). Событие с программой,
+// не входящей в PROGRAM_ID_BY_NAME, пропускается — лучше молча скрыть
+// нераспознанную запись, чем уронить страницу.
+function mapApiEvent(e){
+  const program = PROGRAM_ID_BY_NAME[e.program];
+  if(!program) return null;
+  const format = e.format === "recording" ? "records" : e.format;
+  const title_ru = e.title_ru || e.teacher || "";
+  const title_en = e.title_en || e.teacher || "";
+  return {
+    program, format,
+    title_ru, title_en,
+    az_ru: formatApiDate(e.date_az, e.time_az, "ru"),
+    az_en: formatApiDate(e.date_az, e.time_az, "en"),
+    msk_ru: formatApiDate(e.date_msk, e.time_msk, "ru"),
+    msk_en: formatApiDate(e.date_msk, e.time_msk, "en"),
+    who: e.teacher || "—",
+    city: e.city || "",
+    lang: e.lang || "",
+    link: e.link || "#"
+  };
+}
+
+// События из /api/events (добавленные через /new в боте) дополняют
+// захардкоженный список выше. Если запрос не удался или вернул пусто —
+// просто остаёмся на захардкоженных данных, страница не должна быть пустой.
+async function loadApiEvents(){
+  try {
+    const res = await fetch("/api/events");
+    if(!res.ok) return;
+    const data = await res.json();
+    if(Array.isArray(data) && data.length > 0){
+      const mapped = data.map(mapApiEvent).filter(Boolean);
+      events.push(...mapped);
+    }
+  } catch (err) {
+    console.warn("Не удалось загрузить события с сервера, показываю сохранённые данные:", err);
+  } finally {
+    renderProgramNav();
+    renderProgramHeader();
+    render();
+  }
+}
+
 renderProgramNav();
 renderProgramHeader();
 render();
+loadApiEvents();
 </script>
 </body>
 </html>

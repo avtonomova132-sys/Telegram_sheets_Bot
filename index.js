@@ -29,9 +29,19 @@ const {
   resolveInviteLink,
 } = require('./peredachi/groupLinks');
 const { checkReminders, formatReminderMessage } = require('./peredachi/reminders');
+const { extractEvent } = require('./events/extract');
+const { validateEvent } = require('./events/validate');
+const { fillTimezones } = require('./events/timezone');
+const { buildConfirmationText } = require('./events/format');
+const { readAll: readEvents, addEvent } = require('./events/store');
 
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
+// Отдаёт события, добавленные через /new, — public/afisha.html подтягивает
+// их на клиенте поверх захардкоженного списка (см. fetch('/api/events') там).
+app.get('/api/events', (req, res) => {
+  res.json(readEvents());
+});
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`HTTP-сервер запущен на порту ${port}`));
 
@@ -96,11 +106,18 @@ function scheduleReminder(chatId, hours, minutes, message) {
   return targetBali;
 }
 
-bot.on('message', (msg) => {
+bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
 
   if (!text || text.startsWith('/')) return;
+
+  // Активная сессия /new перехватывает свободный текст первой — иначе он
+  // упал бы либо в парсер напоминаний, либо в эхо-ответ ниже.
+  if (eventSessions.has(chatId)) {
+    await handleEventDescription(chatId, text);
+    return;
+  }
 
   const reminder = parseReminder(text);
   if (reminder) {
@@ -678,6 +695,107 @@ bot.onText(/^\/обновитьссылки(?:@\S+)?$/, async (msg) => {
   } catch (err) {
     console.error('[peredachi] ошибка обновления ссылок:', err.message);
     await bot.sendMessage(chatId, 'Не получилось обновить ссылки 😔');
+  }
+});
+
+// ===== Новое событие в афише (/new) =====
+// Сессия по chatId: history — messages для Anthropic (весь диалог, чтобы
+// уточнения не теряли уже распознанный контекст), parsed — последний
+// собранный объект события, stage — 'collecting' (ждём описание/уточнения)
+// или 'confirming' (показана карточка с кнопками Да/Отменить).
+const eventSessions = new Map();
+
+bot.onText(/^\/new(?:@\S+)?$/, async (msg) => {
+  const chatId = msg.chat.id;
+  eventSessions.set(chatId, { history: [], parsed: null, stage: 'collecting' });
+  await bot.sendMessage(
+    chatId,
+    'Добавляем новое событие в афишу 🙏\n\nОпиши его одним сообщением — программа, формат (онлайн/офлайн/запись), кто ведёт, дата и время.\n\nНапример:\n«Пять домов, офлайн, Мария и Питер Мертал, 26 августа в 15:00 по Москве»\n\nЧтобы отменить в любой момент — напиши «отмена».'
+  );
+});
+
+async function handleEventDescription(chatId, text) {
+  const trimmed = text.trim();
+
+  if (/^(отмена|cancel)$/i.test(trimmed)) {
+    eventSessions.delete(chatId);
+    await bot.sendMessage(chatId, 'Отменено.');
+    return;
+  }
+
+  const session = eventSessions.get(chatId);
+  if (!session) return;
+
+  session.history.push({ role: 'user', content: trimmed });
+
+  try {
+    const { parsed, assistantText } = await extractEvent(session.history);
+    session.history.push({ role: 'assistant', content: assistantText });
+    session.parsed = parsed;
+
+    const { valid, missing } = validateEvent(parsed);
+    if (!valid) {
+      await bot.sendMessage(
+        chatId,
+        `Не хватает: ${missing.join(', ')}.\nДопиши, пожалуйста, только эту информацию (можно одним сообщением) — остальное я уже понял.`
+      );
+      return;
+    }
+
+    const complete = fillTimezones(parsed);
+    session.parsed = complete;
+    session.stage = 'confirming';
+
+    await bot.sendMessage(chatId, buildConfirmationText(complete), {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '✅ Да, добавить', callback_data: 'newevent_confirm' },
+            { text: '❌ Отменить', callback_data: 'newevent_cancel' },
+          ],
+        ],
+      },
+    });
+  } catch (err) {
+    console.error('[events] ошибка распознавания:', err.message);
+    await bot.sendMessage(chatId, `Не получилось разобрать описание 😔 ${err.message}\nПопробуй переформулировать.`);
+  }
+}
+
+bot.on('callback_query', async (query) => {
+  const data = query.data;
+  if (data !== 'newevent_confirm' && data !== 'newevent_cancel') return;
+
+  const chatId = query.message.chat.id;
+  const session = eventSessions.get(chatId);
+
+  if (!session || session.stage !== 'confirming') {
+    await bot.answerCallbackQuery(query.id, { text: 'Сессия истекла, начни заново командой /new' });
+    return;
+  }
+
+  await bot.editMessageReplyMarkup(
+    { inline_keyboard: [] },
+    { chat_id: chatId, message_id: query.message.message_id }
+  );
+
+  if (data === 'newevent_cancel') {
+    eventSessions.delete(chatId);
+    await bot.answerCallbackQuery(query.id);
+    await bot.sendMessage(chatId, 'Отменено.');
+    return;
+  }
+
+  try {
+    const addedBy = query.from.username ? `@${query.from.username}` : query.from.first_name || '';
+    addEvent(session.parsed, addedBy);
+    eventSessions.delete(chatId);
+    await bot.answerCallbackQuery(query.id, { text: 'Добавлено!' });
+    await bot.sendMessage(chatId, '✅ Событие добавлено в афишу! На сайте появится при следующем обновлении страницы.');
+  } catch (err) {
+    console.error('[events] ошибка сохранения:', err.message);
+    await bot.answerCallbackQuery(query.id, { text: 'Ошибка сохранения' });
+    await bot.sendMessage(chatId, `Не получилось сохранить 😔 ${err.message}`);
   }
 });
 
