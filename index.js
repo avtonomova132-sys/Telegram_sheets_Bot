@@ -3,7 +3,7 @@ const express = require('express');
 const cron = require('node-cron');
 const TelegramBot = require('node-telegram-bot-api');
 const { OpenAI, toFile } = require('openai');
-const { generateWeeklyReport, generateCheckReport, generateAutoHostCheck, chunkMessage } = require('./report');
+const { generateWeeklyReport, generateCheckReport, runDailyHostDiffCheck, getHostDiffLastRunDate, chunkMessage } = require('./report');
 const { generateVerseImageBuffer } = require('./verse/generateVerseImage');
 const {
   getVerseCount,
@@ -51,10 +51,6 @@ app.listen(port, () => console.log(`HTTP-сервер запущен на пор
 const token = process.env.BOT_TOKEN;
 const openaiKey = process.env.OPENAI_API_KEY;
 const myChatId = process.env.MY_CHAT_ID;
-// Как часто фоново перепроверять хостов на текущую неделю — только себе в
-// личку (см. секцию "Автопроверка хостов" ниже). Поменять на 3 часа:
-// CHECK_INTERVAL_HOURS=3 в переменных окружения Railway, без правки кода.
-const CHECK_INTERVAL_HOURS = Number(process.env.CHECK_INTERVAL_HOURS) || 4;
 
 if (!token) {
   console.error('BOT_TOKEN не задан! Добавьте переменную окружения BOT_TOKEN.');
@@ -232,16 +228,22 @@ bot.onText(/\/(check|report)\b/, (msg) => {
   handleReportCommand(msg.chat.id, 'проверку по текущей неделе', generateCheckReport);
 });
 
-// ===== Автопроверка хостов =====
-// Периодически (раз в CHECK_INTERVAL_HOURS) пересчитывает хостов на текущую
-// (по Бали) неделю и присылает результат только Елене в личку — если чего-то
-// не хватает, текст уже готов для копирования в группу, но бот сам его
-// никуда, кроме личного чата, не отправляет.
-async function runAutoHostCheck(chatId) {
-  const { text, failedTabs, debug } = await generateAutoHostCheck();
+// ===== Ежедневная diff-проверка хостов =====
+// Раз в день (в 9:00 по Бали) сравнивает вкладки из daily-check-tabs.json с
+// тем, что было при прошлой проверке (снимок на Railway Volume), и пишет
+// Елене в личку ТОЛЬКО если что-то реально изменилось: у уже назначенного
+// хоста эфир опустел, или в расписании появился эфир, которого вчера не
+// было. Если изменений нет — тишина, никакого "всё ок" сообщения. /check
+// эту логику не использует и продолжает отвечать всегда, по запросу.
+async function runDiffCheck(chatId, { updateLastRunDate = false, announceNoChange = false } = {}) {
+  const { text, failedTabs } = await runDailyHostDiffCheck(new Date(), { updateLastRunDate });
 
-  for (const chunk of chunkMessage(text)) {
-    await bot.sendMessage(chatId, chunk);
+  if (text) {
+    for (const chunk of chunkMessage(text)) {
+      await bot.sendMessage(chatId, chunk);
+    }
+  } else if (announceNoChange) {
+    await bot.sendMessage(chatId, 'Изменений с прошлой проверки не найдено — тишина 🤫');
   }
 
   if (failedTabs.length > 0) {
@@ -250,29 +252,37 @@ async function runAutoHostCheck(chatId) {
       `⚠️ Не удалось загрузить данные из вкладок:\n${failedTabs.join('\n')}\n\nПроверка проведена по остальным вкладкам.`
     );
   }
-
-  if (debug) console.log(debug);
 }
 
-// Ручной запуск вне расписания — чтобы свериться с реальным результатом, не
-// дожидаясь ближайшего тика cron'а, пока формат/точность ещё проверяются.
+// Ручной запуск вне расписания — всегда отвечает (даже "изменений нет"),
+// чтобы можно было свериться с реальным результатом прямо сейчас. Не
+// трогает lastRunDate, так что не мешает следующему плановому тику в 9:00.
 bot.onText(/^\/автопроверка(?:@\S+)?$/, async (msg) => {
   try {
-    await runAutoHostCheck(msg.chat.id);
+    await runDiffCheck(msg.chat.id, { updateLastRunDate: false, announceNoChange: true });
   } catch (err) {
-    console.error('[auto-host-check] ошибка ручного запуска:', err.message);
+    console.error('[host-diff] ошибка ручного запуска:', err.message);
     await bot.sendMessage(msg.chat.id, `Не получилось выполнить проверку 😔 ${err.message}`);
   }
 });
 
+// Тот же "проверяем каждые 5 минут, сработало ли время" паттерн, что и у
+// ежедневного изречения — устойчив к пропущенному ровно-в-9:00 тику
+// (например, из-за рестарта контейнера).
+async function checkAndRunDailyHostDiff() {
+  const today = baliDateString();
+  if (getHostDiffLastRunDate() === today) return; // сегодня уже проверяли
+  if (baliHour() < 9) return; // ещё не наступило 9:00 по Бали
+
+  try {
+    await runDiffCheck(myChatId, { updateLastRunDate: true, announceNoChange: false });
+  } catch (err) {
+    console.error('[host-diff] ошибка ежедневной проверки:', err.message);
+  }
+}
+
 if (myChatId) {
-  cron.schedule(`0 */${CHECK_INTERVAL_HOURS} * * *`, async () => {
-    try {
-      await runAutoHostCheck(myChatId);
-    } catch (err) {
-      console.error('[auto-host-check] ошибка фоновой проверки:', err.message);
-    }
-  });
+  cron.schedule('*/5 * * * *', checkAndRunDailyHostDiff);
 }
 
 // ===== Изречения =====
@@ -898,7 +908,7 @@ async function finalizeGabaritySession(chatId) {
       lookup = findArticle(session.articleId);
     } catch (err) {
       if (err.code === 'ARTICLES_NOT_LOADED') {
-        await bot.sendMessage(chatId, 'Список артикулов ещё не загружен — сначала пришли его командой /загрузить_артикулы.');
+        await bot.sendMessage(chatId, 'Список артикулов ещё не загружен — сначала пришли его командой /z.');
         return;
       }
       throw err;
@@ -907,7 +917,7 @@ async function finalizeGabaritySession(chatId) {
     if (!lookup) {
       await bot.sendMessage(
         chatId,
-        `Артикул "${session.articleId}" не найден в загруженном списке 😔 Проверь, актуален ли файл (/загрузить_артикулы), или сверь артикул вручную.`
+        `Артикул "${session.articleId}" не найден в загруженном списке 😔 Проверь, актуален ли файл (/z), или сверь артикул вручную.`
       );
       return;
     }
@@ -965,7 +975,7 @@ bot.onText(/^\/габариты(?:@\S+)?$/, async (msg) => {
   await bot.sendMessage(
     msg.chat.id,
     'Помогаю поправить габариты товара для Ozon 📦\n\n' +
-      '1) Если ещё не загружала список артикулов — пришли его командой /загрузить_артикулы (.csv или .xlsx, колонки Артикул, SKU, Название).\n\n' +
+      '1) Если ещё не загружала список артикулов — пришли его командой /z (.csv или .xlsx, колонки Артикул, SKU, Название).\n\n' +
       '2) Дальше просто присылай фото товара: этикетка с артикулом и линейка (см), и по желанию — фото весов (кг). Можно одним фото, если видно всё сразу, можно несколькими подряд (у тебя есть ~2 минуты между фото) — я сам соберу данные и пришлю готовый текст для техподдержки Ozon.'
   );
 });
@@ -1038,7 +1048,7 @@ bot.on('photo', async (msg) => {
   }
 });
 
-// ===== Загрузка списка артикулов (/загрузить_артикулы) =====
+// ===== Загрузка списка артикулов (/z) =====
 // Файл можно прислать как есть с подписью-командой, либо сначала отправить
 // команду, а файл — следующим сообщением (ждём до ARTICLES_UPLOAD_WAIT_MS).
 const pendingArticlesUpload = new Map();
@@ -1068,7 +1078,7 @@ async function processArticlesDocument(chatId, document) {
 // bot.onText матчится только против msg.text — у сообщения с документом
 // текста нет (только caption, если он есть), поэтому вариант "команда
 // подписью к файлу" целиком обрабатывается ниже в bot.on('document', ...).
-bot.onText(/^\/загрузить_артикулы(?:@\S+)?$/, async (msg) => {
+bot.onText(/^\/z(?:@\S+)?$/, async (msg) => {
   const chatId = msg.chat.id;
   pendingArticlesUpload.set(chatId, Date.now());
   await bot.sendMessage(
@@ -1080,7 +1090,7 @@ bot.onText(/^\/загрузить_артикулы(?:@\S+)?$/, async (msg) => {
 bot.on('document', async (msg) => {
   const chatId = msg.chat.id;
   const caption = (msg.caption || '').trim();
-  const isUploadCommand = /^\/загрузить_артикулы(?:@\S+)?$/.test(caption);
+  const isUploadCommand = /^\/z(?:@\S+)?$/.test(caption);
   const waitingSince = pendingArticlesUpload.get(chatId);
 
   if (!isUploadCommand && !waitingSince) return;
@@ -1088,7 +1098,7 @@ bot.on('document', async (msg) => {
   pendingArticlesUpload.delete(chatId);
 
   if (!isUploadCommand && Date.now() - waitingSince > ARTICLES_UPLOAD_WAIT_MS) {
-    await bot.sendMessage(chatId, 'Слишком долго ждал файл — отправь команду /загрузить_артикулы заново.');
+    await bot.sendMessage(chatId, 'Слишком долго ждал файл — отправь команду /z заново.');
     return;
   }
 

@@ -804,42 +804,128 @@ function getCurrentWeekRangeBali(now = new Date()) {
   return { start, end };
 }
 
-function formatBaliStamp(now = new Date()) {
-  const bali = baliNow(now);
-  const day = bali.getUTCDate();
-  const month = MONTHS_RU_GENITIVE[bali.getUTCMonth()];
-  const hh = pad2(bali.getUTCHours());
-  const mm = pad2(bali.getUTCMinutes());
-  return `${day} ${month}, ${hh}:${mm} по Бали`;
+// Which tabs the DAILY diff-check watches — deliberately a separate,
+// short-listed file from tabs-config.json (used by /weekly and /check),
+// since Elena is still confirming with her team whether a couple of tabs
+// that do have dated events should ever be host-monitored at all. Only she
+// adds to this list.
+const DAILY_CHECK_TABS_PATH = path.join(__dirname, 'daily-check-tabs.json');
+
+function loadDailyCheckTabs() {
+  try {
+    return JSON.parse(fs.readFileSync(DAILY_CHECK_TABS_PATH, 'utf8'));
+  } catch {
+    return [];
+  }
 }
 
-// Periodic background check (see CHECK_INTERVAL_HOURS in index.js) — same
-// underlying data as /check, but always for the CURRENT week by Bali time,
-// and it never posts anywhere on its own. When something is missing it hands
-// back a copy-pasteable announcement (the same /check text) prefixed with a
-// short heads-up, so Elena can review it privately before sending it to the
-// group herself.
-async function generateAutoHostCheck(now = new Date()) {
+// Snapshot of the monitored tabs' current-week events (just host name +
+// whether one's assigned, keyed by tab+date+start-time) — persisted on the
+// Railway Volume so day N's run can be compared against day N-1's, the same
+// pattern verse/progress.js uses for its own state.
+const HOST_DIFF_STATE_PATH = process.env.HOST_DIFF_STATE_PATH || '/data/host_diff_state.json';
+
+function readDiffState() {
+  try {
+    return JSON.parse(fs.readFileSync(HOST_DIFF_STATE_PATH, 'utf8'));
+  } catch {
+    return { lastRunDate: null, events: {} };
+  }
+}
+
+function writeDiffState(state) {
+  fs.mkdirSync(path.dirname(HOST_DIFF_STATE_PATH), { recursive: true });
+  const tmpPath = `${HOST_DIFF_STATE_PATH}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2));
+  fs.renameSync(tmpPath, HOST_DIFF_STATE_PATH);
+}
+
+function getHostDiffLastRunDate() {
+  return readDiffState().lastRunDate;
+}
+
+// Date + start time alone (not the host) — stable identity for the same
+// physical session across two different days' snapshots.
+function eventKey(e) {
+  return `${e.tabName}::${e.date.toISOString().slice(0, 10)}::${e.azStartMin}`;
+}
+
+function diffStamp(e) {
+  return `${formatMonthDayRu(e.date)}, Аризона ${formatPoint24h(e.azStartMin)}, Москва ${formatPoint24h(e.mskStartMin)}`;
+}
+
+// Daily background diff-check (see index.js for the 9:00-Bali schedule) —
+// only looks at the tabs in daily-check-tabs.json, only the current (Bali)
+// week, and only ever DMs Elena when something actually changed since the
+// last run: a previously-assigned host went missing, or a session that
+// wasn't in yesterday's snapshot showed up. No news, no message — unlike
+// /check, which always answers because she's the one asking.
+async function runDailyHostDiffCheck(now = new Date(), { updateLastRunDate = false } = {}) {
+  const config = loadConfig();
+  const monitoredGids = new Set(loadDailyCheckTabs().map((t) => t.gid));
+  const monitoredTabs = config.tabs.filter((t) => monitoredGids.has(t.gid));
   const range = getCurrentWeekRangeBali(now);
-  const { events, failedTabs, hostSignupUrl, debugCounts } = await collectWeekEvents(range);
-  const missing = events.filter((e) => !e.hasHost).length;
-  const stamp = formatBaliStamp(now);
-  const weekLabel = formatWeekRangeRu(range.start, range.end);
 
-  const text =
-    missing === 0
-      ? `✅ Проверка ${stamp} — неделя ${weekLabel}: все хосты на месте (${events.length} эфиров за неделю).`
-      : `Готово для отправки в группу 👇\n\n${buildCheckMessage(events, range, hostSignupUrl, loadCommunityTags())}`;
+  const allEvents = [];
+  const failedTabs = [];
 
-  return {
-    text,
-    allClear: missing === 0,
-    total: events.length,
-    missing,
-    range,
-    failedTabs,
-    debug: formatDebugCounts(debugCounts, range),
-  };
+  await Promise.all(
+    monitoredTabs.map(async (tab) => {
+      try {
+        const events = await fetchTabEvents(config.spreadsheetId, tab);
+        allEvents.push(...events.filter((e) => inRange(e.date, range.start, range.end)));
+      } catch (err) {
+        failedTabs.push(`${tab.name}: ${err.message}`);
+      }
+    })
+  );
+
+  const currentByKey = new Map(allEvents.map((e) => [eventKey(e), e]));
+  const prevState = readDiffState();
+  const prevEvents = prevState.events || {};
+
+  const hostRemoved = [];
+  const newEvents = [];
+  for (const [key, e] of currentByKey) {
+    const prev = prevEvents[key];
+    if (!prev) {
+      newEvents.push(e);
+    } else if (prev.hasHost && !e.hasHost) {
+      hostRemoved.push({ event: e, previousHost: prev.host });
+    }
+  }
+
+  const snapshot = {};
+  for (const [key, e] of currentByKey) {
+    snapshot[key] = { host: e.host, hasHost: e.hasHost };
+  }
+  writeDiffState({
+    lastRunDate: updateLastRunDate ? baliNow(now).toISOString().slice(0, 10) : prevState.lastRunDate,
+    events: snapshot,
+  });
+
+  if (hostRemoved.length === 0 && newEvents.length === 0) {
+    return { text: null, hostRemoved: 0, newEvents: 0, failedTabs };
+  }
+
+  const lines = [];
+  for (const { event: e, previousHost } of hostRemoved) {
+    lines.push(
+      `⚠️ Хост убрал себя с эфира: ${e.tabName} — ${sessionLabel(e.title)}, ${diffStamp(e)}. Был назначен: ${previousHost}. Сейчас хост не назначен.`
+    );
+  }
+  for (const e of newEvents) {
+    const hostLabel = e.hasHost ? e.host : 'не назначен';
+    lines.push(`🆕 Новый эфир в расписании: ${e.tabName} — ${sessionLabel(e.title)}, ${diffStamp(e)}, хост: ${hostLabel}.`);
+  }
+
+  if (allEvents.some((e) => !e.hasHost)) {
+    const tags = loadCommunityTags();
+    const hostSignupUrl = `https://docs.google.com/spreadsheets/d/${config.spreadsheetId}/edit?gid=${config.hostSignupGid}#gid=${config.hostSignupGid}`;
+    lines.push(buildCheckMessage(allEvents, range, hostSignupUrl, tags));
+  }
+
+  return { text: lines.join('\n\n'), hostRemoved: hostRemoved.length, newEvents: newEvents.length, failedTabs };
 }
 
 function chunkMessage(text, maxLen = 3500) {
@@ -871,7 +957,8 @@ module.exports = {
   getCurrentWeekRangeBali,
   getNextWeekRange,
   collectWeekEvents,
-  generateAutoHostCheck,
+  runDailyHostDiffCheck,
+  getHostDiffLastRunDate,
   buildWeeklyMessage,
   buildCheckMessage,
   generateWeeklyReport,
