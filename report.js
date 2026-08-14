@@ -78,6 +78,40 @@ async function fetchWithTimeout(url, ms) {
   }
 }
 
+// A handful of tabs (e.g. the one Elena calls "DCC & GBOCS") aren't one
+// program — they're several unrelated recurring programs stacked on the same
+// physical sheet (Pramana, then a completely different Zoom series, then
+// another), each introduced by its own single-cell title row followed by its
+// own "ZOOM LINK'S:" / Host header block. Returns the row's text if it's
+// exactly one non-empty cell AND looks like a real program title rather than
+// a same-program divider like "January 2026" or "DAY 1" (both short, and
+// neither introduces a genuinely different program).
+function singleNonEmptyCellText(row) {
+  let found = null;
+  for (let c = 0; c < row.length; c++) {
+    const v = normalize(row[c]);
+    if (v) {
+      if (found !== null) return null;
+      found = v;
+    }
+  }
+  return found;
+}
+
+function looksLikeProgramTitle(text) {
+  if (!text || text.length < 15) return false;
+  if (/^(day|group)\s*\d+/i.test(text)) return false;
+  if (/^[A-Za-z]+\.?\s+\d{4}$/.test(text)) return false;
+  if (/^(zoom link|recording folders?)/i.test(text)) return false;
+  return true;
+}
+
+// Trailing "(Month DD[-DD], YYYY)"-style date range, already shown elsewhere
+// in the message — trimmed off a detected title for a cleaner display name.
+function cleanProgramLabel(text) {
+  return normalize(text).replace(/\s*\([^)]*\)\s*$/, '').trim();
+}
+
 // Each program tab has its own quirky, hand-edited header block, AND most
 // tabs repeat that header block once per month as the sheet grows (a fresh
 // "Data / AZ / MSK / Host / Co-Host / ..." row every ~50 rows). A version of
@@ -88,16 +122,42 @@ async function fetchWithTimeout(url, ms) {
 // of its own segment, running until the next "Host" row (or EOF). Columns
 // are re-detected per segment since a hand-edited sheet can't be trusted to
 // keep the exact same layout in every monthly block.
-function findHeaderSegments(rows) {
+//
+// Segments also carry a `programLabel`: the configured tab name until (if
+// ever) a second, genuinely different program title is detected further
+// down the same sheet — from that point on, segments use the newly detected
+// title instead, so multi-program tabs stop mislabeling every event under
+// whichever program happened to be configured for that gid.
+function findHeaderSegments(rows, fallbackLabel) {
   const headerRowIndices = [];
+  const labelAtHeaderRow = [];
+  let currentLabel = fallbackLabel;
+  let firstTitleSeen = null;
+
   for (let r = 0; r < rows.length; r++) {
     const row = rows[r];
+
+    const titleText = singleNonEmptyCellText(row);
+    if (titleText && looksLikeProgramTitle(titleText)) {
+      const cleaned = cleanProgramLabel(titleText);
+      if (firstTitleSeen === null) {
+        firstTitleSeen = cleaned;
+      } else if (cleaned !== firstTitleSeen) {
+        currentLabel = cleaned;
+      }
+    }
+
+    let localHostCol = -1;
     for (let c = 0; c < row.length; c++) {
       if (normalize(row[c]).toLowerCase() === 'host') {
-        headerRowIndices.push(r);
+        localHostCol = c;
         break;
       }
     }
+    if (localHostCol === -1) continue;
+
+    headerRowIndices.push(r);
+    labelAtHeaderRow.push(currentLabel);
   }
   if (headerRowIndices.length === 0) return [];
 
@@ -127,6 +187,7 @@ function findHeaderSegments(rows) {
       azCol: resolvedAzCol,
       azEndCol: resolvedAzCol + 2,
       mskCol: mskCol === -1 ? 5 : mskCol,
+      programLabel: labelAtHeaderRow[i],
     };
   });
 }
@@ -191,7 +252,7 @@ function deriveMsk(azMin) {
 }
 
 function parseTabEvents(tabName, rows) {
-  const segments = findHeaderSegments(rows);
+  const segments = findHeaderSegments(rows, tabName);
   const events = [];
 
   for (const seg of segments) {
@@ -212,7 +273,7 @@ function parseTabEvents(tabName, rows) {
       const mskEnd = azEndMin !== null ? deriveMsk(azEndMin) : { min: null, dayOffset: mskStart.dayOffset };
 
       events.push({
-        tabName,
+        tabName: seg.programLabel,
         title,
         host,
         coHost,
@@ -486,23 +547,22 @@ function checkEventBlockRu(e) {
 // if everything is covered.
 function buildCheckMessage(events, range, hostSignupUrl, tags) {
   const missing = events.filter((e) => !e.hasHost);
+  const rangeEn = formatWeekRangeEn(range.start, range.end);
+  const rangeRu = formatWeekRangeRu(range.start, range.end);
 
   if (missing.length === 0) {
     const enBlock = [
-      '📝🎉 Hooray! All Zoom sessions for this week are fully covered with hosts. ✅',
+      `📝🎉 Hooray! All Zoom sessions for ${rangeEn} are fully covered with hosts. ✅`,
       'The schedule has been updated. 🙏',
       'Thank you, everyone, for your generous service and support! 💙',
     ].join('\n\n');
     const ruBlock = [
-      '📝🎉 Ура! На эту неделю все Zoom-эфиры с хостами. ✅',
+      `📝🎉 Ура! На неделю ${rangeRu} все Zoom-эфиры с хостами. ✅`,
       'В табличке всё отмечено. 🙏',
       'Благодарим каждого за ваше щедрое служение и поддержку! 💙',
     ].join('\n\n');
     return [enBlock, ruBlock].join('\n\n');
   }
-
-  const rangeEn = formatWeekRangeEn(range.start, range.end);
-  const rangeRu = formatWeekRangeRu(range.start, range.end);
 
   const enBody = missing.map(checkEventBlockEn).join('\n\n');
   const ruBody = missing.map(checkEventBlockRu).join('\n\n');
@@ -764,10 +824,11 @@ async function generateAutoHostCheck(now = new Date()) {
   const { events, failedTabs, hostSignupUrl, debugCounts } = await collectWeekEvents(range);
   const missing = events.filter((e) => !e.hasHost).length;
   const stamp = formatBaliStamp(now);
+  const weekLabel = formatWeekRangeRu(range.start, range.end);
 
   const text =
     missing === 0
-      ? `✅ Проверка ${stamp}: все хосты на месте (${events.length} эфиров за неделю).`
+      ? `✅ Проверка ${stamp} — неделя ${weekLabel}: все хосты на месте (${events.length} эфиров за неделю).`
       : `Готово для отправки в группу 👇\n\n${buildCheckMessage(events, range, hostSignupUrl, loadCommunityTags())}`;
 
   return {
