@@ -34,6 +34,9 @@ const { validateEvent } = require('./events/validate');
 const { fillTimezones } = require('./events/timezone');
 const { buildConfirmationText } = require('./events/format');
 const { readAll: readEvents, addEvent } = require('./events/store');
+const { analyzePhoto, isConfigured: gabarityConfigured } = require('./gabarity/extract');
+const { saveArticlesFile, findArticle } = require('./gabarity/articles');
+const { buildResultText: buildGabarityText } = require('./gabarity/format');
 
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
@@ -111,6 +114,13 @@ bot.on('message', async (msg) => {
   const text = msg.text;
 
   if (!text || text.startsWith('/')) return;
+
+  // Уточнение стороны измерения (/габариты) перехватывает свободный текст
+  // первым — пока сессия ждёт ответа "ширина/длина/высота", это сообщение
+  // не должно попасть ни в напоминания, ни в /new, ни в эхо-ответ.
+  if (await handleGabarityClarification(chatId, text)) {
+    return;
+  }
 
   // Активная сессия /new перехватывает свободный текст первой — иначе он
   // упал бы либо в парсер напоминаний, либо в эхо-ответ ниже.
@@ -797,6 +807,292 @@ bot.on('callback_query', async (query) => {
     await bot.answerCallbackQuery(query.id, { text: 'Ошибка сохранения' });
     await bot.sendMessage(chatId, `Не получилось сохранить 😔 ${err.message}`);
   }
+});
+
+// ===== Габариты Ozon (/габариты) =====
+// Сессия по chatId копит распознанные данные с нескольких фото одного
+// товара (этикетка+линейка, отдельно весы), пока не наберётся достаточно
+// данных или не истечёт ~2 минуты с первого фото. pending — счётчик фото,
+// которые сейчас в обработке (ждём ответ Anthropic) — пока он больше 0,
+// сессию не завершаем, чтобы не потерять данные фото, которое ещё летит.
+const gabaritySessions = new Map();
+const GABARITY_DEBOUNCE_MS = 8 * 1000; // тишина после последнего фото перед обработкой
+const GABARITY_MAX_MS = 2 * 60 * 1000; // жёсткий потолок сессии с первого фото
+
+function clearGabarityTimers(session) {
+  if (session.debounceTimer) clearTimeout(session.debounceTimer);
+  if (session.maxTimer) clearTimeout(session.maxTimer);
+}
+
+function isGabaritySessionComplete(session) {
+  return Boolean(
+    session.articleId &&
+      session.width != null &&
+      session.length != null &&
+      session.height != null &&
+      session.weightKg != null
+  );
+}
+
+function scheduleGabarityDebounce(chatId) {
+  const session = gabaritySessions.get(chatId);
+  if (!session) return;
+  if (session.debounceTimer) clearTimeout(session.debounceTimer);
+  session.debounceTimer = setTimeout(() => finalizeGabaritySession(chatId), GABARITY_DEBOUNCE_MS);
+}
+
+// После обработки фото (или ответа на уточнение) решает, завершать сессию
+// сейчас или подождать ещё немного — единая точка входа, чтобы условие
+// "pending === 0 && не ждём уточнения" не дублировалось в трёх местах.
+function maybeAdvanceGabaritySession(chatId) {
+  const session = gabaritySessions.get(chatId);
+  if (!session || session.pending > 0 || session.awaitingClarification) return;
+
+  if (isGabaritySessionComplete(session)) {
+    finalizeGabaritySession(chatId);
+  } else {
+    scheduleGabarityDebounce(chatId);
+  }
+}
+
+// Возвращает список measurements с axis "unknown" — их не удалось привязать
+// к стороне автоматически, вызывающий код решает, нужно ли уточнение.
+function mergeGabarityResult(session, result) {
+  if (result.articleId && !session.articleId) {
+    session.articleId = result.articleId;
+  }
+  if (result.weightKg !== null && session.weightKg == null) {
+    session.weightKg = result.weightKg;
+  }
+
+  const unknowns = [];
+  for (const m of result.measurements) {
+    if (m.axis === 'unknown') {
+      unknowns.push(m.valueCm);
+      continue;
+    }
+    if (session[m.axis] == null) {
+      session[m.axis] = m.valueCm;
+    }
+  }
+  return unknowns;
+}
+
+async function finalizeGabaritySession(chatId) {
+  const session = gabaritySessions.get(chatId);
+  if (!session) return;
+  clearGabarityTimers(session);
+  gabaritySessions.delete(chatId);
+
+  try {
+    if (!session.articleId) {
+      await bot.sendMessage(
+        chatId,
+        'Не удалось распознать артикул ни на одном фото 😔 Пришли фото этикетки с артикулом ещё раз, покрупнее и почётче.'
+      );
+      return;
+    }
+
+    let lookup;
+    try {
+      lookup = findArticle(session.articleId);
+    } catch (err) {
+      if (err.code === 'ARTICLES_NOT_LOADED') {
+        await bot.sendMessage(chatId, 'Список артикулов ещё не загружен — сначала пришли его командой /загрузить_артикулы.');
+        return;
+      }
+      throw err;
+    }
+
+    if (!lookup) {
+      await bot.sendMessage(
+        chatId,
+        `Артикул "${session.articleId}" не найден в загруженном списке 😔 Проверь, актуален ли файл (/загрузить_артикулы), или сверь артикул вручную.`
+      );
+      return;
+    }
+
+    const text = buildGabarityText({
+      sku: lookup.sku,
+      articleId: session.articleId,
+      widthCm: session.width,
+      lengthCm: session.length,
+      heightCm: session.height,
+      weightKg: session.weightKg,
+    });
+
+    await bot.sendMessage(chatId, text);
+  } catch (err) {
+    console.error('[gabarity] ошибка завершения сессии:', err.message);
+    await bot.sendMessage(chatId, `Не получилось собрать результат 😔 ${err.message}`);
+  }
+}
+
+// Возвращает true, если сообщение было уточнением стороны измерения и уже
+// обработано (вызывающий код должен остановиться и не передавать текст
+// дальше другим обработчикам).
+async function handleGabarityClarification(chatId, text) {
+  const session = gabaritySessions.get(chatId);
+  if (!session || !session.awaitingClarification) return false;
+
+  const answer = text.trim().toLowerCase();
+  const axisMap = {
+    ширина: 'width',
+    ш: 'width',
+    длина: 'length',
+    длинна: 'length',
+    д: 'length',
+    высота: 'height',
+    в: 'height',
+  };
+  const axis = axisMap[answer];
+
+  if (!axis) {
+    await bot.sendMessage(chatId, 'Не понял ответ — напиши одно слово: ширина, длина или высота.');
+    return true;
+  }
+
+  if (session[axis] == null) {
+    session[axis] = session.awaitingClarification.valueCm;
+  }
+  session.awaitingClarification = null;
+
+  maybeAdvanceGabaritySession(chatId);
+  return true;
+}
+
+bot.onText(/^\/габариты(?:@\S+)?$/, async (msg) => {
+  await bot.sendMessage(
+    msg.chat.id,
+    'Помогаю поправить габариты товара для Ozon 📦\n\n' +
+      '1) Если ещё не загружала список артикулов — пришли его командой /загрузить_артикулы (.csv или .xlsx, колонки Артикул, SKU, Название).\n\n' +
+      '2) Дальше просто присылай фото товара: этикетка с артикулом и линейка (см), и по желанию — фото весов (кг). Можно одним фото, если видно всё сразу, можно несколькими подряд (у тебя есть ~2 минуты между фото) — я сам соберу данные и пришлю готовый текст для техподдержки Ozon.'
+  );
+});
+
+bot.on('photo', async (msg) => {
+  const chatId = msg.chat.id;
+
+  if (!gabarityConfigured) {
+    await bot.sendMessage(chatId, 'Распознавание фото пока не настроено (нет ANTHROPIC_API_KEY) 😔');
+    return;
+  }
+
+  let session = gabaritySessions.get(chatId);
+  const isNewSession = !session;
+  if (!session) {
+    session = {
+      pending: 0,
+      articleId: null,
+      width: null,
+      length: null,
+      height: null,
+      weightKg: null,
+      awaitingClarification: null,
+      debounceTimer: null,
+      maxTimer: null,
+    };
+    gabaritySessions.set(chatId, session);
+    session.maxTimer = setTimeout(() => finalizeGabaritySession(chatId), GABARITY_MAX_MS);
+  }
+
+  if (session.debounceTimer) {
+    clearTimeout(session.debounceTimer);
+    session.debounceTimer = null;
+  }
+  session.pending += 1;
+
+  if (isNewSession) {
+    bot
+      .sendMessage(
+        chatId,
+        '🔍 Вижу фото, распознаю... Если это не всё — пришли остальные фото (этикетка+линейка, весы) в течение пары минут, я сам соберу данные вместе.'
+      )
+      .catch(() => {});
+  }
+
+  try {
+    const photos = msg.photo;
+    const best = photos[photos.length - 1];
+    const fileLink = await bot.getFileLink(best.file_id);
+    const response = await fetch(fileLink);
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    const result = await analyzePhoto(buffer);
+    const unknowns = mergeGabarityResult(session, result);
+
+    if (unknowns.length > 0 && !session.awaitingClarification) {
+      session.awaitingClarification = { valueCm: unknowns[0] };
+      await bot.sendMessage(
+        chatId,
+        `На фото вижу измерение ${unknowns[0]} см, но не могу понять, это ширина, длина или высота — уточни, пожалуйста, одним словом (ширина / длина / высота).`
+      );
+    }
+  } catch (err) {
+    console.error('[gabarity] ошибка обработки фото:', err.message);
+    await bot.sendMessage(chatId, 'Не получилось обработать это фото 😔 Попробуй переслать его ещё раз.');
+  } finally {
+    session.pending -= 1;
+    maybeAdvanceGabaritySession(chatId);
+  }
+});
+
+// ===== Загрузка списка артикулов (/загрузить_артикулы) =====
+// Файл можно прислать как есть с подписью-командой, либо сначала отправить
+// команду, а файл — следующим сообщением (ждём до ARTICLES_UPLOAD_WAIT_MS).
+const pendingArticlesUpload = new Map();
+const ARTICLES_UPLOAD_WAIT_MS = 5 * 60 * 1000;
+
+async function processArticlesDocument(chatId, document) {
+  const fileName = document.file_name || '';
+  if (!/\.(csv|xlsx|xls)$/i.test(fileName)) {
+    await bot.sendMessage(chatId, 'Нужен файл в формате .csv, .xlsx или .xls с колонками Артикул, SKU, Название.');
+    return;
+  }
+
+  try {
+    const fileLink = await bot.getFileLink(document.file_id);
+    const response = await fetch(fileLink);
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    const count = saveArticlesFile(buffer);
+    await bot.sendMessage(chatId, `✅ Загружено артикулов: ${count}. Список сохранён и заменил предыдущий.`);
+  } catch (err) {
+    console.error('[gabarity] ошибка загрузки списка артикулов:', err.message);
+    await bot.sendMessage(chatId, `Не получилось загрузить файл 😔 ${err.message}`);
+  }
+}
+
+// bot.onText матчится только против msg.text — у сообщения с документом
+// текста нет (только caption, если он есть), поэтому вариант "команда
+// подписью к файлу" целиком обрабатывается ниже в bot.on('document', ...).
+bot.onText(/^\/загрузить_артикулы(?:@\S+)?$/, async (msg) => {
+  const chatId = msg.chat.id;
+  pendingArticlesUpload.set(chatId, Date.now());
+  await bot.sendMessage(
+    chatId,
+    'Пришли файл со списком артикулов (.csv или .xlsx) — колонки Артикул, SKU, Название. Новый файл заменит предыдущий.'
+  );
+});
+
+bot.on('document', async (msg) => {
+  const chatId = msg.chat.id;
+  const caption = (msg.caption || '').trim();
+  const isUploadCommand = /^\/загрузить_артикулы(?:@\S+)?$/.test(caption);
+  const waitingSince = pendingArticlesUpload.get(chatId);
+
+  if (!isUploadCommand && !waitingSince) return;
+
+  pendingArticlesUpload.delete(chatId);
+
+  if (!isUploadCommand && Date.now() - waitingSince > ARTICLES_UPLOAD_WAIT_MS) {
+    await bot.sendMessage(chatId, 'Слишком долго ждал файл — отправь команду /загрузить_артикулы заново.');
+    return;
+  }
+
+  await processArticlesDocument(chatId, msg.document);
 });
 
 bot.on('polling_error', (err) => {

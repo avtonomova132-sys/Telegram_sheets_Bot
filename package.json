@@ -11,7 +11,8 @@
     "express": "^4.19.2",
     "node-cron": "^3.0.3",
     "node-telegram-bot-api": "^0.66.0",
-    "openai": "^4.52.0"
+    "openai": "^4.52.0",
+    "xlsx": "^0.18.5"
   },
   "engines": {
     "node": ">=18"
