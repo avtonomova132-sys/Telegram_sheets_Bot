@@ -3,7 +3,7 @@ const { OpenAI, toFile } = require('openai');
 const { generateWeeklyReport, generateCheckReport, chunkMessage } = require('./report');
 const { extractPeredachi } = require('./peredachi/extract');
 const { addRecords, readAll: readPeredachi } = require('./peredachi/store');
-const { formatPeredachiReply } = require('./peredachi/query');
+const { formatPeredachiReply, formatMeditationsReply } = require('./peredachi/query');
 
 const token = process.env.BOT_TOKEN;
 const openaiKey = process.env.OPENAI_API_KEY;
@@ -18,12 +18,36 @@ const openai = openaiKey ? new OpenAI({ apiKey: openaiKey, maxRetries: 0, timeou
 
 console.log('Бот запущен и слушает сообщения...');
 
+const HELP_TEXT =
+  'Привет! 🙏 Я твой бот-помощник.\n\n' +
+  'Я умею отвечать на сообщения, напоминать о делах (просто напиши "напомни ... в 15:00 ...") и собирать отчёты по расписанию (/weekly, /check).\n\n' +
+  'Команды:\n' +
+  '/menu — главное меню с кнопками\n' +
+  '/vhouses — курсы «Пять домов»\n' +
+  '/weekly — расписание хостинга (полный обзор недели)\n' +
+  '/check — проверка по текущей неделе\n' +
+  '/передачи [курс] — ближайшие передачи\n' +
+  '/добавить — добавить передачу вручную\n' +
+  '/help — эта справка';
+
+const REMINDERS_INFO_TEXT =
+  '🔔 Напоминания\n\n' +
+  'Чтобы поставить напоминание, просто напиши сообщение в формате:\n' +
+  '"напомни <текст> в 15:00"\n\n' +
+  'Я напомню в указанное время (по Бали).';
+
+// TODO: подключить реальный источник стихов Уттаратантры — пока такой
+// функции/данных в проекте нет, отдаём заглушку вместо выдуманного текста.
+function getVerseOfDayText() {
+  return '📖 Стих дня (Уттаратантра)\n\nФункция в разработке — скоро здесь будет ежедневный стих с комментарием.';
+}
+
 bot.onText(/\/start/, (msg) => {
-  const chatId = msg.chat.id;
-  bot.sendMessage(
-    chatId,
-    'Привет! 🙏 Я твой бот-помощник.\n\nЯ умею отвечать на сообщения, напоминать о делах (просто напиши "напомни ... в 15:00 ...") и собирать отчёты по расписанию (/weekly, /check).'
-  );
+  bot.sendMessage(msg.chat.id, HELP_TEXT);
+});
+
+bot.onText(/^\/help(?:@\S+)?$/, (msg) => {
+  bot.sendMessage(msg.chat.id, HELP_TEXT);
 });
 
 // ===== Напоминания =====
@@ -204,10 +228,7 @@ bot.onText(/^\/добавить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) 
   }
 });
 
-bot.onText(/^\/передачи(?:@\S+)?(?:\s+(\S+))?$/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const kursArg = match[1] ? match[1].trim() : null;
-
+async function sendPeredachiReply(chatId, kursArg) {
   try {
     const all = readPeredachi();
     const reply = formatPeredachiReply(all, kursArg);
@@ -215,6 +236,116 @@ bot.onText(/^\/передачи(?:@\S+)?(?:\s+(\S+))?$/, async (msg, match) => {
   } catch (err) {
     console.error('[peredachi] ошибка формирования списка передач:', err.message);
     await bot.sendMessage(chatId, 'Не получилось получить список передач 😔');
+  }
+}
+
+async function sendMeditationsReply(chatId) {
+  try {
+    const all = readPeredachi();
+    const reply = formatMeditationsReply(all);
+    await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
+  } catch (err) {
+    console.error('[peredachi] ошибка формирования списка медитаций:', err.message);
+    await bot.sendMessage(chatId, 'Не получилось получить список медитаций 😔');
+  }
+}
+
+bot.onText(/^\/передачи(?:@\S+)?(?:\s+(\S+))?$/, (msg, match) => {
+  sendPeredachiReply(msg.chat.id, match[1] ? match[1].trim() : null);
+});
+
+// /курс1 .. /курс6 — то же самое, что /передачи <N>, просто короче набирать.
+for (let n = 1; n <= 6; n++) {
+  bot.onText(new RegExp(`^/курс${n}(?:@\\S+)?$`), (msg) => {
+    sendPeredachiReply(msg.chat.id, String(n));
+  });
+}
+
+bot.onText(/^\/медитации(?:@\S+)?$/, (msg) => {
+  sendMeditationsReply(msg.chat.id);
+});
+
+bot.onText(/^\/стих(?:@\S+)?$/, (msg) => {
+  bot.sendMessage(msg.chat.id, getVerseOfDayText());
+});
+
+bot.onText(/^\/напоминания(?:@\S+)?$/, (msg) => {
+  bot.sendMessage(msg.chat.id, REMINDERS_INFO_TEXT);
+});
+
+// ===== Inline-меню =====
+function mainMenuKeyboard() {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '📅 Расписание хостинга', callback_data: 'menu:weekly' }],
+        [{ text: '📖 Стих дня', callback_data: 'menu:verse' }],
+        [{ text: '🏠 Пять домов', callback_data: 'menu:vhouses' }],
+        [{ text: '🔔 Напоминания', callback_data: 'menu:reminders' }],
+        [{ text: 'ℹ️ Помощь', callback_data: 'menu:help' }],
+      ],
+    },
+  };
+}
+
+function vhousesKeyboard() {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: 'Курс 1', callback_data: 'vhouses:kurs:1' },
+          { text: 'Курс 2', callback_data: 'vhouses:kurs:2' },
+        ],
+        [
+          { text: 'Курс 3', callback_data: 'vhouses:kurs:3' },
+          { text: 'Курс 4', callback_data: 'vhouses:kurs:4' },
+        ],
+        [
+          { text: 'Курс 5', callback_data: 'vhouses:kurs:5' },
+          { text: 'Курс 6', callback_data: 'vhouses:kurs:6' },
+        ],
+        [{ text: '🧘 Медитации', callback_data: 'vhouses:meditations' }],
+      ],
+    },
+  };
+}
+
+bot.onText(/^\/menu(?:@\S+)?$/, (msg) => {
+  bot.sendMessage(msg.chat.id, 'Главное меню 👇', mainMenuKeyboard());
+});
+
+bot.onText(/^\/vhouses(?:@\S+)?$/, (msg) => {
+  bot.sendMessage(msg.chat.id, '🏠 Пять домов — выбери курс:', vhousesKeyboard());
+});
+
+bot.on('callback_query', async (query) => {
+  const chatId = query.message?.chat.id;
+  const data = query.data || '';
+
+  try {
+    if (chatId) {
+      if (data === 'menu:weekly') {
+        await handleReportCommand(chatId, 'полный обзор недели', generateWeeklyReport);
+      } else if (data === 'menu:verse') {
+        await bot.sendMessage(chatId, getVerseOfDayText());
+      } else if (data === 'menu:vhouses') {
+        await bot.sendMessage(chatId, '🏠 Пять домов — выбери курс:', vhousesKeyboard());
+      } else if (data === 'menu:reminders') {
+        await bot.sendMessage(chatId, REMINDERS_INFO_TEXT);
+      } else if (data === 'menu:help') {
+        await bot.sendMessage(chatId, HELP_TEXT);
+      } else if (data.startsWith('vhouses:kurs:')) {
+        await sendPeredachiReply(chatId, data.slice('vhouses:kurs:'.length));
+      } else if (data === 'vhouses:meditations') {
+        await sendMeditationsReply(chatId);
+      }
+    }
+  } catch (err) {
+    console.error('Ошибка обработки callback_query:', err.message);
+  } finally {
+    bot.answerCallbackQuery(query.id).catch((err) => {
+      console.error('Ошибка answerCallbackQuery:', err.message);
+    });
   }
 });
 

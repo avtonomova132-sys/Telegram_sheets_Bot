@@ -136,6 +136,22 @@ function formatPeredachiReply(all, kursArg) {
   return sortedKeys.map((key) => formatCourseSection(key, groups.get(key).slice(0, 3))).join('\n\n\n');
 }
 
+// Медитации не выделены отдельным "курсом" в данных — это записи любого
+// курса, где в поле zanyatie упомянута медитация (см. схему в extract.js).
+function formatMeditationsReply(all) {
+  const now = getNowMsk();
+  const upcoming = sortRecords(
+    all.filter((r) => isUpcoming(r, now) && /медитац/i.test(r.zanyatie || ''))
+  );
+
+  if (upcoming.length === 0) {
+    return 'Пока нет данных о предстоящих медитациях. Появится информация — сразу будет здесь.';
+  }
+
+  const header = '🧘 *Медитации — ближайшие:*';
+  return `${header}\n\n${upcoming.map(formatRecordBlock).join('\n\n')}`;
+}
+
 module.exports = {
   getNowMsk,
   extractCourseNumbers,
@@ -144,4 +160,5 @@ module.exports = {
   sortRecords,
   formatDateRu,
   formatPeredachiReply,
+  formatMeditationsReply,
 };
