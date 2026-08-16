@@ -109,16 +109,25 @@ function looksLikeProgramTitle(text) {
 // A length/pattern check alone isn't enough: rows that hold just one
 // language track's "Recorder & BK" name (e.g. "My Lan @MyLan0608", "Rocio
 // Diaz @LaChioDiaz") also end up as the sole non-empty cell whenever every
-// other language column is blank for that session — and those names are
-// often 15+ characters too. What genuinely distinguishes a new program's
-// title is that it's shortly followed by its own "ZOOM LINK'S:" row; a
-// leftover interpreter name never is.
-function hasNearbyZoomLink(rows, fromIndex, window = 10) {
+// other language column is blank for that session — and those names, and
+// even decorative one-off remarks ("Yeiii Evgeny speaks German!!"), are
+// often 15+ characters too. A loose "zoom link somewhere in the next N
+// rows" check still caught these on live data, because tabs that repeat
+// their header block monthly also reprint the SAME "ZOOM LINK'S:" every
+// month — so a stray name dozens of rows before an unrelated month's
+// reprint would coincidentally satisfy "nearby". What genuinely
+// distinguishes a new program's title is that the very next non-blank
+// row after it (skipping only blank rows — month dividers like "January
+// 2026" don't count as blank, so a title followed by one of those before
+// reaching the actual link correctly fails this) IS "ZOOM LINK'S:";
+// nothing else legitimately sits between a real title and its own link.
+function hasNearbyZoomLink(rows, fromIndex, window = 15) {
   const end = Math.min(rows.length, fromIndex + window);
   for (let r = fromIndex; r < end; r++) {
-    for (let c = 0; c < rows[r].length; c++) {
-      if (/zoom link/i.test(normalize(rows[r][c]))) return true;
-    }
+    const row = rows[r];
+    const isBlank = !row.some((cell) => normalize(cell).length > 0);
+    if (isBlank) continue;
+    return row.some((cell) => /zoom link/i.test(normalize(cell)));
   }
   return false;
 }
@@ -162,29 +171,26 @@ function findHeaderSegments(rows, fallbackLabel) {
   const labelAtHeaderRow = [];
   let currentLabel = fallbackLabel;
   let firstTitleSeen = null;
-  // Once we cross a "Materials" row, nothing until the next real "Host" row
-  // is eligible to be picked up as a program title — otherwise a stray
-  // single-populated-cell row inside or after that archive table could still
-  // relabel whatever real section comes next, even though its own rows are
-  // separately excluded from event parsing.
-  let inMaterialsBlock = false;
 
   for (let r = 0; r < rows.length; r++) {
     const row = rows[r];
 
-    if (isMaterialsBoundaryRow(row)) {
-      inMaterialsBlock = true;
-    }
-
-    if (!inMaterialsBlock) {
-      const titleText = singleNonEmptyCellText(row);
-      if (titleText && looksLikeProgramTitle(titleText) && hasNearbyZoomLink(rows, r + 1)) {
-        const cleaned = cleanProgramLabel(titleText);
-        if (firstTitleSeen === null) {
-          firstTitleSeen = cleaned;
-        } else if (cleaned !== firstTitleSeen) {
-          currentLabel = cleaned;
-        }
+    // No materials-block gating here (on purpose): a legitimate new
+    // program's title routinely appears right after the PREVIOUS program's
+    // trailing Materials archive, before any new "Host" row — gating this
+    // on "have we crossed a Materials row" suppressed real titles (Armenia
+    // Retreat, several ACI parts) that immediately follow one. The strict
+    // hasNearbyZoomLink check above is what actually keeps this safe: a
+    // Materials-block row is either multi-cell or too short to ever pass
+    // it, materials-boundary exclusion for event ROWS is handled entirely
+    // separately below (per-segment endRowIndex clamping).
+    const titleText = singleNonEmptyCellText(row);
+    if (titleText && looksLikeProgramTitle(titleText) && hasNearbyZoomLink(rows, r + 1)) {
+      const cleaned = cleanProgramLabel(titleText);
+      if (firstTitleSeen === null) {
+        firstTitleSeen = cleaned;
+      } else if (cleaned !== firstTitleSeen) {
+        currentLabel = cleaned;
       }
     }
 
@@ -197,7 +203,6 @@ function findHeaderSegments(rows, fallbackLabel) {
     }
     if (localHostCol === -1) continue;
 
-    inMaterialsBlock = false; // a fresh section starts at this header row
     headerRowIndices.push(r);
     labelAtHeaderRow.push(currentLabel);
   }
