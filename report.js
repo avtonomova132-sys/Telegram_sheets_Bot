@@ -145,22 +145,46 @@ function cleanProgramLabel(text) {
 // down the same sheet — from that point on, segments use the newly detected
 // title instead, so multi-program tabs stop mislabeling every event under
 // whichever program happened to be configured for that gid.
+// Every program tab we've checked ends its real schedule with an archive
+// table — "Materials" / "YT Links" / "Playlist" followed by "Class 1", "Class
+// 2", ... rows of past-recording links — reusing the exact same columns as
+// the live schedule above it. Those "Class N" rows have no time of their own
+// (so they'd normally be filtered out anyway), but the language-link cell
+// that happens to land in the Host column position ends up looking like a
+// non-empty "host" — a plain YouTube URL. Once flagged, nothing from this
+// row to the end of the segment is treated as schedule data.
+function isMaterialsBoundaryRow(row) {
+  return row.some((cell) => normalize(cell).toLowerCase() === 'materials');
+}
+
 function findHeaderSegments(rows, fallbackLabel) {
   const headerRowIndices = [];
   const labelAtHeaderRow = [];
   let currentLabel = fallbackLabel;
   let firstTitleSeen = null;
+  // Once we cross a "Materials" row, nothing until the next real "Host" row
+  // is eligible to be picked up as a program title — otherwise a stray
+  // single-populated-cell row inside or after that archive table could still
+  // relabel whatever real section comes next, even though its own rows are
+  // separately excluded from event parsing.
+  let inMaterialsBlock = false;
 
   for (let r = 0; r < rows.length; r++) {
     const row = rows[r];
 
-    const titleText = singleNonEmptyCellText(row);
-    if (titleText && looksLikeProgramTitle(titleText) && hasNearbyZoomLink(rows, r + 1)) {
-      const cleaned = cleanProgramLabel(titleText);
-      if (firstTitleSeen === null) {
-        firstTitleSeen = cleaned;
-      } else if (cleaned !== firstTitleSeen) {
-        currentLabel = cleaned;
+    if (isMaterialsBoundaryRow(row)) {
+      inMaterialsBlock = true;
+    }
+
+    if (!inMaterialsBlock) {
+      const titleText = singleNonEmptyCellText(row);
+      if (titleText && looksLikeProgramTitle(titleText) && hasNearbyZoomLink(rows, r + 1)) {
+        const cleaned = cleanProgramLabel(titleText);
+        if (firstTitleSeen === null) {
+          firstTitleSeen = cleaned;
+        } else if (cleaned !== firstTitleSeen) {
+          currentLabel = cleaned;
+        }
       }
     }
 
@@ -173,6 +197,7 @@ function findHeaderSegments(rows, fallbackLabel) {
     }
     if (localHostCol === -1) continue;
 
+    inMaterialsBlock = false; // a fresh section starts at this header row
     headerRowIndices.push(r);
     labelAtHeaderRow.push(currentLabel);
   }
@@ -192,7 +217,13 @@ function findHeaderSegments(rows, fallbackLabel) {
       if (mskCol === -1 && v.includes('msk')) mskCol = c;
     }
     const resolvedAzCol = azCol === -1 ? 2 : azCol;
-    const endRowIndex = i + 1 < headerRowIndices.length ? headerRowIndices[i + 1] : rows.length;
+    let endRowIndex = i + 1 < headerRowIndices.length ? headerRowIndices[i + 1] : rows.length;
+    for (let r = headerRowIndex + 1; r < endRowIndex; r++) {
+      if (isMaterialsBoundaryRow(rows[r])) {
+        endRowIndex = r;
+        break;
+      }
+    }
 
     return {
       headerRowIndex,
@@ -279,28 +310,28 @@ function parseTabEvents(tabName, rows) {
       const row = rows[r];
       const title = normalize(row[seg.titleCol]);
       const host = normalize(row[seg.hostCol]);
+      const azStartMin = parseTimeToMinutes(row[seg.azCol]);
+      const azEndMin = parseTimeToMinutes(row[seg.azEndCol]);
 
-      // A real, already-scheduled event can have its topic/title cell blank
-      // (host signed up before the session got a name, e.g. Blue Sky
-      // Friends) — so we can't gate on title alone. And a second class on
-      // the same day (e.g. a same-morning Q&A right after the main class)
-      // often doesn't repeat the date at all, only the time — so if neither
-      // the title nor the date cell itself yields a date, but this row does
-      // have a title or host, fall back to whatever date the segment most
-      // recently saw. What's actually safe to skip is a row with NONE of
-      // title, host, or date: that's a true divider/continuation/unused
-      // placeholder slot, not a session.
+      // A real, already-scheduled slot can have its topic/host cells blank
+      // (topic not decided yet, or nobody's signed up as host — it should
+      // still show up asking for one) — so we can't gate on title or host.
+      // What every real slot DOES have is a full start–end time, which is
+      // exactly what a stray non-schedule row (a leftover archive/materials
+      // row, an unused duplicate template row) lacks — so that's the actual
+      // gate. A second class on the same day (e.g. a same-morning Q&A right
+      // after the main class) often doesn't repeat the date, only the time,
+      // so a dateless-but-timed row still falls back to whatever date the
+      // segment most recently saw.
       let date = parseDateFromText(title) || parseDateFromText(row[seg.dateCol]);
       if (date) {
         lastKnownDate = date;
-      } else if ((title || host) && lastKnownDate) {
+      } else if (azStartMin !== null && azEndMin !== null && lastKnownDate) {
         date = lastKnownDate;
       }
-      if (!date || (!title && !host)) continue;
+      if (!date || azStartMin === null || azEndMin === null) continue;
 
       const coHost = seg.coHostCol !== -1 ? normalize(row[seg.coHostCol]) : '';
-      const azStartMin = parseTimeToMinutes(row[seg.azCol]);
-      const azEndMin = parseTimeToMinutes(row[seg.azEndCol]);
 
       const mskStart = deriveMsk(azStartMin);
       const mskEnd = azEndMin !== null ? deriveMsk(azEndMin) : { min: null, dayOffset: mskStart.dayOffset };
