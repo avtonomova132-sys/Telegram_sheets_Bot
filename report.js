@@ -273,18 +273,31 @@ function parseTabEvents(tabName, rows) {
   const events = [];
 
   for (const seg of segments) {
+    let lastKnownDate = null;
+
     for (let r = seg.headerRowIndex + 1; r < seg.endRowIndex; r++) {
       const row = rows[r];
       const title = normalize(row[seg.titleCol]);
-      // A real, already-scheduled event can still have its topic/title cell
-      // blank (host signed up before the session got a name) — so we can't
-      // gate on title alone. Section dividers and continuation rows have
-      // neither a title nor a parseable date, which is what actually makes
-      // them safe to skip.
-      const date = parseDateFromText(title) || parseDateFromText(row[seg.dateCol]);
-      if (!date) continue;
-
       const host = normalize(row[seg.hostCol]);
+
+      // A real, already-scheduled event can have its topic/title cell blank
+      // (host signed up before the session got a name, e.g. Blue Sky
+      // Friends) — so we can't gate on title alone. And a second class on
+      // the same day (e.g. a same-morning Q&A right after the main class)
+      // often doesn't repeat the date at all, only the time — so if neither
+      // the title nor the date cell itself yields a date, but this row does
+      // have a title or host, fall back to whatever date the segment most
+      // recently saw. What's actually safe to skip is a row with NONE of
+      // title, host, or date: that's a true divider/continuation/unused
+      // placeholder slot, not a session.
+      let date = parseDateFromText(title) || parseDateFromText(row[seg.dateCol]);
+      if (date) {
+        lastKnownDate = date;
+      } else if ((title || host) && lastKnownDate) {
+        date = lastKnownDate;
+      }
+      if (!date || (!title && !host)) continue;
+
       const coHost = seg.coHostCol !== -1 ? normalize(row[seg.coHostCol]) : '';
       const azStartMin = parseTimeToMinutes(row[seg.azCol]);
       const azEndMin = parseTimeToMinutes(row[seg.azEndCol]);
