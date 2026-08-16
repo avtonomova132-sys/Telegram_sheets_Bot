@@ -106,6 +106,23 @@ function looksLikeProgramTitle(text) {
   return true;
 }
 
+// A length/pattern check alone isn't enough: rows that hold just one
+// language track's "Recorder & BK" name (e.g. "My Lan @MyLan0608", "Rocio
+// Diaz @LaChioDiaz") also end up as the sole non-empty cell whenever every
+// other language column is blank for that session — and those names are
+// often 15+ characters too. What genuinely distinguishes a new program's
+// title is that it's shortly followed by its own "ZOOM LINK'S:" row; a
+// leftover interpreter name never is.
+function hasNearbyZoomLink(rows, fromIndex, window = 10) {
+  const end = Math.min(rows.length, fromIndex + window);
+  for (let r = fromIndex; r < end; r++) {
+    for (let c = 0; c < rows[r].length; c++) {
+      if (/zoom link/i.test(normalize(rows[r][c]))) return true;
+    }
+  }
+  return false;
+}
+
 // Trailing "(Month DD[-DD], YYYY)"-style date range, already shown elsewhere
 // in the message — trimmed off a detected title for a cleaner display name.
 function cleanProgramLabel(text) {
@@ -138,7 +155,7 @@ function findHeaderSegments(rows, fallbackLabel) {
     const row = rows[r];
 
     const titleText = singleNonEmptyCellText(row);
-    if (titleText && looksLikeProgramTitle(titleText)) {
+    if (titleText && looksLikeProgramTitle(titleText) && hasNearbyZoomLink(rows, r + 1)) {
       const cleaned = cleanProgramLabel(titleText);
       if (firstTitleSeen === null) {
         firstTitleSeen = cleaned;
@@ -259,8 +276,11 @@ function parseTabEvents(tabName, rows) {
     for (let r = seg.headerRowIndex + 1; r < seg.endRowIndex; r++) {
       const row = rows[r];
       const title = normalize(row[seg.titleCol]);
-      if (!title) continue; // section dividers / continuation rows have no title
-
+      // A real, already-scheduled event can still have its topic/title cell
+      // blank (host signed up before the session got a name) — so we can't
+      // gate on title alone. Section dividers and continuation rows have
+      // neither a title nor a parseable date, which is what actually makes
+      // them safe to skip.
       const date = parseDateFromText(title) || parseDateFromText(row[seg.dateCol]);
       if (!date) continue;
 
@@ -486,6 +506,14 @@ function sessionLabel(title) {
   return cut.trim().replace(/[-–—]\s*$/, '').trim();
 }
 
+// "{tabName} — {session label}", but some already-scheduled events have no
+// title yet (topic not decided, host signed up anyway) — don't show a bare
+// trailing dash for those, just the program name on its own.
+function programLine(tabName, title) {
+  const label = sessionLabel(title);
+  return label ? `${tabName} — ${label}` : tabName;
+}
+
 function ruIsOneForm(n) {
   return n % 10 === 1 && n % 100 !== 11;
 }
@@ -613,7 +641,7 @@ function weeklyHostLineRu(e) {
 function weeklyEventBlockEn(e) {
   return [
     `📅 ${formatWeeklyDateEn(e.date)}`,
-    `${programEmoji(e.tabName)} ${e.tabName} — ${sessionLabel(e.title)}`,
+    `${programEmoji(e.tabName)} ${programLine(e.tabName, e.title)}`,
     `🕒 Arizona: ${formatRange12h(e.azStartMin, e.azEndMin)}`,
     `🕒 Moscow: ${formatRange24h(e.mskStartMin, e.mskEndMin)}${mskSuffixEn(e)}`,
     weeklyHostLineEn(e),
@@ -623,7 +651,7 @@ function weeklyEventBlockEn(e) {
 function weeklyEventBlockRu(e) {
   return [
     `📅 ${formatWeeklyDateRu(e.date)}`,
-    `${programEmoji(e.tabName)} ${e.tabName} — ${sessionLabel(e.title)}`,
+    `${programEmoji(e.tabName)} ${programLine(e.tabName, e.title)}`,
     `🕒 Аризона: ${formatRange24h(e.azStartMin, e.azEndMin)}`,
     `🕒 Москва: ${formatRange24h(e.mskStartMin, e.mskEndMin)}${mskSuffixRu(e)}`,
     weeklyHostLineRu(e),
@@ -700,7 +728,8 @@ function ctaLineEn(missing) {
   if (missing.length === 0) return '';
   if (missing.length === 1) {
     const e = missing[0];
-    return `If anyone can host ${sessionLabel(e.title)} (${formatMonthDayShortEn(e.date)}) — please sign up via the link below 🙏`;
+    const label = sessionLabel(e.title) || e.tabName;
+    return `If anyone can host ${label} (${formatMonthDayShortEn(e.date)}) — please sign up via the link below 🙏`;
   }
   return 'If anyone can host one of the sessions above — please sign up via the link below 🙏';
 }
@@ -709,7 +738,8 @@ function ctaLineRu(missing) {
   if (missing.length === 0) return '';
   if (missing.length === 1) {
     const e = missing[0];
-    return `Если кто-то может провести «${sessionLabel(e.title)}» (${formatMonthDayRu(e.date)}) — пожалуйста, запишитесь по ссылке ниже 🙏`;
+    const label = sessionLabel(e.title) || e.tabName;
+    return `Если кто-то может провести «${label}» (${formatMonthDayRu(e.date)}) — пожалуйста, запишитесь по ссылке ниже 🙏`;
   }
   return 'Если вы можете провести одну из сессий выше — пожалуйста, запишитесь по ссылке ниже 🙏';
 }
@@ -772,6 +802,26 @@ async function generateWeeklyReport(now = new Date()) {
   const { events, failedTabs, hostSignupUrl, debugCounts } = await collectWeekEvents(range);
   const text = buildWeeklyMessage(events, range, hostSignupUrl);
   return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
+}
+
+// Tracks the Bali calendar date /weekly was last auto-sent on Sunday
+// morning, so the every-5-minutes cron tick (see index.js) only fires once
+// per Sunday even though it checks well past WEEKLY_ANNOUNCE_HOUR all day.
+const WEEKLY_ANNOUNCE_STATE_PATH = process.env.WEEKLY_ANNOUNCE_STATE_PATH || '/data/weekly_announce_state.json';
+
+function getWeeklyAnnounceLastSentDate() {
+  try {
+    return JSON.parse(fs.readFileSync(WEEKLY_ANNOUNCE_STATE_PATH, 'utf8')).lastSentDate || null;
+  } catch {
+    return null;
+  }
+}
+
+function markWeeklyAnnounceSent(dateStr) {
+  fs.mkdirSync(path.dirname(WEEKLY_ANNOUNCE_STATE_PATH), { recursive: true });
+  const tmpPath = `${WEEKLY_ANNOUNCE_STATE_PATH}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify({ lastSentDate: dateStr }, null, 2));
+  fs.renameSync(tmpPath, WEEKLY_ANNOUNCE_STATE_PATH);
 }
 
 async function generateCheckReport(now = new Date()) {
@@ -911,12 +961,12 @@ async function runDailyHostDiffCheck(now = new Date(), { updateLastRunDate = fal
   const lines = [];
   for (const { event: e, previousHost } of hostRemoved) {
     lines.push(
-      `⚠️ Хост убрал себя с эфира: ${e.tabName} — ${sessionLabel(e.title)}, ${diffStamp(e)}. Был назначен: ${previousHost}. Сейчас хост не назначен.`
+      `⚠️ Хост убрал себя с эфира: ${programLine(e.tabName, e.title)}, ${diffStamp(e)}. Был назначен: ${previousHost}. Сейчас хост не назначен.`
     );
   }
   for (const e of newEvents) {
     const hostLabel = e.hasHost ? e.host : 'не назначен';
-    lines.push(`🆕 Новый эфир в расписании: ${e.tabName} — ${sessionLabel(e.title)}, ${diffStamp(e)}, хост: ${hostLabel}.`);
+    lines.push(`🆕 Новый эфир в расписании: ${programLine(e.tabName, e.title)}, ${diffStamp(e)}, хост: ${hostLabel}.`);
   }
 
   if (allEvents.some((e) => !e.hasHost)) {
@@ -959,6 +1009,8 @@ module.exports = {
   collectWeekEvents,
   runDailyHostDiffCheck,
   getHostDiffLastRunDate,
+  getWeeklyAnnounceLastSentDate,
+  markWeeklyAnnounceSent,
   buildWeeklyMessage,
   buildCheckMessage,
   generateWeeklyReport,

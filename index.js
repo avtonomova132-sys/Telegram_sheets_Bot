@@ -3,7 +3,15 @@ const express = require('express');
 const cron = require('node-cron');
 const TelegramBot = require('node-telegram-bot-api');
 const { OpenAI, toFile } = require('openai');
-const { generateWeeklyReport, generateCheckReport, runDailyHostDiffCheck, getHostDiffLastRunDate, chunkMessage } = require('./report');
+const {
+  generateWeeklyReport,
+  generateCheckReport,
+  runDailyHostDiffCheck,
+  getHostDiffLastRunDate,
+  getWeeklyAnnounceLastSentDate,
+  markWeeklyAnnounceSent,
+  chunkMessage,
+} = require('./report');
 const { generateVerseImageBuffer } = require('./verse/generateVerseImage');
 const {
   getVerseCount,
@@ -52,6 +60,8 @@ app.listen(port, () => console.log(`HTTP-сервер запущен на пор
 const token = process.env.BOT_TOKEN;
 const openaiKey = process.env.OPENAI_API_KEY;
 const myChatId = process.env.MY_CHAT_ID;
+// Час (по Бали) воскресной автоотправки /weekly — см. секцию ниже.
+const WEEKLY_ANNOUNCE_HOUR = Number(process.env.WEEKLY_ANNOUNCE_HOUR) || 10;
 
 if (!token) {
   console.error('BOT_TOKEN не задан! Добавьте переменную окружения BOT_TOKEN.');
@@ -228,6 +238,32 @@ bot.onText(/\/weekly\b/, (msg) => {
 bot.onText(/\/(check|report)\b/, (msg) => {
   handleReportCommand(msg.chat.id, 'проверку по текущей неделе', generateCheckReport);
 });
+
+// ===== Воскресная авторассылка /weekly =====
+// Каждое воскресенье в WEEKLY_ANNOUNCE_HOUR (по умолчанию 10:00) по Бали бот
+// сам присылает Елене в личку то же самое сообщение, что и команда /weekly —
+// без ручного запуска, чтобы оно было готово к пересылке в группу с утра.
+// Тот же устойчивый "проверяем каждые 5 минут" паттерн, что и у изречения:
+// не завязан на ровный тик именно в нужную минуту.
+async function checkAndSendWeeklyAnnounce() {
+  const nowBali = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  if (nowBali.getUTCDay() !== 0) return; // не воскресенье (по Бали)
+
+  const today = baliDateString();
+  if (getWeeklyAnnounceLastSentDate() === today) return; // сегодня уже отправляли
+  if (baliHour() < WEEKLY_ANNOUNCE_HOUR) return; // ещё не наступил нужный час
+
+  try {
+    await handleReportCommand(myChatId, 'воскресную рассылку /weekly', generateWeeklyReport);
+    markWeeklyAnnounceSent(today);
+  } catch (err) {
+    console.error('[weekly-announce] ошибка воскресной рассылки:', err.message);
+  }
+}
+
+if (myChatId) {
+  cron.schedule('*/5 * * * *', checkAndSendWeeklyAnnounce);
+}
 
 // ===== Ежедневная diff-проверка хостов =====
 // Раз в день (в 9:00 по Бали) сравнивает вкладки из daily-check-tabs.json с
