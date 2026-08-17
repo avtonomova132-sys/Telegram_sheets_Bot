@@ -16,19 +16,55 @@ function parseMskDateTimeToUtcMs(dateISO, timeMSK) {
   return Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), 0) - MSK_OFFSET_MS;
 }
 
-function kursLabel(kurs) {
-  return String(kurs || '').trim() === 'медитация' ? 'Медитация' : `Курс ${kurs}`;
+const MONTH_NAMES_GENITIVE = [
+  'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+  'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
+];
+// Порядок соответствует Date#getUTCDay(): 0 = воскресенье.
+const WEEKDAY_NAMES = ['воскресенье', 'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота'];
+
+// День/месяц/день недели на русском из dateISO. Дата интерпретируется как
+// календарная (без времени и часового пояса) — день недели у конкретного
+// y-m-d один и тот же независимо от таймзоны, поэтому Date.UTC тут достаточно.
+function formatMskDateRu(dateISO) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateISO || '').trim());
+  if (!match) return { day: '', month: '', weekday: '' };
+
+  const [, y, mo, d] = match;
+  const dt = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d)));
+
+  return {
+    day: String(Number(d)),
+    month: MONTH_NAMES_GENITIVE[Number(mo) - 1] || '',
+    weekday: WEEKDAY_NAMES[dt.getUTCDay()] || '',
+  };
 }
 
 function formatReminderMessage(record) {
-  const title = record.zanyatie ? `${kursLabel(record.kurs)} — ${record.zanyatie}` : kursLabel(record.kurs);
-  const lines = [`🔔 Через 15 минут: ${title}`, `🕒 ${record.timeMSK} МСК`];
-  if (record.zoomLink) lines.push(`🔗 ${record.zoomLink}`);
-  if (record.groupLink) lines.push(`👥 ${record.groupLink}`);
-  return lines.join('\n');
+  const { day, month, weekday } = formatMskDateRu(record.dateISO);
+  const isMeditation = String(record.kurs || '').trim() === 'медитация';
+  const header = isMeditation ? 'Медитация' : `${record.kurs} курс прямая передача`;
+  const link = record.zoomLink || record.groupLink || '';
+
+  return [
+    `❣️${header}❣️`,
+    'Через 20 минут начнется',
+    '',
+    `Сегодня ${day} ${month} ${weekday}`,
+    `Начало в ${record.timeMSK} по мск`,
+    '',
+    'Приглашаем вас 🪽',
+    '',
+    'Можно без камеры, без звука, как вам комфортнее',
+    '',
+    'Присоединяйтесь, наслаждайтесь 🧉',
+    '',
+    'Ссылка на зум в этом чате 🙏🌱',
+    link,
+  ].join('\n');
 }
 
-// Находит записи, до начала которых осталось 14-15 минут, и ещё не получившие
+// Находит записи, до начала которых осталось 19-20 минут, и ещё не получившие
 // напоминание. Помечает их reminderSent: true и сохраняет на диск СРАЗУ (до
 // фактической отправки в Telegram) — если crontick сработает снова в ту же
 // минуту или в течение следующей, это же напоминание не уйдёт повторно.
@@ -49,7 +85,7 @@ function checkReminders(now = Date.now()) {
     if (startMs === null) continue;
 
     const minutesUntilStart = (startMs - now) / 60000;
-    if (minutesUntilStart >= 14 && minutesUntilStart <= 15) {
+    if (minutesUntilStart >= 19 && minutesUntilStart <= 20) {
       record.reminderSent = true;
       changed = true;
       due.push(record);
@@ -67,4 +103,4 @@ function checkReminders(now = Date.now()) {
   return due;
 }
 
-module.exports = { parseMskDateTimeToUtcMs, formatReminderMessage, checkReminders };
+module.exports = { parseMskDateTimeToUtcMs, formatMskDateRu, formatReminderMessage, checkReminders };
