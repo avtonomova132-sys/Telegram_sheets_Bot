@@ -28,9 +28,10 @@ const {
 const { extractPeredachi } = require('./peredachi/extract');
 const { addRecords, readAll: readPeredachi, saveAll: savePeredachi } = require('./peredachi/store');
 const { formatKursOverview, formatKursDetail, formatMeditations } = require('./peredachi/query');
-const { analyzeDuplicates } = require('./peredachi/dedupe');
+const { analyzeDuplicates, isSameEvent } = require('./peredachi/dedupe');
 const { validateEntry, describeEntry } = require('./peredachi/validate');
 const { analyzeSplits } = require('./peredachi/split');
+const { getWatchedGroupIds, looksLikeAnnouncement } = require('./peredachi/watch');
 const {
   readGroupLinks,
   setGroupLink,
@@ -120,6 +121,14 @@ function scheduleReminder(chatId, hours, minutes, message) {
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
+
+  // Напоминания, /new-сессии, уточнение /габариты и эхо-заглушка ниже — все
+  // это 1:1 функции для личного чата с Elena/доверенными людьми, не для
+  // группы. Без этого гварда отключение Privacy Mode для мониторинга
+  // передач (WATCHED_GROUP_IDS) заодно включило бы эхо-ответы на каждое
+  // сообщение в отслеживаемой группе и случайные срабатывания парсера
+  // напоминаний на любую фразу вида "... в 15:00 ...".
+  if (msg.chat.type !== 'private') return;
 
   if (!text || text.startsWith('/')) return;
 
@@ -508,6 +517,82 @@ bot.onText(/^\/добавить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) 
       chatId,
       'Не смог распознать 😔 Попробуй переслать текст ещё раз или добавь вручную командой /добавить_вручную.'
     );
+  }
+});
+
+// ===== Мониторинг групп на анонсы передач =====
+// Слушает новые текстовые сообщения только в группах из WATCHED_GROUP_IDS
+// (требует отключённый Privacy Mode в каждой такой группе — иначе Telegram
+// не доставляет боту чужие сообщения вообще). Для каждого сообщения сначала
+// дешёвая эвристика (looksLikeAnnouncement, без API) — если совсем не похоже
+// на анонс, выходим без единого вызова Anthropic. Если похоже — тот же
+// extractPeredachi, что и /добавить, и та же проверка на дубли (isSameEvent
+// по kurs+dateISO+timeMSK). НИЧЕГО не пишется в /data/peredachi.json отсюда:
+// это только уведомление Elena, запись создаётся исключительно через её
+// собственный /добавить после того, как она посмотрит на распознанное.
+const watchedGroupIds = getWatchedGroupIds();
+
+if (watchedGroupIds.size === 0) {
+  console.warn('WATCHED_GROUP_IDS не задан — мониторинг групп на анонсы передач отключён.');
+}
+
+bot.on('message', async (msg) => {
+  const chatId = msg.chat.id;
+  if (!watchedGroupIds.has(String(chatId))) return;
+
+  const text = msg.text || msg.caption || '';
+  if (!looksLikeAnnouncement(text)) return;
+
+  if (!myChatId) return;
+
+  try {
+    const entries = await extractPeredachi(text);
+    if (entries.length === 0) return;
+
+    const existing = readPeredachi();
+    const groupTitle = msg.chat.title || String(chatId);
+    const excerpt = text.length > 300 ? `${text.slice(0, 300)}…` : text;
+
+    for (const entry of entries) {
+      const normalized = {
+        kurs: entry.kurs || '',
+        postfix: entry.postfix || '',
+        teacher: entry.teacher || '',
+        dateISO: entry.dateISO || '',
+        timeMSK: entry.timeMSK || '',
+        zanyatie: entry.zanyatie || '',
+        zoomLink: entry.zoomLink || '',
+        groupLink: entry.groupLink || '',
+      };
+
+      // Тот же критерий дубля, что использует /добавить при сохранении —
+      // совпадение kurs+dateISO+timeMSK с уже существующей записью.
+      const isDuplicate = existing.some((r) => isSameEvent(r, normalized));
+      if (isDuplicate) continue;
+
+      const kursLabel = normalized.postfix ? `${normalized.kurs} (${normalized.postfix})` : normalized.kurs || 'не определён';
+      const dateLabel = normalized.dateISO || 'не определена';
+      const timeLabel = normalized.timeMSK ? `${normalized.timeMSK} МСК` : 'не определено';
+      const hasLink = normalized.zoomLink.trim() || normalized.groupLink.trim();
+      const missingLinkLine = hasLink ? '' : '\n⚠️ Не хватает: ссылка на zoom или группу';
+
+      const notifyText = [
+        `🔔 Похоже на новую передачу (группа: ${groupTitle})`,
+        '',
+        'Распознано:',
+        `Курс: ${kursLabel}`,
+        `Дата: ${dateLabel}, Время: ${timeLabel}${missingLinkLine}`,
+        '',
+        'Исходный текст:',
+        excerpt,
+        '',
+        'Чтобы добавить в расписание, перешли этот текст через /добавить.',
+      ].join('\n');
+
+      await bot.sendMessage(myChatId, notifyText);
+    }
+  } catch (err) {
+    console.error('[group-watch] ошибка распознавания анонса:', err.message);
   }
 });
 
