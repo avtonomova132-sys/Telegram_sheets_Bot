@@ -447,26 +447,8 @@ function formatDebugCounts(debugCounts, range) {
   return `🔍 Debug (${formatWeekRangeEn(range.start, range.end)}):\n${lines.join('\n')}`;
 }
 
-const WEEKDAYS_EN_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const MONTHS_EN_FULL = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-const WEEKDAYS_RU_FULL = ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'];
 const MONTHS_RU_GENITIVE = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
-
-function formatEventDateEn(date) {
-  return `${WEEKDAYS_EN_FULL[date.getUTCDay()]}, ${MONTHS_EN_FULL[date.getUTCMonth()]} ${date.getUTCDate()}`;
-}
-
-function formatEventDateRu(date) {
-  return `${WEEKDAYS_RU_FULL[date.getUTCDay()]}, ${date.getUTCDate()} ${MONTHS_RU_GENITIVE[date.getUTCMonth()]}`;
-}
-
-function formatWeeklyDateEn(date) {
-  return `${MONTHS_EN_FULL[date.getUTCMonth()]} ${date.getUTCDate()} (${WEEKDAYS_EN_FULL[date.getUTCDay()]})`;
-}
-
-function formatWeeklyDateRu(date) {
-  return `${date.getUTCDate()} ${MONTHS_RU_GENITIVE[date.getUTCMonth()]} (${WEEKDAYS_RU_FULL[date.getUTCDay()].toLowerCase()})`;
-}
 
 function formatMonthDayEn(date) {
   return `${MONTHS_EN_FULL[date.getUTCMonth()]} ${date.getUTCDate()}`;
@@ -496,16 +478,14 @@ function addDays(date, n) {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + n));
 }
 
-function mskSuffixEn(e) {
-  if (!e.mskStartDayOffset) return '';
-  const d = addDays(e.date, e.mskStartDayOffset);
-  return ` (${formatMonthDayShortEn(d)})`;
-}
-
-function mskSuffixRu(e) {
-  if (!e.mskStartDayOffset) return '';
-  const d = addDays(e.date, e.mskStartDayOffset);
-  return ` (${formatMonthDayRu(d)})`;
+// The Moscow calendar date for an event's start — same as e.date whenever
+// the AZ→MSK shift doesn't cross midnight, one day later when it does.
+// Every place that prints a Moscow time prints this alongside it (never
+// just the Arizona date, even when the two happen to match) so a
+// wrong/missing day-rollover is visible at a glance instead of requiring
+// mental math — see the /check Aug 17→18 bug this was built to catch.
+function mskDate(e) {
+  return addDays(e.date, e.mskStartDayOffset);
 }
 
 function pad2(n) {
@@ -619,20 +599,18 @@ function enMissingHeader(n) {
 
 function checkEventBlockEn(e) {
   return [
-    `🗓️ ${formatEventDateEn(e.date)}`,
     `${programEmoji(e.tabName)} ${e.tabName}`,
-    `🕒 Arizona: ${formatRange12h(e.azStartMin, e.azEndMin)}`,
-    `🕒 Moscow: ${formatRange12h(e.mskStartMin, e.mskEndMin)}${mskSuffixEn(e)}`,
+    `🕒 Arizona: ${formatMonthDayEn(e.date)}, ${formatRange12h(e.azStartMin, e.azEndMin)}`,
+    `🕒 Moscow: ${formatMonthDayEn(mskDate(e))}, ${formatRange12h(e.mskStartMin, e.mskEndMin)}`,
     '👤 Host: needed',
   ].join('\n');
 }
 
 function checkEventBlockRu(e) {
   return [
-    `🗓️ ${formatEventDateRu(e.date)}`,
     `${programEmoji(e.tabName)} ${e.tabName}`,
-    `🕒 Аризона: ${formatRange24h(e.azStartMin, e.azEndMin)}`,
-    `🕒 Москва: ${formatRange24h(e.mskStartMin, e.mskEndMin)}${mskSuffixRu(e)}`,
+    `🕒 Аризона: ${formatMonthDayRu(e.date)}, ${formatRange24h(e.azStartMin, e.azEndMin)}`,
+    `🕒 Москва: ${formatMonthDayRu(mskDate(e))}, ${formatRange24h(e.mskStartMin, e.mskEndMin)}`,
     '👤 Хост: нужен',
   ].join('\n');
 }
@@ -706,20 +684,18 @@ function weeklyHostLineRu(e) {
 
 function weeklyEventBlockEn(e) {
   return [
-    `📅 ${formatWeeklyDateEn(e.date)}`,
     `${programEmoji(e.tabName)} ${programLine(e.tabName, e.title)}`,
-    `🕒 Arizona: ${formatRange12h(e.azStartMin, e.azEndMin)}`,
-    `🕒 Moscow: ${formatRange24h(e.mskStartMin, e.mskEndMin)}${mskSuffixEn(e)}`,
+    `🕒 Arizona: ${formatMonthDayEn(e.date)}, ${formatRange12h(e.azStartMin, e.azEndMin)}`,
+    `🕒 Moscow: ${formatMonthDayEn(mskDate(e))}, ${formatRange24h(e.mskStartMin, e.mskEndMin)}`,
     weeklyHostLineEn(e),
   ].join('\n');
 }
 
 function weeklyEventBlockRu(e) {
   return [
-    `📅 ${formatWeeklyDateRu(e.date)}`,
     `${programEmoji(e.tabName)} ${programLine(e.tabName, e.title)}`,
-    `🕒 Аризона: ${formatRange24h(e.azStartMin, e.azEndMin)}`,
-    `🕒 Москва: ${formatRange24h(e.mskStartMin, e.mskEndMin)}${mskSuffixRu(e)}`,
+    `🕒 Аризона: ${formatMonthDayRu(e.date)}, ${formatRange24h(e.azStartMin, e.azEndMin)}`,
+    `🕒 Москва: ${formatMonthDayRu(mskDate(e))}, ${formatRange24h(e.mskStartMin, e.mskEndMin)}`,
     weeklyHostLineRu(e),
   ].join('\n');
 }
@@ -773,7 +749,7 @@ function warningBlockEn(missing) {
   const items = missing
     .map(
       (e) =>
-        `${e.tabName},\n${formatMonthDayEn(e.date)}\nArizona: ${formatPoint12h(e.azStartMin)},\nMoscow: ${formatPoint24h(e.mskStartMin)}${mskSuffixEn(e)}.`
+        `${e.tabName},\nArizona: ${formatMonthDayEn(e.date)}, ${formatPoint12h(e.azStartMin)},\nMoscow: ${formatMonthDayEn(mskDate(e))}, ${formatPoint24h(e.mskStartMin)}.`
     )
     .join('\n\n');
   return `⚠️ ${enMissingHeader(missing.length)}\n${items}`;
@@ -784,7 +760,7 @@ function warningBlockRu(missing) {
   const items = missing
     .map(
       (e) =>
-        `${e.tabName},\n${formatMonthDayRu(e.date)}\nАризона: ${formatPoint24h(e.azStartMin)},\nМосква: ${formatPoint24h(e.mskStartMin)}${mskSuffixRu(e)}.`
+        `${e.tabName},\nАризона: ${formatMonthDayRu(e.date)}, ${formatPoint24h(e.azStartMin)},\nМосква: ${formatMonthDayRu(mskDate(e))}, ${formatPoint24h(e.mskStartMin)}.`
     )
     .join('\n\n');
   return `⚠️ ${ruMissingHeader(missing.length)}\n${items}`;
@@ -968,7 +944,7 @@ function eventKey(e) {
 }
 
 function diffStamp(e) {
-  return `${formatMonthDayRu(e.date)}, Аризона ${formatPoint24h(e.azStartMin)}, Москва ${formatPoint24h(e.mskStartMin)}${mskSuffixRu(e)}`;
+  return `Аризона: ${formatMonthDayRu(e.date)}, ${formatPoint24h(e.azStartMin)}, Москва: ${formatMonthDayRu(mskDate(e))}, ${formatPoint24h(e.mskStartMin)}`;
 }
 
 // Daily background diff-check (see index.js for the 9:00-Bali schedule) —
