@@ -5,6 +5,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const { OpenAI, toFile } = require('openai');
 const {
   generateWeeklyReport,
+  generateWeeklyAnnounceReport,
   generateCheckReport,
   runDailyHostDiffCheck,
   getHostDiffLastRunDate,
@@ -254,7 +255,7 @@ async function checkAndSendWeeklyAnnounce() {
   if (baliHour() < WEEKLY_ANNOUNCE_HOUR) return; // ещё не наступил нужный час
 
   try {
-    await handleReportCommand(myChatId, 'воскресную рассылку /weekly', generateWeeklyReport);
+    await handleReportCommand(myChatId, 'воскресную рассылку /weekly', generateWeeklyAnnounceReport);
     markWeeklyAnnounceSent(today);
   } catch (err) {
     console.error('[weekly-announce] ошибка воскресной рассылки:', err.message);

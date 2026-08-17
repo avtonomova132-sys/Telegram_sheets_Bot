@@ -369,22 +369,39 @@ async function fetchTabEvents(spreadsheetId, tab) {
   return parseTabEvents(tab.name, rows);
 }
 
-// The week containing `now`, Monday to Sunday. Used by /check, which is
-// meant to be run any day during the week that was already announced.
+// Bali (Asia/Makassar) is a fixed UTC+8 zone, no DST — same shift-the-clock
+// trick used for the verse schedule in verse/progress.js, kept independent
+// here. Every week-range calculation below keys off the Bali calendar date
+// of `now`, not the server's/UTC's — otherwise, during the ~8h/day window
+// where the UTC date still lags a day behind Bali's, "today" would resolve
+// to yesterday and the whole week would silently shift back by one (this is
+// exactly what made /check show last week's range on a Monday morning).
+const BALI_OFFSET_MS = 8 * 60 * 60 * 1000;
+
+function baliNow(now = new Date()) {
+  return new Date(now.getTime() + BALI_OFFSET_MS);
+}
+
+// The week containing the Bali calendar date of `now`, Monday to Sunday.
+// Used by /check and by /weekly (manual), both of which should always show
+// the week that contains "today" in Bali, regardless of which day of the
+// week they're run on.
 function getCurrentWeekRange(now = new Date()) {
-  const day = now.getUTCDay(); // 0=Sun..6=Sat
+  const bali = baliNow(now);
+  const day = bali.getUTCDay(); // 0=Sun..6=Sat
   const daysSinceMonday = (day + 6) % 7;
-  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - daysSinceMonday));
+  const start = new Date(Date.UTC(bali.getUTCFullYear(), bali.getUTCMonth(), bali.getUTCDate() - daysSinceMonday));
   const end = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate() + 6));
   return { start, end };
 }
 
-// The week AFTER the one containing `now`, Monday to Sunday. Used by
-// /weekly, meant to be run Sunday morning to announce the upcoming week.
+// The week AFTER the one containing the Bali calendar date of `now`, Monday
+// to Sunday. Used ONLY by the Sunday 10:00-Bali auto-announce — the one
+// deliberate exception to "current week = week containing today", since on
+// Sunday the week containing today is the one that's already almost over.
 function getNextWeekRange(now = new Date()) {
-  const day = now.getUTCDay();
-  const daysUntilNextMonday = ((1 - day + 7) % 7) || 7;
-  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + daysUntilNextMonday));
+  const { start: currentStart } = getCurrentWeekRange(now);
+  const start = new Date(Date.UTC(currentStart.getUTCFullYear(), currentStart.getUTCMonth(), currentStart.getUTCDate() + 7));
   const end = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate() + 6));
   return { start, end };
 }
@@ -794,20 +811,26 @@ function ctaLineRu(missing) {
 }
 
 // /weekly — full listing of every event in the range, host or not.
-function buildWeeklyMessage(events, range, hostSignupUrl) {
+// `upcoming` picks the header wording: true for the Sunday auto-announce
+// (range is genuinely next week), false for the manual command (range is
+// the week already in progress) — see generateWeeklyReport vs
+// generateWeeklyAnnounceReport.
+function buildWeeklyMessage(events, range, hostSignupUrl, { upcoming = false } = {}) {
   const missing = events.filter((e) => !e.hasHost);
   const rangeEn = formatWeekRangeEn(range.start, range.end);
   const rangeRu = formatWeekRangeRu(range.start, range.end);
+  const scheduleLabelEn = upcoming ? 'Zoom broadcast schedule for the upcoming week' : 'Zoom broadcast schedule for this week';
+  const scheduleLabelRu = upcoming ? 'Расписание Zoom-эфиров на предстоящую неделю' : 'Расписание Zoom-эфиров на эту неделю';
 
   const enSectionParts = ['📝', 'Precious Angels 🪽', '', 'Wishing everyone kindness and enlightenment in this life 💎', ''];
   const ruSectionParts = ['📝', 'Дорогие Ангелы 🪽', '', 'Желаем всем доброты и просветления в этой жизни 💎', ''];
 
   if (events.length === 0) {
-    enSectionParts.push('Zoom broadcast schedule for the upcoming week', rangeEn, '', 'No sessions scheduled this week.');
-    ruSectionParts.push('Расписание Zoom-эфиров на предстоящую неделю', rangeRu, '', 'На этой неделе нет запланированных сессий.');
+    enSectionParts.push(scheduleLabelEn, rangeEn, '', 'No sessions scheduled this week.');
+    ruSectionParts.push(scheduleLabelRu, rangeRu, '', 'На этой неделе нет запланированных сессий.');
   } else {
     enSectionParts.push(
-      'Zoom broadcast schedule for the upcoming week',
+      scheduleLabelEn,
       rangeEn,
       '',
       `In total, ${events.length} broadcast${events.length === 1 ? '' : 's'} this week:`,
@@ -815,7 +838,7 @@ function buildWeeklyMessage(events, range, hostSignupUrl) {
       tabBreakdownEn(events)
     );
     ruSectionParts.push(
-      'Расписание Zoom-эфиров на предстоящую неделю',
+      scheduleLabelRu,
       rangeRu,
       '',
       `Всего на этой неделе ${events.length} ${ruBroadcastWord(events.length)}:`,
@@ -846,10 +869,22 @@ function buildWeeklyMessage(events, range, hostSignupUrl) {
   return [enSection, '---', ruSection, hostSignupUrl].join('\n\n');
 }
 
+// Manual /weekly — same "current week" range as /check, always the week
+// containing today's Bali date, regardless of what day it's run on.
 async function generateWeeklyReport(now = new Date()) {
+  const range = getCurrentWeekRange(now);
+  const { events, failedTabs, hostSignupUrl, debugCounts } = await collectWeekEvents(range);
+  const text = buildWeeklyMessage(events, range, hostSignupUrl, { upcoming: false });
+  return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
+}
+
+// Sunday 10:00-Bali auto-announce ONLY (see checkAndSendWeeklyAnnounce in
+// index.js) — the one deliberate place that wants next week instead of the
+// current one, since on Sunday "this week" is the one already wrapping up.
+async function generateWeeklyAnnounceReport(now = new Date()) {
   const range = getNextWeekRange(now);
   const { events, failedTabs, hostSignupUrl, debugCounts } = await collectWeekEvents(range);
-  const text = buildWeeklyMessage(events, range, hostSignupUrl);
+  const text = buildWeeklyMessage(events, range, hostSignupUrl, { upcoming: true });
   return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
 }
 
@@ -881,27 +916,10 @@ async function generateCheckReport(now = new Date()) {
   return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
 }
 
-// Bali (Asia/Makassar) is a fixed UTC+8 zone, no DST — same shift-the-clock
-// trick used for the verse schedule in verse/progress.js, kept independent
-// here so the periodic host check reads "this week" the way a person in
-// Bali would, regardless of what the container's own clock/timezone is.
-const BALI_OFFSET_MS = 8 * 60 * 60 * 1000;
-
-function baliNow(now = new Date()) {
-  return new Date(now.getTime() + BALI_OFFSET_MS);
-}
-
-// The week containing `now`, Monday to Sunday, using the Bali calendar date
-// rather than the server's/UTC's — used by the periodic auto-check so the
-// day boundary matches Elena's own "today".
-function getCurrentWeekRangeBali(now = new Date()) {
-  const bali = baliNow(now);
-  const day = bali.getUTCDay();
-  const daysSinceMonday = (day + 6) % 7;
-  const start = new Date(Date.UTC(bali.getUTCFullYear(), bali.getUTCMonth(), bali.getUTCDate() - daysSinceMonday));
-  const end = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate() + 6));
-  return { start, end };
-}
+// Same Bali-week logic as /check and /weekly (see getCurrentWeekRange
+// above) — kept as a named alias so the periodic auto-check's intent ("this
+// week, Bali-relative") stays self-documenting at the call site.
+const getCurrentWeekRangeBali = getCurrentWeekRange;
 
 // Which tabs the DAILY diff-check watches — deliberately a separate,
 // short-listed file from tabs-config.json (used by /weekly and /check),
@@ -1063,6 +1081,7 @@ module.exports = {
   buildWeeklyMessage,
   buildCheckMessage,
   generateWeeklyReport,
+  generateWeeklyAnnounceReport,
   generateCheckReport,
   chunkMessage,
 };
