@@ -580,20 +580,23 @@ bot.on('message', async (msg) => {
       const dateLabel = normalized.dateISO || 'не определена';
       const timeLabel = normalized.timeMSK ? `${normalized.timeMSK} МСК` : 'не определено';
       const hasLink = normalized.zoomLink.trim() || normalized.groupLink.trim();
-      const missingLinkLine = hasLink ? '' : '\n⚠️ Не хватает: ссылка на zoom или группу';
 
-      const notifyText = [
+      // Отсутствие ссылки не должно блокировать само уведомление — Elena всё
+      // равно должна узнать про новую передачу, просто с явной пометкой, что
+      // ссылку надо уточнить отдельно.
+      const notifyLines = [
         `🔔 Похоже на новую передачу (группа: ${groupTitle})`,
         '',
         'Распознано:',
         `Курс: ${kursLabel}`,
-        `Дата: ${dateLabel}, Время: ${timeLabel}${missingLinkLine}`,
-        '',
-        'Исходный текст:',
-        excerpt,
-        '',
-        'Чтобы добавить в расписание, перешли этот текст через /добавить.',
-      ].join('\n');
+        `Дата: ${dateLabel}, Время: ${timeLabel}`,
+      ];
+      if (!hasLink) {
+        notifyLines.push('⚠️ Ссылки не найдено — уточни у автора, где искать Zoom (часто "ссылка будет в этом же чате")');
+      }
+      notifyLines.push('', 'Исходный текст:', excerpt, '', 'Чтобы добавить в расписание, перешли этот текст через /добавить.');
+
+      const notifyText = notifyLines.join('\n');
 
       await bot.sendMessage(myChatId, notifyText);
     }
