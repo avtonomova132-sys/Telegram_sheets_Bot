@@ -91,6 +91,12 @@ bot.onText(/\/start/, (msg) => {
   );
 });
 
+// Временная диагностическая команда — узнать chat_id текущего чата (например,
+// чтобы прописать его в WATCHED_GROUP_IDS). Доступна всем, без ограничений.
+bot.onText(/^\/chatid(?:@\S+)?$/, (msg) => {
+  bot.sendMessage(msg.chat.id, `ID этого чата: ${msg.chat.id}`);
+});
+
 // ===== Напоминания =====
 function parseReminder(text) {
   const timeMatch = text.match(/(\d{1,2})[:.](\d{2})/);
