@@ -1021,6 +1021,11 @@ async function runDailyHostDiffCheck(now = new Date(), { updateLastRunDate = fal
     events: snapshot,
   });
 
+  // "Silence if nothing changed" applies ONLY when there's neither a host
+  // removal nor a new event — as soon as a single new event shows up, Elena
+  // gets a message no matter what, even if that new event already has a
+  // host assigned (in that case it's purely informational: the 🆕 line
+  // below, nothing more). Do not add an `e.hasHost` check here.
   if (hostRemoved.length === 0 && newEvents.length === 0) {
     return { text: null, hostRemoved: 0, newEvents: 0, failedTabs };
   }
@@ -1036,6 +1041,14 @@ async function runDailyHostDiffCheck(now = new Date(), { updateLastRunDate = fal
     lines.push(`🆕 Новый эфир в расписании: ${programLine(e.tabName, e.title)}, ${diffStamp(e)}, хост: ${hostLabel}.`);
   }
 
+  // A brand-new event with no host must additionally get Elena the
+  // ready-to-paste group announcement — same /check format (EN then RU,
+  // "host needed" / "нужен волонтёр"). Gating on "does ANY event this week
+  // still lack a host" (rather than "is the new event itself unhosted")
+  // is deliberate, not an approximation: a fresh unhosted event is always
+  // a member of allEvents, so this condition fires for it every time, and
+  // it also naturally folds in any other already-open slot so the pasted
+  // text reflects the whole week, not just the one new session.
   if (allEvents.some((e) => !e.hasHost)) {
     const tags = loadCommunityTags();
     const hostSignupUrl = `https://docs.google.com/spreadsheets/d/${config.spreadsheetId}/edit?gid=${config.hostSignupGid}#gid=${config.hostSignupGid}`;
