@@ -622,7 +622,7 @@ function checkEventBlockEn(e) {
     `🗓️ ${formatEventDateEn(e.date)}`,
     `${programEmoji(e.tabName)} ${e.tabName}`,
     `🕒 Arizona: ${formatRange12h(e.azStartMin, e.azEndMin)}`,
-    `🕒 Moscow: ${formatRange12h(e.mskStartMin, e.mskEndMin)}`,
+    `🕒 Moscow: ${formatRange12h(e.mskStartMin, e.mskEndMin)}${mskSuffixEn(e)}`,
     '👤 Host: needed',
   ].join('\n');
 }
@@ -632,7 +632,7 @@ function checkEventBlockRu(e) {
     `🗓️ ${formatEventDateRu(e.date)}`,
     `${programEmoji(e.tabName)} ${e.tabName}`,
     `🕒 Аризона: ${formatRange24h(e.azStartMin, e.azEndMin)}`,
-    `🕒 Москва: ${formatRange24h(e.mskStartMin, e.mskEndMin)}`,
+    `🕒 Москва: ${formatRange24h(e.mskStartMin, e.mskEndMin)}${mskSuffixRu(e)}`,
     '👤 Хост: нужен',
   ].join('\n');
 }
@@ -773,7 +773,7 @@ function warningBlockEn(missing) {
   const items = missing
     .map(
       (e) =>
-        `${e.tabName},\n${formatMonthDayEn(e.date)}\nArizona: ${formatPoint12h(e.azStartMin)},\nMoscow: ${formatPoint24h(e.mskStartMin)}.`
+        `${e.tabName},\n${formatMonthDayEn(e.date)}\nArizona: ${formatPoint12h(e.azStartMin)},\nMoscow: ${formatPoint24h(e.mskStartMin)}${mskSuffixEn(e)}.`
     )
     .join('\n\n');
   return `⚠️ ${enMissingHeader(missing.length)}\n${items}`;
@@ -784,7 +784,7 @@ function warningBlockRu(missing) {
   const items = missing
     .map(
       (e) =>
-        `${e.tabName},\n${formatMonthDayRu(e.date)}\nАризона: ${formatPoint24h(e.azStartMin)},\nМосква: ${formatPoint24h(e.mskStartMin)}.`
+        `${e.tabName},\n${formatMonthDayRu(e.date)}\nАризона: ${formatPoint24h(e.azStartMin)},\nМосква: ${formatPoint24h(e.mskStartMin)}${mskSuffixRu(e)}.`
     )
     .join('\n\n');
   return `⚠️ ${ruMissingHeader(missing.length)}\n${items}`;
@@ -968,7 +968,7 @@ function eventKey(e) {
 }
 
 function diffStamp(e) {
-  return `${formatMonthDayRu(e.date)}, Аризона ${formatPoint24h(e.azStartMin)}, Москва ${formatPoint24h(e.mskStartMin)}`;
+  return `${formatMonthDayRu(e.date)}, Аризона ${formatPoint24h(e.azStartMin)}, Москва ${formatPoint24h(e.mskStartMin)}${mskSuffixRu(e)}`;
 }
 
 // Daily background diff-check (see index.js for the 9:00-Bali schedule) —
