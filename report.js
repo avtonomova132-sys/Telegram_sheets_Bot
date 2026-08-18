@@ -938,13 +938,66 @@ function getHostDiffLastRunDate() {
 }
 
 // Date + start time alone (not the host) — stable identity for the same
-// physical session across two different days' snapshots.
+// physical SLOT across two different days' snapshots. Deliberately changes
+// when a session is rescheduled (that's how a reschedule gets noticed at
+// all — see stableIdentity below for the identity that survives it).
 function eventKey(e) {
   return `${e.tabName}::${e.date.toISOString().slice(0, 10)}::${e.azStartMin}`;
 }
 
-function diffStamp(e) {
+// Identity for the same CLASS across a reschedule — tab + session label
+// (title with its trailing "(Mon DD, YYYY)" stripped, same helper /check's
+// programLine uses), deliberately excluding date/time so it survives a
+// date or time change. Returns null for a blank title (an unnamed slot):
+// matching those on title alone would be a coin flip if more than one
+// exists on the same tab in the same week, so a blank-titled slot's
+// reschedule is just seen as one vanishing and a new one appearing,
+// same as before this feature.
+function stableIdentity(tabName, title) {
+  const label = sessionLabel(title);
+  return label ? `${tabName}::${label}` : null;
+}
+
+// Reconstructs a diffStamp-compatible pseudo-event from a snapshot entry's
+// stored dateISO/azStartMin, so the "was" side of a reschedule notice can
+// reuse the exact same AZ/MSK formatting as the "now" side.
+function pseudoEventFromSnapshot(dateISO, azStartMin) {
+  const [y, m, d] = dateISO.split('-').map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  const msk = deriveMsk(azStartMin);
+  return { date, azStartMin, mskStartMin: msk.min, mskStartDayOffset: msk.dayOffset };
+}
+
+function diffStampRu(e) {
   return `Аризона: ${formatMonthDayRu(e.date)}, ${formatPoint24h(e.azStartMin)}, Москва: ${formatMonthDayRu(mskDate(e))}, ${formatPoint24h(e.mskStartMin)}`;
+}
+
+function diffStampEn(e) {
+  return `Arizona: ${formatMonthDayEn(e.date)}, ${formatPoint12h(e.azStartMin)}, Moscow: ${formatMonthDayEn(mskDate(e))}, ${formatPoint12h(e.mskStartMin)}`;
+}
+
+function timeChangeHostNoticeEn(e, prevPseudo) {
+  return [
+    `👤 ${e.host}, the time for this broadcast has changed.`,
+    `Was: ${diffStampEn(prevPseudo)}`,
+    `Now: ${diffStampEn(e)}`,
+    'Please confirm you can still host at the new time, or let us know if we need to find a replacement 🙏',
+  ].join('\n');
+}
+
+function timeChangeHostNoticeRu(e, prevPseudo) {
+  return [
+    `👤 ${e.host}, время этого эфира изменилось.`,
+    `Было: ${diffStampRu(prevPseudo)}`,
+    `Стало: ${diffStampRu(e)}`,
+    'Пожалуйста, подтвердите, что сможете вести в новое время, или дайте знать, если нужно найти замену 🙏',
+  ].join('\n');
+}
+
+// Group-facing text for a rescheduled event that already has a host —
+// same EN-then-RU convention as /check's buildCheckMessage.
+function buildTimeChangeHostNotice(e, prevPseudo) {
+  return [timeChangeHostNoticeEn(e, prevPseudo), timeChangeHostNoticeRu(e, prevPseudo)].join('\n\n');
 }
 
 // Daily background diff-check (see index.js for the 9:00-Bali schedule) —
@@ -977,20 +1030,50 @@ async function runDailyHostDiffCheck(now = new Date(), { updateLastRunDate = fal
   const prevState = readDiffState();
   const prevEvents = prevState.events || {};
 
+  // Vanished-by-identity: yesterday's snapshot entries whose exact key
+  // (tab+date+start-time) no longer exists today, indexed by their
+  // reschedule-proof identity (tab+session-label) so a "new" key below can
+  // be matched back to the slot it moved from, rather than reported as an
+  // unrelated brand-new event with no explanation for the one that vanished.
+  const vanishedByIdentity = new Map();
+  for (const [key, prev] of Object.entries(prevEvents)) {
+    if (currentByKey.has(key)) continue;
+    const id = stableIdentity(prev.tabName, prev.title || '');
+    if (id) vanishedByIdentity.set(id, prev);
+  }
+
   const hostRemoved = [];
   const newEvents = [];
+  const timeChanged = [];
   for (const [key, e] of currentByKey) {
     const prev = prevEvents[key];
-    if (!prev) {
+    if (prev) {
+      if (prev.hasHost && !e.hasHost) {
+        hostRemoved.push({ event: e, previousHost: prev.host });
+      }
+      continue;
+    }
+
+    const id = stableIdentity(e.tabName, e.title);
+    const moved = id && vanishedByIdentity.get(id);
+    if (moved) {
+      timeChanged.push({ event: e, prev: moved });
+      vanishedByIdentity.delete(id);
+    } else {
       newEvents.push(e);
-    } else if (prev.hasHost && !e.hasHost) {
-      hostRemoved.push({ event: e, previousHost: prev.host });
     }
   }
 
   const snapshot = {};
   for (const [key, e] of currentByKey) {
-    snapshot[key] = { host: e.host, hasHost: e.hasHost };
+    snapshot[key] = {
+      host: e.host,
+      hasHost: e.hasHost,
+      title: e.title,
+      tabName: e.tabName,
+      dateISO: e.date.toISOString().slice(0, 10),
+      azStartMin: e.azStartMin,
+    };
   }
   writeDiffState({
     lastRunDate: updateLastRunDate ? baliNow(now).toISOString().slice(0, 10) : prevState.lastRunDate,
@@ -998,40 +1081,60 @@ async function runDailyHostDiffCheck(now = new Date(), { updateLastRunDate = fal
   });
 
   // "Silence if nothing changed" applies ONLY when there's neither a host
-  // removal nor a new event — as soon as a single new event shows up, Elena
-  // gets a message no matter what, even if that new event already has a
-  // host assigned (in that case it's purely informational: the 🆕 line
-  // below, nothing more). Do not add an `e.hasHost` check here.
-  if (hostRemoved.length === 0 && newEvents.length === 0) {
-    return { text: null, hostRemoved: 0, newEvents: 0, failedTabs };
+  // removal, nor a new event, nor a reschedule — as soon as any one of the
+  // three shows up, Elena gets a message no matter what, even if e.g. a
+  // new event already has a host assigned (in that case it's purely
+  // informational: the 🆕 line below, nothing more). Do not add an
+  // `e.hasHost` check here.
+  if (hostRemoved.length === 0 && newEvents.length === 0 && timeChanged.length === 0) {
+    return { text: null, hostRemoved: 0, newEvents: 0, timeChanged: 0, failedTabs };
   }
 
   const lines = [];
   for (const { event: e, previousHost } of hostRemoved) {
     lines.push(
-      `⚠️ Хост убрал себя с эфира: ${programLine(e.tabName, e.title)}, ${diffStamp(e)}. Был назначен: ${previousHost}. Сейчас хост не назначен.`
+      `⚠️ Хост убрал себя с эфира: ${programLine(e.tabName, e.title)}, ${diffStampRu(e)}. Был назначен: ${previousHost}. Сейчас хост не назначен.`
     );
   }
   for (const e of newEvents) {
     const hostLabel = e.hasHost ? e.host : 'не назначен';
-    lines.push(`🆕 Новый эфир в расписании: ${programLine(e.tabName, e.title)}, ${diffStamp(e)}, хост: ${hostLabel}.`);
+    lines.push(`🆕 Новый эфир в расписании: ${programLine(e.tabName, e.title)}, ${diffStampRu(e)}, хост: ${hostLabel}.`);
+  }
+  for (const { event: e, prev } of timeChanged) {
+    const prevPseudo = pseudoEventFromSnapshot(prev.dateISO, prev.azStartMin);
+    lines.push(
+      `⏰ Изменилось время эфира: ${programLine(e.tabName, e.title)}.\nБыло: ${diffStampRu(prevPseudo)}\nСтало: ${diffStampRu(e)}`
+    );
+    // Host assigned → also give Elena a ready-to-paste group message
+    // addressed to that host by name, asking them to reconfirm. No host →
+    // nothing more here; the still-open slot already surfaces below via
+    // the same "any event missing a host" catch-all /check-style listing.
+    if (e.hasHost) {
+      lines.push(buildTimeChangeHostNotice(e, prevPseudo));
+    }
   }
 
-  // A brand-new event with no host must additionally get Elena the
-  // ready-to-paste group announcement — same /check format (EN then RU,
-  // "host needed" / "нужен волонтёр"). Gating on "does ANY event this week
-  // still lack a host" (rather than "is the new event itself unhosted")
-  // is deliberate, not an approximation: a fresh unhosted event is always
-  // a member of allEvents, so this condition fires for it every time, and
-  // it also naturally folds in any other already-open slot so the pasted
-  // text reflects the whole week, not just the one new session.
+  // A brand-new or rescheduled event with no host must additionally get
+  // Elena the ready-to-paste group announcement — same /check format (EN
+  // then RU, "host needed" / "нужен волонтёр"). Gating on "does ANY event
+  // this week still lack a host" (rather than "is the new/moved event
+  // itself unhosted") is deliberate, not an approximation: such an event is
+  // always a member of allEvents, so this condition fires for it every
+  // time, and it also naturally folds in any other already-open slot so
+  // the pasted text reflects the whole week, not just the one session.
   if (allEvents.some((e) => !e.hasHost)) {
     const tags = loadCommunityTags();
     const hostSignupUrl = `https://docs.google.com/spreadsheets/d/${config.spreadsheetId}/edit?gid=${config.hostSignupGid}#gid=${config.hostSignupGid}`;
     lines.push(buildCheckMessage(allEvents, range, hostSignupUrl, tags));
   }
 
-  return { text: lines.join('\n\n'), hostRemoved: hostRemoved.length, newEvents: newEvents.length, failedTabs };
+  return {
+    text: lines.join('\n\n'),
+    hostRemoved: hostRemoved.length,
+    newEvents: newEvents.length,
+    timeChanged: timeChanged.length,
+    failedTabs,
+  };
 }
 
 function chunkMessage(text, maxLen = 3500) {
