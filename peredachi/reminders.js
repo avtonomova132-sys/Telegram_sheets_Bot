@@ -3,6 +3,19 @@ const { getNowMsk } = require('./query');
 
 const MSK_OFFSET_MS = 3 * 60 * 60 * 1000; // МСК = UTC+3 круглый год, без перехода на летнее/зимнее время
 
+// BROADCAST_GROUP_IDS — chat_id групп через запятую, куда дублируется то же
+// 20-минутное напоминание, что уже уходит на MY_CHAT_ID. Elena добавляет
+// вручную через переменную окружения на Railway; пустой список по
+// умолчанию — рассылка в группы не активна, личное напоминание не затрагивает.
+function getBroadcastGroupIds() {
+  return new Set(
+    String(process.env.BROADCAST_GROUP_IDS || '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean)
+  );
+}
+
 // Переводит dateISO+timeMSK (московское время) в момент UTC — так можно
 // сравнивать с Date.now() напрямую, без ручной арифметики над строками
 // (которая ломается на переходе через полночь).
@@ -108,4 +121,10 @@ function checkReminders(now = Date.now()) {
   return due;
 }
 
-module.exports = { parseMskDateTimeToUtcMs, formatMskDateRu, formatReminderMessage, checkReminders };
+module.exports = {
+  parseMskDateTimeToUtcMs,
+  formatMskDateRu,
+  formatReminderMessage,
+  checkReminders,
+  getBroadcastGroupIds,
+};

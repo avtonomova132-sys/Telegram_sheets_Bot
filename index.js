@@ -38,7 +38,7 @@ const {
   ensureGroupLinksSeeded,
   resolveInviteLink,
 } = require('./peredachi/groupLinks');
-const { checkReminders, formatReminderMessage } = require('./peredachi/reminders');
+const { checkReminders, formatReminderMessage, getBroadcastGroupIds } = require('./peredachi/reminders');
 const { extractEvent } = require('./events/extract');
 const { validateEvent } = require('./events/validate');
 const { fillTimezones } = require('./events/timezone');
@@ -415,13 +415,34 @@ if (myChatId) {
 // минут (МСК) и напоминание по ней ещё не отправлялось — шлём. checkReminders
 // сам помечает найденные записи reminderSent и сохраняет на диск, так что
 // повторный тик крона в ту же минуту (или в течение следующей) не пришлёт то
-// же самое напоминание второй раз.
-if (myChatId) {
+// же самое напоминание второй раз. Один и тот же текст уходит и лично
+// Elena (MY_CHAT_ID), и во все группы из BROADCAST_GROUP_IDS — дополнительной
+// проверки перед рассылкой не нужно: validate.js уже не даёт неполным
+// записям (без обязательного при наличии zoomLink zoomCode) попасть в
+// расписание через /добавить.
+const broadcastGroupIds = getBroadcastGroupIds();
+if (broadcastGroupIds.size === 0) {
+  console.log('BROADCAST_GROUP_IDS не задан — рассылка напоминаний в группы отключена, личное напоминание не затронуто.');
+}
+
+if (myChatId || broadcastGroupIds.size > 0) {
   cron.schedule('* * * * *', async () => {
     try {
       const due = checkReminders();
       for (const record of due) {
-        await bot.sendMessage(myChatId, formatReminderMessage(record));
+        const text = formatReminderMessage(record);
+
+        if (myChatId) {
+          await bot.sendMessage(myChatId, text);
+        }
+
+        for (const groupId of broadcastGroupIds) {
+          try {
+            await bot.sendMessage(groupId, text);
+          } catch (err) {
+            console.error(`[reminders] не удалось отправить напоминание в группу ${groupId}:`, err.message);
+          }
+        }
       }
     } catch (err) {
       console.error('[reminders] ошибка проверки напоминаний:', err.message);
