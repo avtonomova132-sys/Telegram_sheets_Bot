@@ -639,6 +639,7 @@ bot.onText(/^\/курсы(?:@\S+)?$/, async (msg) => {
     await bot.sendMessage(chatId, formatKursOverview(all), { parse_mode: 'Markdown' });
   } catch (err) {
     console.error('[peredachi] ошибка формирования списка курсов:', err.message);
+    console.error(err.stack);
     await bot.sendMessage(chatId, 'Не получилось получить список передач 😔');
   }
 });
@@ -652,6 +653,7 @@ bot.onText(/^\/курс([1-6])(?:@\S+)?$/, async (msg, match) => {
     await bot.sendMessage(chatId, formatKursDetail(all, kursNumber), { parse_mode: 'Markdown' });
   } catch (err) {
     console.error('[peredachi] ошибка формирования списка по курсу:', err.message);
+    console.error(err.stack);
     await bot.sendMessage(chatId, 'Не получилось получить список передач 😔');
   }
 });
@@ -664,6 +666,7 @@ bot.onText(/^\/медитаци[яи](?:@\S+)?$/, async (msg) => {
     await bot.sendMessage(chatId, formatMeditations(all), { parse_mode: 'Markdown' });
   } catch (err) {
     console.error('[peredachi] ошибка формирования списка медитаций:', err.message);
+    console.error(err.stack);
     await bot.sendMessage(chatId, 'Не получилось получить список медитаций 😔');
   }
 });
@@ -685,6 +688,7 @@ bot.onText(/^\/ближайший(?:@\S+)?(?:\s+(\S+))?$/, async (msg, match) =>
     await bot.sendMessage(chatId, formatNearest(all, kursArg), { parse_mode: 'Markdown' });
   } catch (err) {
     console.error('[peredachi] ошибка формирования ближайшей передачи:', err.message);
+    console.error(err.stack);
     await bot.sendMessage(chatId, 'Не получилось получить ближайшую передачу 😔');
   }
 });

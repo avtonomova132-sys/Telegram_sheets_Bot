@@ -84,9 +84,13 @@ function formatRecordBlock(record) {
   const dateStr = formatDateRu(record.dateISO);
   const timeStr = record.timeMSK ? `${record.timeMSK} МСК` : 'время уточняется';
   const zanyatie = escapeMarkdown(record.zanyatie);
-  const zoom = record.zoomLink || 'ссылка появится позже, следи за группой';
+  // zoomLink/groupLink идут через Anthropic API как свободный текст, а не
+  // только вручную вбитые ссылки — например Zoom часто кладёт в ?pwd=
+  // base64url-значение, у которого в алфавите есть "_" и "-", и непарный "_"
+  // в URL так же ломает парсинг легаси-Markdown, как и в любом другом поле.
+  const zoom = record.zoomLink ? escapeMarkdown(record.zoomLink) : 'ссылка появится позже, следи за группой';
   const zoomCode = escapeMarkdown(record.zoomCode);
-  const group = record.groupLink || '—';
+  const group = record.groupLink ? escapeMarkdown(record.groupLink) : '—';
 
   const lines = [`📅 ${dateStr}, ${timeStr}`];
   if (zanyatie) lines.push(`   ${zanyatie}`);
