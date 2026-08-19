@@ -23,6 +23,12 @@ function validateEntry(entry) {
   const hasLink = isUsableLink(entry.zoomLink) || isUsableLink(entry.groupLink);
   if (!hasLink) missing.push('ссылка на zoom или группу');
 
+  // Код нужен только если есть сама ссылка на Zoom — если известна только
+  // groupLink, код узнают в чате, требовать его тут смысла нет.
+  if (String(entry.zoomLink || '').trim() && !String(entry.zoomCode || '').trim()) {
+    missing.push('код доступа к Zoom');
+  }
+
   return { valid: missing.length === 0, missing };
 }
 

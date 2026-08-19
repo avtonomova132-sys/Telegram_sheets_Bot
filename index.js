@@ -568,6 +568,7 @@ bot.on('message', async (msg) => {
         timeMSK: entry.timeMSK || '',
         zanyatie: entry.zanyatie || '',
         zoomLink: entry.zoomLink || '',
+        zoomCode: entry.zoomCode || '',
         groupLink: entry.groupLink || '',
       };
 
@@ -580,10 +581,11 @@ bot.on('message', async (msg) => {
       const dateLabel = normalized.dateISO || 'не определена';
       const timeLabel = normalized.timeMSK ? `${normalized.timeMSK} МСК` : 'не определено';
       const hasLink = normalized.zoomLink.trim() || normalized.groupLink.trim();
+      const missingZoomCode = normalized.zoomLink.trim() && !normalized.zoomCode.trim();
 
-      // Отсутствие ссылки не должно блокировать само уведомление — Elena всё
-      // равно должна узнать про новую передачу, просто с явной пометкой, что
-      // ссылку надо уточнить отдельно.
+      // Отсутствие ссылки/кода не должно блокировать само уведомление — Elena
+      // всё равно должна узнать про новую передачу, просто с явной пометкой,
+      // что нужно уточнить отдельно.
       const notifyLines = [
         `🔔 Похоже на новую передачу (группа: ${groupTitle})`,
         '',
@@ -593,6 +595,9 @@ bot.on('message', async (msg) => {
       ];
       if (!hasLink) {
         notifyLines.push('⚠️ Ссылки не найдено — уточни у автора, где искать Zoom (часто "ссылка будет в этом же чате")');
+      }
+      if (missingZoomCode) {
+        notifyLines.push('⚠️ нет кода Zoom');
       }
       notifyLines.push('', 'Исходный текст:', excerpt, '', 'Чтобы добавить в расписание, перешли этот текст через /добавить.');
 
@@ -697,6 +702,7 @@ bot.onText(/^\/дубли(?:@\S+)?$/, async (msg) => {
               `учитель=${r.teacher || '—'}`,
               `занятие=${r.zanyatie || '—'}`,
               `zoom=${r.zoomLink || '—'}`,
+              `код=${r.zoomCode || '—'}`,
               `группа=${r.groupLink || '—'}`,
               `добавлено=${r.addedAt || '—'}`,
             ].join(', ')

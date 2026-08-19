@@ -1,7 +1,7 @@
 // Поля, которые сравниваем при определении "заполненности" и конфликтов между
 // записями. kurs/dateISO/timeMSK сюда не входят — это ключ совпадения, а не
 // содержимое, которое может отличаться по качеству.
-const MATCH_FIELDS = ['postfix', 'teacher', 'zanyatie', 'zoomLink', 'groupLink'];
+const MATCH_FIELDS = ['postfix', 'teacher', 'zanyatie', 'zoomLink', 'zoomCode', 'groupLink'];
 
 function fieldValue(record, field) {
   return String((record && record[field]) || '').trim();

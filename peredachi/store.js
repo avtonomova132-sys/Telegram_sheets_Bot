@@ -49,6 +49,7 @@ function addRecords(entries, rawText) {
       timeMSK: entry.timeMSK || '',
       zanyatie: entry.zanyatie || '',
       zoomLink: entry.zoomLink || '',
+      zoomCode: entry.zoomCode || '',
       groupLink: entry.groupLink || '',
       rawText,
     };

@@ -46,7 +46,7 @@ function formatReminderMessage(record) {
   const header = isMeditation ? 'Медитация' : `${record.kurs} курс прямая передача`;
   const link = record.zoomLink || record.groupLink || '';
 
-  return [
+  const lines = [
     `❣️${header}❣️`,
     'Через 20 минут начнется',
     '',
@@ -61,7 +61,12 @@ function formatReminderMessage(record) {
     '',
     'Ссылка на зум в этом чате 🙏🌱',
     link,
-  ].join('\n');
+  ];
+  if (record.zoomCode) {
+    lines.push(`Код: ${record.zoomCode}`);
+  }
+
+  return lines.join('\n');
 }
 
 // Находит записи, до начала которых осталось 19-20 минут, и ещё не получившие
