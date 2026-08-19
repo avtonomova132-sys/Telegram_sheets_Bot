@@ -48,6 +48,9 @@ const { analyzePhoto, isConfigured: gabarityConfigured } = require('./gabarity/e
 const { saveArticlesFile, findArticle } = require('./gabarity/articles');
 const { buildResultText: buildGabarityText } = require('./gabarity/format');
 const { isTrustedUser } = require('./auth');
+const { isKnownItem } = require('./proekty/items');
+const { getDay: getProDay, toggleItem: toggleProItem } = require('./proekty/store');
+const { buildProMessage, NOOP_CALLBACK: PRO_NOOP_CALLBACK, TOGGLE_PREFIX: PRO_TOGGLE_PREFIX } = require('./proekty/view');
 
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
@@ -449,6 +452,22 @@ if (myChatId || broadcastGroupIds.size > 0) {
     }
   });
 }
+
+// ===== Ежедневный трекер практик и проектов (/pro) =====
+// Список пунктов — в proekty/items.js, чтобы добавлять новые не трогая
+// остальной код. Данные — /data/proekty.json на volume, ключ дня — дата по
+// Бали (та же baliDateString, что использует /verse), сбрасывается сам
+// собой каждый новый день.
+bot.onText(/^\/pro(?:@\S+)?$/, async (msg) => {
+  const chatId = msg.chat.id;
+  if (!isTrustedUser(chatId)) return;
+
+  const dateKey = baliDateString();
+  const day = getProDay(dateKey);
+  const { text, reply_markup } = buildProMessage(day);
+
+  await bot.sendMessage(chatId, text, { reply_markup });
+});
 
 // ===== Прямые передачи курсов "Пять домов" =====
 bot.onText(/^\/добавить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) => {
@@ -1006,6 +1025,45 @@ bot.on('callback_query', async (query) => {
     console.error('[events] ошибка сохранения:', err.message);
     await bot.answerCallbackQuery(query.id, { text: 'Ошибка сохранения' });
     await bot.sendMessage(chatId, `Не получилось сохранить 😔 ${err.message}`);
+  }
+});
+
+bot.on('callback_query', async (query) => {
+  const data = query.data || '';
+  if (data !== PRO_NOOP_CALLBACK && !data.startsWith(PRO_TOGGLE_PREFIX)) return;
+
+  const chatId = query.message.chat.id;
+
+  if (data === PRO_NOOP_CALLBACK) {
+    await bot.answerCallbackQuery(query.id);
+    return;
+  }
+
+  if (!isTrustedUser(chatId)) {
+    await bot.answerCallbackQuery(query.id, { text: 'Команда недоступна' });
+    return;
+  }
+
+  const itemKey = data.slice(PRO_TOGGLE_PREFIX.length);
+  if (!isKnownItem(itemKey)) {
+    await bot.answerCallbackQuery(query.id);
+    return;
+  }
+
+  try {
+    const dateKey = baliDateString();
+    const day = toggleProItem(dateKey, itemKey);
+    const { text, reply_markup } = buildProMessage(day);
+
+    await bot.editMessageText(text, {
+      chat_id: chatId,
+      message_id: query.message.message_id,
+      reply_markup,
+    });
+    await bot.answerCallbackQuery(query.id);
+  } catch (err) {
+    console.error('[proekty] ошибка сохранения:', err.message);
+    await bot.answerCallbackQuery(query.id, { text: 'Ошибка сохранения' });
   }
 });
 
