@@ -27,7 +27,7 @@ const {
 } = require('./verse/progress');
 const { extractPeredachi } = require('./peredachi/extract');
 const { addRecords, readAll: readPeredachi, saveAll: savePeredachi } = require('./peredachi/store');
-const { formatKursOverview, formatKursDetail, formatMeditations } = require('./peredachi/query');
+const { formatKursOverview, formatKursDetail, formatMeditations, formatNearest } = require('./peredachi/query');
 const { analyzeDuplicates, isSameEvent } = require('./peredachi/dedupe');
 const { validateEntry, describeEntry } = require('./peredachi/validate');
 const { analyzeSplits } = require('./peredachi/split');
@@ -644,6 +644,27 @@ bot.onText(/^\/медитаци[яи](?:@\S+)?$/, async (msg) => {
   } catch (err) {
     console.error('[peredachi] ошибка формирования списка медитаций:', err.message);
     await bot.sendMessage(chatId, 'Не получилось получить список медитаций 😔');
+  }
+});
+
+// /ближайший <курс> — не список (как /курс1...курс6), а ровно одна, самая
+// ближайшая по времени запись, полным форматом. <курс> — номер 1-6 или
+// "медитация".
+bot.onText(/^\/ближайший(?:@\S+)?(?:\s+(\S+))?$/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const kursArg = match[1] ? match[1].trim() : '';
+
+  if (!kursArg) {
+    await bot.sendMessage(chatId, 'Использование: /ближайший <курс>\nНапример: /ближайший 6 или /ближайший медитация');
+    return;
+  }
+
+  try {
+    const all = readPeredachi();
+    await bot.sendMessage(chatId, formatNearest(all, kursArg), { parse_mode: 'Markdown' });
+  } catch (err) {
+    console.error('[peredachi] ошибка формирования ближайшей передачи:', err.message);
+    await bot.sendMessage(chatId, 'Не получилось получить ближайшую передачу 😔');
   }
 });
 

@@ -90,6 +90,7 @@ function formatRecordBlock(record) {
   const lines = [`📅 ${dateStr}, ${timeStr}`];
   if (zanyatie) lines.push(`   ${zanyatie}`);
   lines.push(`   🔗 ${zoom}`);
+  if (record.zoomCode) lines.push(`   Код: ${record.zoomCode}`);
   lines.push(`   👥 ${group}`);
   return lines.join('\n');
 }
@@ -99,6 +100,12 @@ function formatRecordBlock(record) {
 function sectionTitle(kursKey) {
   if (String(kursKey).trim() === 'медитация') return '🧘 *Медитации — ближайшие:*';
   return `📖 *Курс ${escapeMarkdown(kursKey)} — ближайшие передачи:*`;
+}
+
+// Заголовок для /ближайший — тот же принцип, но в единственном числе.
+function sectionTitleSingle(kursKey) {
+  if (String(kursKey).trim() === 'медитация') return '🧘 *Ближайшая медитация:*';
+  return `📖 *Курс ${escapeMarkdown(kursKey)} — ближайшая передача:*`;
 }
 
 function formatSection(title, records) {
@@ -159,6 +166,18 @@ function formatMeditations(all) {
   return formatSection(sectionTitle('медитация'), upcoming);
 }
 
+// /ближайший <курс> — не список, а ровно одна, самая ближайшая по времени
+// запись по курсу (recordMatchesKurs понимает и "медитация", и постфиксы
+// экспресс-курсов вроде "1-5" — та же логика, что у /курс1...курс6).
+function formatNearest(all, kursArg) {
+  const upcoming = upcomingSorted(all);
+  const filtered = upcoming.filter((r) => recordMatchesKurs(r, kursArg));
+  if (filtered.length === 0) {
+    return `По курсу ${kursArg} пока нет предстоящих передач.`;
+  }
+  return formatSection(sectionTitleSingle(kursArg), [filtered[0]]);
+}
+
 module.exports = {
   getNowMsk,
   extractCourseNumbers,
@@ -169,4 +188,5 @@ module.exports = {
   formatKursOverview,
   formatKursDetail,
   formatMeditations,
+  formatNearest,
 };
