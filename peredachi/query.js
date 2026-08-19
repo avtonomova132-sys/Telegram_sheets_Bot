@@ -85,12 +85,13 @@ function formatRecordBlock(record) {
   const timeStr = record.timeMSK ? `${record.timeMSK} МСК` : 'время уточняется';
   const zanyatie = escapeMarkdown(record.zanyatie);
   const zoom = record.zoomLink || 'ссылка появится позже, следи за группой';
+  const zoomCode = escapeMarkdown(record.zoomCode);
   const group = record.groupLink || '—';
 
   const lines = [`📅 ${dateStr}, ${timeStr}`];
   if (zanyatie) lines.push(`   ${zanyatie}`);
   lines.push(`   🔗 ${zoom}`);
-  if (record.zoomCode) lines.push(`   Код: ${record.zoomCode}`);
+  if (zoomCode) lines.push(`   Код: ${zoomCode}`);
   lines.push(`   👥 ${group}`);
   return lines.join('\n');
 }
