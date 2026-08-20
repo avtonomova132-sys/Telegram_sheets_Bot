@@ -51,6 +51,19 @@ const { isTrustedUser } = require('./auth');
 const { isKnownItem } = require('./proekty/items');
 const { getDay: getProDay, toggleItem: toggleProItem } = require('./proekty/store');
 const { buildProMessage, NOOP_CALLBACK: PRO_NOOP_CALLBACK, TOGGLE_PREFIX: PRO_TOGGLE_PREFIX } = require('./proekty/view');
+const {
+  PROJECTS: ZAD_PROJECTS,
+  looksLikeTaskMessage,
+  parseTaskMessage,
+  isConfigured: zadachiConfigured,
+} = require('./zadachi/items-parser');
+const { addTask, markDone, getOpenTasks } = require('./zadachi/store');
+const {
+  buildTaskAddedText,
+  buildTasksListMessage,
+  NOOP_CALLBACK: ZAD_NOOP_CALLBACK,
+  DONE_PREFIX: ZAD_DONE_PREFIX,
+} = require('./zadachi/view');
 
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
@@ -152,6 +165,13 @@ bot.on('message', async (msg) => {
   // упал бы либо в парсер напоминаний, либо в эхо-ответ ниже.
   if (eventSessions.has(chatId)) {
     await handleEventDescription(chatId, text);
+    return;
+  }
+
+  // Задачи/встречи по проектам в формате "Название: текст" — тоже
+  // перехватываются здесь, до напоминаний и эхо-ответа, иначе ушедшая на
+  // сохранение задача попала бы вдобавок ещё и в заглушку-эхо ниже.
+  if (await handleTaskMessage(chatId, text)) {
     return;
   }
 
@@ -467,6 +487,103 @@ bot.onText(/^\/pro(?:@\S+)?$/, async (msg) => {
   const { text, reply_markup } = buildProMessage(day);
 
   await bot.sendMessage(chatId, text, { reply_markup });
+});
+
+// ===== Задачи и встречи по проектам в свободной форме (/задача, /задачи) =====
+// Elena диктует голосом через клавиатуру iPhone одной строкой в формате
+// "Название проекта: текст задачи" — обычным текстовым сообщением, без
+// команды. Список проектов — тот же, что в proekty/items.js (секция "Мои
+// проекты"), см. zadachi/items-parser.js. Данные — /data/zadachi.json на
+// volume, дата/время — в МСК (как и в /добавить).
+bot.onText(/^\/задача(?:@\S+)?$/, async (msg) => {
+  const chatId = msg.chat.id;
+  if (!isTrustedUser(chatId)) return;
+
+  const projectsList = ZAD_PROJECTS.map((p) => `• ${p.label}`).join('\n');
+  await bot.sendMessage(
+    chatId,
+    '📝 Как добавить задачу или встречу\n\n' +
+      'Напиши сообщением (можно продиктовать голосом через клавиатуру) в формате:\n' +
+      'Название проекта: текст задачи\n\n' +
+      'Например:\n' +
+      '«Афиша: встреча с Оксаной завтра в 15:00 по Бали»\n' +
+      '«Прямые передачи: доделать проверку дубликатов»\n' +
+      '«Хосты WVP: написать Тимоти про замену на четверг»\n\n' +
+      'Проекты, которые я понимаю:\n' +
+      `${projectsList}\n\n` +
+      'Посмотреть список задач — /задачи'
+  );
+});
+
+bot.onText(/^\/задачи(?:@\S+)?$/, async (msg) => {
+  const chatId = msg.chat.id;
+  if (!isTrustedUser(chatId)) return;
+
+  const { text, reply_markup } = buildTasksListMessage(getOpenTasks());
+  await bot.sendMessage(chatId, text, { reply_markup });
+});
+
+// Возвращает true, только если сообщение реально обработано здесь (задача
+// сохранена, либо явная ошибка API/записи уже показана пользователю) — и
+// цепочка в bot.on('message', ...) дальше не идёт. Если формат похож, но
+// Claude не уверен, к какому проекту это относится (matched: false) —
+// возвращаем false: сообщение не наше, пусть идёт дальше как обычно (в
+// парсер напоминаний/эхо), а не проглатывается молча.
+async function handleTaskMessage(chatId, text) {
+  if (!looksLikeTaskMessage(text)) return false;
+  if (!isTrustedUser(chatId)) return false;
+  if (!zadachiConfigured) return false;
+
+  try {
+    const result = await parseTaskMessage(text);
+    if (!result.matched) return false;
+
+    const record = addTask(result);
+    await bot.sendMessage(chatId, buildTaskAddedText(record));
+    return true;
+  } catch (err) {
+    console.error('[zadachi] ошибка распознавания/сохранения задачи:', err.message);
+    await bot.sendMessage(chatId, 'Не получилось разобрать и сохранить задачу 😔 Попробуй ещё раз.');
+    return true;
+  }
+}
+
+bot.on('callback_query', async (query) => {
+  const data = query.data || '';
+  if (data !== ZAD_NOOP_CALLBACK && !data.startsWith(ZAD_DONE_PREFIX)) return;
+
+  const chatId = query.message.chat.id;
+
+  if (data === ZAD_NOOP_CALLBACK) {
+    await bot.answerCallbackQuery(query.id);
+    return;
+  }
+
+  if (!isTrustedUser(chatId)) {
+    await bot.answerCallbackQuery(query.id, { text: 'Команда недоступна' });
+    return;
+  }
+
+  const id = data.slice(ZAD_DONE_PREFIX.length);
+
+  try {
+    const record = markDone(id);
+    if (!record) {
+      await bot.answerCallbackQuery(query.id, { text: 'Задача уже не найдена' });
+      return;
+    }
+
+    const { text, reply_markup } = buildTasksListMessage(getOpenTasks());
+    await bot.editMessageText(text, {
+      chat_id: chatId,
+      message_id: query.message.message_id,
+      reply_markup,
+    });
+    await bot.answerCallbackQuery(query.id, { text: 'Готово!' });
+  } catch (err) {
+    console.error('[zadachi] ошибка сохранения:', err.message);
+    await bot.answerCallbackQuery(query.id, { text: 'Ошибка сохранения' });
+  }
 });
 
 // ===== Прямые передачи курсов "Пять домов" =====
