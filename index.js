@@ -1044,6 +1044,91 @@ bot.onText(/^\/обновитьссылки(?:@\S+)?$/, async (msg) => {
   }
 });
 
+// ДД.ММ.ГГГГ или ГГГГ-ММ-ДД -> ГГГГ-ММ-ДД (как в dateISO), иначе null.
+function parseDateArg(token) {
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(token);
+  if (iso) return token;
+  const ru = /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/.exec(token);
+  if (!ru) return null;
+  const [, d, m, y] = ru;
+  return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+}
+
+// /удалить <название занятия> <дата> — последнее слово читается как дата
+// (ДД.ММ.ГГГГ или ГГГГ-ММ-ДД), всё перед ним — текст для поиска по zanyatie
+// (без учёта регистра, по вхождению подстроки). Если совпадений несколько —
+// ничего не удаляет, показывает список, чтобы уточнить формулировку, а не
+// удалять наугад.
+bot.onText(/^\/удалить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) => {
+  const chatId = msg.chat.id;
+
+  if (!isTrustedUser(chatId)) {
+    await bot.sendMessage(chatId, 'Эта команда доступна только организаторам.');
+    return;
+  }
+
+  const argText = match[1] ? match[1].trim() : '';
+  const usage = 'Использование: /удалить <название занятия> <дата>\nНапример: /удалить Занятие 4 20.08.2026';
+
+  if (!argText) {
+    await bot.sendMessage(chatId, usage);
+    return;
+  }
+
+  const tokens = argText.split(/\s+/);
+  const dateToken = tokens[tokens.length - 1];
+  const dateISO = parseDateArg(dateToken);
+
+  if (!dateISO) {
+    await bot.sendMessage(chatId, `Не понял дату "${dateToken}" — укажи её последним словом, формат ДД.ММ.ГГГГ.\n\n${usage}`);
+    return;
+  }
+
+  const searchText = tokens.slice(0, -1).join(' ').trim();
+  if (!searchText) {
+    await bot.sendMessage(chatId, `Укажи название занятия перед датой.\n\n${usage}`);
+    return;
+  }
+
+  try {
+    const all = readPeredachi();
+    const searchLower = searchText.toLowerCase();
+    const matches = all.filter(
+      (r) => r.dateISO === dateISO && String(r.zanyatie || '').toLowerCase().includes(searchLower)
+    );
+
+    if (matches.length === 0) {
+      await bot.sendMessage(chatId, `Не найдено записей с "${searchText}" на ${dateToken}.`);
+      return;
+    }
+
+    if (matches.length > 1) {
+      const lines = matches.map(
+        (r) =>
+          `— id=${r.id}, курс=${r.kurs}${r.postfix ? ` (${r.postfix})` : ''}, ${r.dateISO} ${r.timeMSK || '?'} МСК, "${r.zanyatie || '—'}"`
+      );
+      await bot.sendMessage(
+        chatId,
+        `Нашлось несколько подходящих записей — уточни текст, чтобы совпадала только одна:\n${lines.join('\n')}`
+      );
+      return;
+    }
+
+    const removed = matches[0];
+    savePeredachi(all.filter((r) => r.id !== removed.id));
+
+    const kursLabel = removed.postfix ? `${removed.kurs} (${removed.postfix})` : removed.kurs || '?';
+    await bot.sendMessage(
+      chatId,
+      `🗑 Удалено: курс ${kursLabel} — ${removed.dateISO}, ${removed.timeMSK || '?'} МСК — "${removed.zanyatie || '—'}"`
+    );
+  } catch (err) {
+    console.error('[peredachi] ошибка удаления записи:', err.message);
+    console.error(err.stack);
+    await bot.sendMessage(chatId, 'Не получилось удалить запись 😔');
+  }
+});
+
 // ===== Новое событие в афише (/new) =====
 // Сессия по chatId: history — messages для Anthropic (весь диалог, чтобы
 // уточнения не теряли уже распознанный контекст), parsed — последний
