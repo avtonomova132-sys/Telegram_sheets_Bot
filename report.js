@@ -1075,10 +1075,22 @@ async function runDailyHostDiffCheck(now = new Date(), { updateLastRunDate = fal
       azStartMin: e.azStartMin,
     };
   }
-  writeDiffState({
-    lastRunDate: updateLastRunDate ? baliNow(now).toISOString().slice(0, 10) : prevState.lastRunDate,
-    events: snapshot,
-  });
+  // Only the real scheduled run (updateLastRunDate: true, see
+  // checkAndRunDailyHostDiff in index.js) is allowed to move the comparison
+  // baseline forward. A manual preview (/автопроверка, updateLastRunDate:
+  // false) must NOT persist `snapshot` here even though it already computed
+  // one above to diff against — writing it would silently replace
+  // yesterday's real baseline with "whatever the schedule looks like right
+  // now", so if a change (e.g. a host disappearing) happened between the
+  // last scheduled run and a same-day manual check, that manual write erases
+  // the evidence and the next scheduled run finds nothing to report. This
+  // is exactly how a real reschedule/host-removal went undetected before.
+  if (updateLastRunDate) {
+    writeDiffState({
+      lastRunDate: baliNow(now).toISOString().slice(0, 10),
+      events: snapshot,
+    });
+  }
 
   // "Silence if nothing changed" applies ONLY when there's neither a host
   // removal, nor a new event, nor a reschedule — as soon as any one of the
