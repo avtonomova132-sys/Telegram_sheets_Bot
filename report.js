@@ -742,7 +742,7 @@ function buildCheckMessage(events, range, tags, failedTabs = []) {
 
   const enBlock = [
     partial ? partialDataWarningEn(failedTabs) : null,
-    `📝 🔥${enHostPhrase(missing.length)} for this week, ${rangeEn}`,
+    `📝 ‼️${enHostPhrase(missing.length)} for this week, ${rangeEn}`,
     '',
     enBody,
     '',
@@ -754,7 +754,7 @@ function buildCheckMessage(events, range, tags, failedTabs = []) {
 
   const ruBlock = [
     partial ? partialDataWarningRu(failedTabs) : null,
-    `📝 🔥${ruHostPhrase(missing.length)} на эту неделю с ${rangeRu}.`,
+    `📝 ‼️${ruHostPhrase(missing.length)} на эту неделю с ${rangeRu}.`,
     '',
     ruBody,
     '',
@@ -826,7 +826,7 @@ function tabBreakdownEn(events) {
   return order
     .map((name, i) => {
       const isLast = i === order.length - 1;
-      const alert = missing.get(name) ? ' ❗️‼️' : '';
+      const alert = missing.get(name) ? ' ‼️' : '';
       return `${counts.get(name)} from ${name}${alert}${isLast ? '.' : ','}`;
     })
     .join('\n');
@@ -848,7 +848,7 @@ function tabBreakdownRu(events) {
   return order
     .map((name, i) => {
       const isLast = i === order.length - 1;
-      const alert = missing.get(name) ? ' ❗️‼️' : '';
+      const alert = missing.get(name) ? ' ‼️' : '';
       return `${counts.get(name)} — ${name}${alert}${isLast ? '.' : ','}`;
     })
     .join('\n');
