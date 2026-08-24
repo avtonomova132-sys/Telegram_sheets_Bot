@@ -31,6 +31,7 @@ const { formatKursOverview, formatKursDetail, formatMeditations, formatNearest }
 const { analyzeDuplicates, isSameEvent } = require('./peredachi/dedupe');
 const { validateEntry, describeEntry } = require('./peredachi/validate');
 const { analyzeSplits } = require('./peredachi/split');
+const { findStaleTimeGroups, hasStaleTimeConflict } = require('./peredachi/stale');
 const { getWatchedGroupIds, looksLikeAnnouncement } = require('./peredachi/watch');
 const {
   readGroupLinks,
@@ -653,7 +654,11 @@ bot.onText(/^\/добавить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) 
     const blocks = [];
 
     if (validEntries.length > 0) {
+      // Снимок до записи — чтобы проверить на устаревшее время именно против
+      // того, что уже было на диске (плюс других записей этого же добавления).
+      const existingBeforeAdd = readPeredachi();
       const { added, updated, skipped } = addRecords(validEntries, rawText);
+
       if (added.length > 0) {
         blocks.push(`✅ Добавлено новых: ${added.length}\n${added.map(describe).join('\n')}`);
       }
@@ -662,6 +667,11 @@ bot.onText(/^\/добавить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) 
       }
       if (skipped.length > 0) {
         blocks.push(`✅ Уже было в расписании: ${skipped.length}\n${skipped.map(describe).join('\n')}`);
+      }
+
+      const comparisonPool = [...existingBeforeAdd, ...added];
+      if (added.some((r) => hasStaleTimeConflict(comparisonPool, r))) {
+        blocks.push('⚠️ Похоже, раньше было другое время для этого курса/даты — проверь /устаревшие');
       }
     }
 
@@ -777,7 +787,15 @@ bot.onText(/^\/курсы(?:@\S+)?$/, async (msg) => {
 
   try {
     const all = readPeredachi();
-    await bot.sendMessage(chatId, formatKursOverview(all), { parse_mode: 'Markdown' });
+    // /курсы больше не сокращает список (см. историю), поэтому с реальным
+    // объёмом данных легко перевалить за лимит Telegram в 4096 символов —
+    // chunkMessage режет только по границам "параграфов" (\n\n), а каждый
+    // блок записи/заголовок сам по себе уже сбалансирован по Markdown после
+    // экранирования, так что разрезание не может порвать какой-то *…*/_…_
+    // посередине.
+    for (const chunk of chunkMessage(formatKursOverview(all))) {
+      await bot.sendMessage(chatId, chunk, { parse_mode: 'Markdown' });
+    }
   } catch (err) {
     console.error('[peredachi] ошибка формирования списка курсов:', err.message);
     console.error(err.stack);
@@ -791,7 +809,9 @@ bot.onText(/^\/курс([1-6])(?:@\S+)?$/, async (msg, match) => {
 
   try {
     const all = readPeredachi();
-    await bot.sendMessage(chatId, formatKursDetail(all, kursNumber), { parse_mode: 'Markdown' });
+    for (const chunk of chunkMessage(formatKursDetail(all, kursNumber))) {
+      await bot.sendMessage(chatId, chunk, { parse_mode: 'Markdown' });
+    }
   } catch (err) {
     console.error('[peredachi] ошибка формирования списка по курсу:', err.message);
     console.error(err.stack);
@@ -804,7 +824,9 @@ bot.onText(/^\/медитаци[яи](?:@\S+)?$/, async (msg) => {
 
   try {
     const all = readPeredachi();
-    await bot.sendMessage(chatId, formatMeditations(all), { parse_mode: 'Markdown' });
+    for (const chunk of chunkMessage(formatMeditations(all))) {
+      await bot.sendMessage(chatId, chunk, { parse_mode: 'Markdown' });
+    }
   } catch (err) {
     console.error('[peredachi] ошибка формирования списка медитаций:', err.message);
     console.error(err.stack);
@@ -826,7 +848,9 @@ bot.onText(/^\/ближайший(?:@\S+)?(?:\s+(\S+))?$/, async (msg, match) =>
 
   try {
     const all = readPeredachi();
-    await bot.sendMessage(chatId, formatNearest(all, kursArg), { parse_mode: 'Markdown' });
+    for (const chunk of chunkMessage(formatNearest(all, kursArg))) {
+      await bot.sendMessage(chatId, chunk, { parse_mode: 'Markdown' });
+    }
   } catch (err) {
     console.error('[peredachi] ошибка формирования ближайшей передачи:', err.message);
     console.error(err.stack);
@@ -1131,6 +1155,50 @@ bot.onText(/^\/удалить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) =>
     console.error('[peredachi] ошибка удаления записи:', err.message);
     console.error(err.stack);
     await bot.sendMessage(chatId, 'Не получилось удалить запись 😔');
+  }
+});
+
+// Разовая/повторная проверка volume на записи с одинаковым kurs+dateISO, но
+// разным timeMSK — вероятно, старую запись со сдвинутым временем не удалили
+// при добавлении новой. Ничего не удаляет автоматически, только показывает
+// список — решение (и /удалить нужной записи) остаётся за человеком.
+bot.onText(/^\/устаревшие(?:@\S+)?$/, async (msg) => {
+  const chatId = msg.chat.id;
+
+  if (!isTrustedUser(chatId)) {
+    await bot.sendMessage(chatId, 'Эта команда доступна только организаторам.');
+    return;
+  }
+
+  try {
+    const all = readPeredachi();
+    const groups = findStaleTimeGroups(all);
+
+    if (groups.length === 0) {
+      await bot.sendMessage(chatId, 'Записей с подозрительно разным временем не найдено.');
+      return;
+    }
+
+    const lines = [];
+    groups.forEach((group, gi) => {
+      const kursLabel = group[0].postfix ? `${group[0].kurs} (${group[0].postfix})` : group[0].kurs;
+      lines.push(`Группа ${gi + 1}: курс ${kursLabel}, дата ${group[0].dateISO}`);
+      group.forEach((r) => {
+        lines.push(
+          `  — id=${r.id}, время=${r.timeMSK || '?'} МСК, добавлено=${r.addedAt || '—'}, "${r.zanyatie || '—'}"`
+        );
+      });
+      lines.push('');
+    });
+    lines.push('Ничего не удалено — используй /удалить <название> <дата>, чтобы убрать устаревшую запись вручную.');
+
+    for (const chunk of chunkMessage(lines.join('\n'))) {
+      await bot.sendMessage(chatId, chunk);
+    }
+  } catch (err) {
+    console.error('[peredachi] ошибка поиска устаревших записей:', err.message);
+    console.error(err.stack);
+    await bot.sendMessage(chatId, 'Не получилось проверить устаревшие записи 😔');
   }
 });
 
