@@ -27,7 +27,7 @@ const {
 } = require('./verse/progress');
 const { extractPeredachi } = require('./peredachi/extract');
 const { addRecords, readAll: readPeredachi, saveAll: savePeredachi } = require('./peredachi/store');
-const { formatKursOverview, formatKursDetail, formatMeditations, formatNearest } = require('./peredachi/query');
+const { formatKursOverview, formatKursDetail, formatMeditations, formatNearest, recordMatchesKurs } = require('./peredachi/query');
 const { analyzeDuplicates, isSameEvent } = require('./peredachi/dedupe');
 const { validateEntry, describeEntry } = require('./peredachi/validate');
 const { analyzeSplits } = require('./peredachi/split');
@@ -1082,11 +1082,11 @@ function parseDateArg(token) {
   return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
 }
 
-// /удалить <название занятия> <дата> — последнее слово читается как дата
-// (ДД.ММ.ГГГГ или ГГГГ-ММ-ДД), всё перед ним — текст для поиска по zanyatie
-// (без учёта регистра, по вхождению подстроки). Если совпадений несколько —
-// ничего не удаляет, показывает список, чтобы уточнить формулировку, а не
-// удалять наугад.
+// /удалить <курс> <дата> [время] — курс как везде (1-6 или "медитация",
+// через recordMatchesKurs — понимает и postfix-диапазоны экспресс-курсов);
+// дата — ДД.ММ.ГГГГ или ГГГГ-ММ-ДД (через parseDateArg). Если на эту дату
+// у курса несколько записей с разным временем — ничего не удаляет, только
+// показывает варианты и просит уточнить время третьим параметром.
 bot.onText(/^\/удалить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) => {
   const chatId = msg.chat.id;
 
@@ -1096,7 +1096,7 @@ bot.onText(/^\/удалить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) =>
   }
 
   const argText = match[1] ? match[1].trim() : '';
-  const usage = 'Использование: /удалить <название занятия> <дата>\nНапример: /удалить Занятие 4 20.08.2026';
+  const usage = 'Использование: /удалить <курс> <дата> [время]\nНапример: /удалить 6 2026-08-26\nили /удалить 6 2026-08-26 17:00, если записей на эту дату несколько';
 
   if (!argText) {
     await bot.sendMessage(chatId, usage);
@@ -1104,40 +1104,41 @@ bot.onText(/^\/удалить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) =>
   }
 
   const tokens = argText.split(/\s+/);
-  const dateToken = tokens[tokens.length - 1];
-  const dateISO = parseDateArg(dateToken);
-
-  if (!dateISO) {
-    await bot.sendMessage(chatId, `Не понял дату "${dateToken}" — укажи её последним словом, формат ДД.ММ.ГГГГ.\n\n${usage}`);
+  if (tokens.length < 2 || tokens.length > 3) {
+    await bot.sendMessage(chatId, usage);
     return;
   }
 
-  const searchText = tokens.slice(0, -1).join(' ').trim();
-  if (!searchText) {
-    await bot.sendMessage(chatId, `Укажи название занятия перед датой.\n\n${usage}`);
+  const [kursArg, dateToken, timeArg] = tokens;
+  const dateISO = parseDateArg(dateToken);
+
+  if (!dateISO) {
+    await bot.sendMessage(chatId, `Не понял дату "${dateToken}".\n\n${usage}`);
     return;
   }
 
   try {
     const all = readPeredachi();
-    const searchLower = searchText.toLowerCase();
-    const matches = all.filter(
-      (r) => r.dateISO === dateISO && String(r.zanyatie || '').toLowerCase().includes(searchLower)
-    );
+    let matches = all.filter((r) => r.dateISO === dateISO && recordMatchesKurs(r, kursArg));
 
     if (matches.length === 0) {
-      await bot.sendMessage(chatId, `Не найдено записей с "${searchText}" на ${dateToken}.`);
+      await bot.sendMessage(chatId, `Запись не найдена: Курс ${kursArg} — ${dateISO}.`);
       return;
     }
 
+    if (timeArg) {
+      matches = matches.filter((r) => String(r.timeMSK || '').trim() === timeArg);
+      if (matches.length === 0) {
+        await bot.sendMessage(chatId, `Запись не найдена: Курс ${kursArg} — ${dateISO}, ${timeArg} МСК.`);
+        return;
+      }
+    }
+
     if (matches.length > 1) {
-      const lines = matches.map(
-        (r) =>
-          `— id=${r.id}, курс=${r.kurs}${r.postfix ? ` (${r.postfix})` : ''}, ${r.dateISO} ${r.timeMSK || '?'} МСК, "${r.zanyatie || '—'}"`
-      );
+      const lines = matches.map((r) => `— ${r.timeMSK || '?'} МСК — ${r.zanyatie || '—'}`);
       await bot.sendMessage(
         chatId,
-        `Нашлось несколько подходящих записей — уточни текст, чтобы совпадала только одна:\n${lines.join('\n')}`
+        `Найдено несколько записей: Курс ${kursArg} — ${dateISO}:\n${lines.join('\n')}\n\nУточни время, например: /удалить ${kursArg} ${dateISO} ${matches[0].timeMSK || 'ЧЧ:ММ'}`
       );
       return;
     }
@@ -1148,7 +1149,7 @@ bot.onText(/^\/удалить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) =>
     const kursLabel = removed.postfix ? `${removed.kurs} (${removed.postfix})` : removed.kurs || '?';
     await bot.sendMessage(
       chatId,
-      `🗑 Удалено: курс ${kursLabel} — ${removed.dateISO}, ${removed.timeMSK || '?'} МСК — "${removed.zanyatie || '—'}"`
+      `Удалено: Курс ${kursLabel} — ${removed.dateISO}, ${removed.timeMSK || '?'} МСК — ${removed.zanyatie || '—'}`
     );
   } catch (err) {
     console.error('[peredachi] ошибка удаления записи:', err.message);
