@@ -662,7 +662,7 @@ function checkEventBlockEn(e) {
     `${programEmoji(e.tabName)} ${e.tabName}`,
     `🕒 Arizona: ${formatMonthDayEn(e.date)}, ${formatRange12h(e.azStartMin, e.azEndMin)}`,
     `🕒 Moscow: ${formatMonthDayEn(mskDate(e))}, ${formatRange12h(e.mskStartMin, e.mskEndMin)}`,
-    '👤 Host: needed',
+    '➖👤 Host: needed',
     e.tabUrl,
   ].join('\n');
 }
@@ -672,7 +672,7 @@ function checkEventBlockRu(e) {
     `${programEmoji(e.tabName)} ${e.tabName}`,
     `🕒 Аризона: ${formatMonthDayRu(e.date)}, ${formatRange24h(e.azStartMin, e.azEndMin)}`,
     `🕒 Москва: ${formatMonthDayRu(mskDate(e))}, ${formatRange24h(e.mskStartMin, e.mskEndMin)}`,
-    '👤 Хост: нужен',
+    '➖👤 Хост: нужен',
     e.tabUrl,
   ].join('\n');
 }
@@ -779,17 +779,17 @@ function buildCheckMessage(events, range, tags, failedTabs = []) {
 function weeklyHostLineEn(e) {
   if (e.hasHost) {
     const co = e.coHost ? `, Co-Host: ${e.coHost}` : '';
-    return `🌱👤 Host: ${e.host}${co}`;
+    return `✅👤 Host: ${e.host}${co}`;
   }
-  return '🔥👤 Host: volunteer needed 🙏';
+  return '➖👤 Host: volunteer needed 🙏';
 }
 
 function weeklyHostLineRu(e) {
   if (e.hasHost) {
     const co = e.coHost ? `, Ко-хост: ${e.coHost}` : '';
-    return `🌱👤 Хост: ${e.host}${co}`;
+    return `✅👤 Хост: ${e.host}${co}`;
   }
-  return '🔥👤 Хост: нужен волонтёр 🙏';
+  return '➖👤 Хост: нужен волонтёр 🙏';
 }
 
 function weeklyEventBlockEn(e) {
@@ -826,8 +826,8 @@ function tabBreakdownEn(events) {
   return order
     .map((name, i) => {
       const isLast = i === order.length - 1;
-      const fire = missing.get(name) ? ' 🔥' : '';
-      return `${counts.get(name)} from ${name}${fire}${isLast ? '.' : ','}`;
+      const alert = missing.get(name) ? ' ❗️‼️' : '';
+      return `${counts.get(name)} from ${name}${alert}${isLast ? '.' : ','}`;
     })
     .join('\n');
 }
@@ -848,8 +848,8 @@ function tabBreakdownRu(events) {
   return order
     .map((name, i) => {
       const isLast = i === order.length - 1;
-      const fire = missing.get(name) ? ' 🔥' : '';
-      return `${counts.get(name)} — ${name}${fire}${isLast ? '.' : ','}`;
+      const alert = missing.get(name) ? ' ❗️‼️' : '';
+      return `${counts.get(name)} — ${name}${alert}${isLast ? '.' : ','}`;
     })
     .join('\n');
 }
