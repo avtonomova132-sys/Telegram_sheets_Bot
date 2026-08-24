@@ -600,7 +600,7 @@ const ACADEMIC_KEYWORDS = ['aci', 'pramana', 'teacher training', 'yoga studies',
 
 function programEmoji(tabName) {
   const lower = tabName.toLowerCase();
-  return ACADEMIC_KEYWORDS.some((k) => lower.includes(k)) ? '🎓' : '💙';
+  return ACADEMIC_KEYWORDS.some((k) => lower.includes(k)) ? '🎓' : '📛';
 }
 
 // Strips the trailing "(Mon DD, YYYY)" (and anything after it, like
