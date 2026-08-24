@@ -16,6 +16,15 @@ function loadCommunityTags() {
   }
 }
 
+// Most entries in community-tags.json are a real "@username" (clickable,
+// notifies the person), but some volunteers only have a display name on
+// file (no Telegram username) — "@" still goes in front of those for a
+// visually consistent list, even though a name with a space in it can
+// never actually be a clickable Telegram mention.
+function formatCommunityTag(tag) {
+  return tag.startsWith('@') ? tag : `@${tag}`;
+}
+
 function csvUrl(spreadsheetId, gid) {
   return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv&gid=${gid}`;
 }
@@ -760,7 +769,7 @@ function buildCheckMessage(events, range, tags, failedTabs = []) {
   // e.tabUrl), which is more useful than one shared link to the whole
   // spreadsheet.
   const parts = [enBlock, ruBlock];
-  if (tags && tags.length > 0) parts.push(tags.join(' '));
+  if (tags && tags.length > 0) parts.push(tags.map(formatCommunityTag).join(' '));
 
   return parts.join('\n\n');
 }
