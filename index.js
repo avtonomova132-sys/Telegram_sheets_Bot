@@ -31,7 +31,7 @@ const { formatKursOverview, formatKursDetail, formatMeditations, formatNearest }
 const { analyzeDuplicates, isSameEvent } = require('./peredachi/dedupe');
 const { validateEntry, describeEntry } = require('./peredachi/validate');
 const { analyzeSplits } = require('./peredachi/split');
-const { findStaleTimeGroups, hasStaleTimeConflict } = require('./peredachi/stale');
+const { resolveStaleTimeGroups } = require('./peredachi/stale');
 const { getWatchedGroupIds, looksLikeAnnouncement } = require('./peredachi/watch');
 const {
   readGroupLinks,
@@ -654,10 +654,7 @@ bot.onText(/^\/добавить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) 
     const blocks = [];
 
     if (validEntries.length > 0) {
-      // Снимок до записи — чтобы проверить на устаревшее время именно против
-      // того, что уже было на диске (плюс других записей этого же добавления).
-      const existingBeforeAdd = readPeredachi();
-      const { added, updated, skipped } = addRecords(validEntries, rawText);
+      const { added, updated, skipped, rescheduled } = addRecords(validEntries, rawText);
 
       if (added.length > 0) {
         blocks.push(`✅ Добавлено новых: ${added.length}\n${added.map(describe).join('\n')}`);
@@ -668,10 +665,12 @@ bot.onText(/^\/добавить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) 
       if (skipped.length > 0) {
         blocks.push(`✅ Уже было в расписании: ${skipped.length}\n${skipped.map(describe).join('\n')}`);
       }
-
-      const comparisonPool = [...existingBeforeAdd, ...added];
-      if (added.some((r) => hasStaleTimeConflict(comparisonPool, r))) {
-        blocks.push('⚠️ Похоже, раньше было другое время для этого курса/даты — проверь /устаревшие');
+      if (rescheduled.length > 0) {
+        const lines = rescheduled.map((r) => {
+          const kursLabel = r.merged.postfix ? `${r.merged.kurs} (${r.merged.postfix})` : r.merged.kurs || '?';
+          return `• Курс ${kursLabel} — ${r.merged.dateISO}: было ${r.oldTime} → стало ${r.newTime}`;
+        });
+        blocks.push(`🔄 Изменено время: ${rescheduled.length}\n${lines.join('\n')}`);
       }
     }
 
@@ -1158,10 +1157,12 @@ bot.onText(/^\/удалить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) =>
   }
 });
 
-// Разовая/повторная проверка volume на записи с одинаковым kurs+dateISO, но
-// разным timeMSK — вероятно, старую запись со сдвинутым временем не удалили
-// при добавлении новой. Ничего не удаляет автоматически, только показывает
-// список — решение (и /удалить нужной записи) остаётся за человеком.
+// Разовая/повторная проверка volume на записи с одинаковым kurs+dateISO+
+// groupLink, но разным timeMSK — старую запись со сдвинутым временем не
+// удалили при добавлении новой (тот же поток, просто перенос). Для каждой
+// такой группы автоматически оставляет запись с самым поздним addedAt и
+// удаляет более старые версии. Если groupLink разный — не группируются
+// (независимые потоки), см. peredachi/stale.js.
 bot.onText(/^\/устаревшие(?:@\S+)?$/, async (msg) => {
   const chatId = msg.chat.id;
 
@@ -1172,33 +1173,34 @@ bot.onText(/^\/устаревшие(?:@\S+)?$/, async (msg) => {
 
   try {
     const all = readPeredachi();
-    const groups = findStaleTimeGroups(all);
+    const resolved = resolveStaleTimeGroups(all);
 
-    if (groups.length === 0) {
-      await bot.sendMessage(chatId, 'Записей с подозрительно разным временем не найдено.');
+    if (resolved.length === 0) {
+      await bot.sendMessage(chatId, 'Записей с устаревшим временем не найдено.');
       return;
     }
 
-    const lines = [];
-    groups.forEach((group, gi) => {
-      const kursLabel = group[0].postfix ? `${group[0].kurs} (${group[0].postfix})` : group[0].kurs;
-      lines.push(`Группа ${gi + 1}: курс ${kursLabel}, дата ${group[0].dateISO}`);
-      group.forEach((r) => {
-        lines.push(
-          `  — id=${r.id}, время=${r.timeMSK || '?'} МСК, добавлено=${r.addedAt || '—'}, "${r.zanyatie || '—'}"`
-        );
-      });
+    const removeIds = new Set(resolved.flatMap((g) => g.remove.map((r) => r.id)));
+    savePeredachi(all.filter((r) => !removeIds.has(r.id)));
+
+    const lines = [`✅ Почищено групп: ${resolved.length}`];
+    resolved.forEach((g, gi) => {
+      const kursLabel = g.keep.postfix ? `${g.keep.kurs} (${g.keep.postfix})` : g.keep.kurs;
       lines.push('');
+      lines.push(`Группа ${gi + 1}: курс ${kursLabel}, дата ${g.keep.dateISO}`);
+      lines.push(`  оставлено: id=${g.keep.id}, время=${g.keep.timeMSK} МСК, добавлено=${g.keep.addedAt || '—'}, "${g.keep.zanyatie || '—'}"`);
+      g.remove.forEach((r) => {
+        lines.push(`  удалено: id=${r.id}, время=${r.timeMSK || '?'} МСК, добавлено=${r.addedAt || '—'}, "${r.zanyatie || '—'}"`);
+      });
     });
-    lines.push('Ничего не удалено — используй /удалить <название> <дата>, чтобы убрать устаревшую запись вручную.');
 
     for (const chunk of chunkMessage(lines.join('\n'))) {
       await bot.sendMessage(chatId, chunk);
     }
   } catch (err) {
-    console.error('[peredachi] ошибка поиска устаревших записей:', err.message);
+    console.error('[peredachi] ошибка очистки устаревших записей:', err.message);
     console.error(err.stack);
-    await bot.sendMessage(chatId, 'Не получилось проверить устаревшие записи 😔');
+    await bot.sendMessage(chatId, 'Не получилось почистить устаревшие записи 😔');
   }
 });
 
