@@ -369,6 +369,50 @@ async function fetchTabEvents(spreadsheetId, tab) {
   return parseTabEvents(tab.name, rows);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Google's CSV-export endpoint answers a burst of simultaneous requests
+// against the SAME spreadsheet with intermittent HTTP 409s and aborted
+// connections — firing all tabs at once via Promise.all (12, now 13, tabs)
+// reproduced this reliably. staggerMs offsets each tab's first attempt so
+// they don't all land in the same instant, and up to 2 retries with a
+// short backoff absorb whatever's still transient after that.
+async function fetchTabEventsResilient(spreadsheetId, tab, staggerMs = 0) {
+  if (staggerMs) await sleep(staggerMs);
+  let lastErr;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      return await fetchTabEvents(spreadsheetId, tab);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < 3) await sleep(attempt * 800);
+    }
+  }
+  throw lastErr;
+}
+
+// Fetches every tab's events, staggered and retried — shared by
+// collectWeekEvents (/check, /weekly, Sunday auto-announce) and
+// runDailyHostDiffCheck so both get the same resilience against Google's
+// rate limiting. Returns one entry per tab; `error` is set instead of
+// `events` for a tab that never succeeded after retries.
+async function fetchAllTabEvents(spreadsheetId, tabs) {
+  const results = [];
+  await Promise.all(
+    tabs.map(async (tab, i) => {
+      try {
+        const events = await fetchTabEventsResilient(spreadsheetId, tab, i * 150);
+        results.push({ tab, events });
+      } catch (err) {
+        results.push({ tab, error: err });
+      }
+    })
+  );
+  return results;
+}
+
 // Bali (Asia/Makassar) is a fixed UTC+8 zone, no DST — same shift-the-clock
 // trick used for the verse schedule in verse/progress.js, kept independent
 // here. Every week-range calculation below keys off the Bali calendar date
@@ -416,19 +460,17 @@ async function collectWeekEvents(range) {
   const failedTabs = [];
   const debugCounts = [];
 
-  await Promise.all(
-    config.tabs.map(async (tab) => {
-      try {
-        const events = await fetchTabEvents(config.spreadsheetId, tab);
-        const inRangeCount = events.filter((e) => inRange(e.date, range.start, range.end)).length;
-        debugCounts.push({ name: tab.name, total: events.length, inRange: inRangeCount });
-        allEvents.push(...events);
-      } catch (err) {
-        debugCounts.push({ name: tab.name, total: 0, inRange: 0, error: err.message });
-        failedTabs.push(`${tab.name}: ${err.message}`);
-      }
-    })
-  );
+  const results = await fetchAllTabEvents(config.spreadsheetId, config.tabs);
+  for (const { tab, events, error } of results) {
+    if (error) {
+      debugCounts.push({ name: tab.name, total: 0, inRange: 0, error: error.message });
+      failedTabs.push(`${tab.name}: ${error.message}`);
+      continue;
+    }
+    const inRangeCount = events.filter((e) => inRange(e.date, range.start, range.end)).length;
+    debugCounts.push({ name: tab.name, total: events.length, inRange: inRangeCount });
+    allEvents.push(...events);
+  }
 
   const events = allEvents
     .filter((e) => inRange(e.date, range.start, range.end))
@@ -615,24 +657,63 @@ function checkEventBlockRu(e) {
   ].join('\n');
 }
 
+// A tab that failed to load (Google Sheets rate-limiting/timeout, see
+// fetchAllTabEvents) means the schedule picture below is incomplete — the
+// host status for whatever's on THAT tab is simply unknown, not "fine".
+// This must never be silently dropped: without it, a burst of transient
+// fetch failures reads as "0 events found" and both buildCheckMessage and
+// buildWeeklyMessage would otherwise report a confident all-clear over
+// data that's actually missing most of the schedule.
+function partialDataWarningEn(failedTabs) {
+  if (failedTabs.length === 0) return '';
+  return [
+    `⚠️ Could not fully check the schedule — ${failedTabs.length} tab${failedTabs.length === 1 ? '' : 's'} failed to load:`,
+    failedTabs.join('\n'),
+    'This result may be incomplete — please try again in a minute.',
+  ].join('\n');
+}
+
+function partialDataWarningRu(failedTabs) {
+  if (failedTabs.length === 0) return '';
+  return [
+    `⚠️ Не удалось полностью проверить расписание — часть вкладок не загрузилась (${failedTabs.length}):`,
+    failedTabs.join('\n'),
+    'Результат может быть неполным, попробуйте ещё раз через минуту.',
+  ].join('\n');
+}
+
 // /check — only the events still missing a host; a short all-clear message
-// if everything is covered.
-function buildCheckMessage(events, range, hostSignupUrl, tags) {
+// if everything is covered. When some tabs failed to load, a confirmed
+// all-clear is never possible — the warning replaces the "Hooray"/"Ура"
+// claim instead of just decorating it, since "no open slots found" over
+// partial data isn't the same fact as "no open slots exist".
+function buildCheckMessage(events, range, hostSignupUrl, tags, failedTabs = []) {
   const missing = events.filter((e) => !e.hasHost);
   const rangeEn = formatWeekRangeEn(range.start, range.end);
   const rangeRu = formatWeekRangeRu(range.start, range.end);
+  const partial = failedTabs.length > 0;
 
   if (missing.length === 0) {
-    const enBlock = [
-      `📝🎉 Hooray! All Zoom sessions for ${rangeEn} are fully covered with hosts. ✅`,
-      'The schedule has been updated. 🙏',
-      'Thank you, everyone, for your generous service and support! 💙',
-    ].join('\n\n');
-    const ruBlock = [
-      `📝🎉 Ура! На неделю ${rangeRu} все Zoom-эфиры с хостами. ✅`,
-      'В табличке всё отмечено. 🙏',
-      'Благодарим каждого за ваше щедрое служение и поддержку! 💙',
-    ].join('\n\n');
+    const enBlock = partial
+      ? [
+          partialDataWarningEn(failedTabs),
+          `No open slots found among the tabs that DID load for ${rangeEn} — but this is incomplete, not a confirmed all-clear.`,
+        ].join('\n\n')
+      : [
+          `📝🎉 Hooray! All Zoom sessions for ${rangeEn} are fully covered with hosts. ✅`,
+          'The schedule has been updated. 🙏',
+          'Thank you, everyone, for your generous service and support! 💙',
+        ].join('\n\n');
+    const ruBlock = partial
+      ? [
+          partialDataWarningRu(failedTabs),
+          `Среди загрузившихся вкладок открытых слотов на ${rangeRu} не найдено — но это неполные данные, а не подтверждённое "всё закрыто".`,
+        ].join('\n\n')
+      : [
+          `📝🎉 Ура! На неделю ${rangeRu} все Zoom-эфиры с хостами. ✅`,
+          'В табличке всё отмечено. 🙏',
+          'Благодарим каждого за ваше щедрое служение и поддержку! 💙',
+        ].join('\n\n');
     return [enBlock, ruBlock].join('\n\n');
   }
 
@@ -640,22 +721,28 @@ function buildCheckMessage(events, range, hostSignupUrl, tags) {
   const ruBody = missing.map(checkEventBlockRu).join('\n\n');
 
   const enBlock = [
+    partial ? partialDataWarningEn(failedTabs) : null,
     `📝 🔥${enHostPhrase(missing.length)} for this week, ${rangeEn}`,
     '',
     enBody,
     '',
     '🙏 Thank you',
     '🌿',
-  ].join('\n');
+  ]
+    .filter((line) => line !== null)
+    .join('\n');
 
   const ruBlock = [
+    partial ? partialDataWarningRu(failedTabs) : null,
     `📝 🔥${ruHostPhrase(missing.length)} на эту неделю с ${rangeRu}.`,
     '',
     ruBody,
     '',
     '🙏 Спасибо',
     '🌿',
-  ].join('\n');
+  ]
+    .filter((line) => line !== null)
+    .join('\n');
 
   const parts = [enBlock, ruBlock];
   if (tags && tags.length > 0) parts.push(tags.join(' '));
@@ -791,7 +878,7 @@ function ctaLineRu(missing) {
 // (range is genuinely next week), false for the manual command (range is
 // the week already in progress) — see generateWeeklyReport vs
 // generateWeeklyAnnounceReport.
-function buildWeeklyMessage(events, range, hostSignupUrl, { upcoming = false } = {}) {
+function buildWeeklyMessage(events, range, hostSignupUrl, { upcoming = false, failedTabs = [] } = {}) {
   const missing = events.filter((e) => !e.hasHost);
   const rangeEn = formatWeekRangeEn(range.start, range.end);
   const rangeRu = formatWeekRangeRu(range.start, range.end);
@@ -800,6 +887,17 @@ function buildWeeklyMessage(events, range, hostSignupUrl, { upcoming = false } =
 
   const enSectionParts = ['📝', 'Precious Angels 🪽', '', 'Wishing everyone kindness and enlightenment in this life 💎', ''];
   const ruSectionParts = ['📝', 'Дорогие Ангелы 🪽', '', 'Желаем всем доброты и просветления в этой жизни 💎', ''];
+
+  // Some tabs failing to load means the counts/listing below are built from
+  // whatever DID load, not the full schedule — "no sessions this week"
+  // would otherwise be indistinguishable from "couldn't read most tabs".
+  // The warning goes up front regardless of whether events.length is 0,
+  // since a nonzero count can undercount just as easily as a zero count
+  // can be flat wrong.
+  if (failedTabs.length > 0) {
+    enSectionParts.push('', partialDataWarningEn(failedTabs));
+    ruSectionParts.push('', partialDataWarningRu(failedTabs));
+  }
 
   if (events.length === 0) {
     enSectionParts.push(scheduleLabelEn, rangeEn, '', 'No sessions scheduled this week.');
@@ -850,7 +948,7 @@ function buildWeeklyMessage(events, range, hostSignupUrl, { upcoming = false } =
 async function generateWeeklyReport(now = new Date()) {
   const range = getCurrentWeekRange(now);
   const { events, failedTabs, hostSignupUrl, debugCounts } = await collectWeekEvents(range);
-  const text = buildWeeklyMessage(events, range, hostSignupUrl, { upcoming: false });
+  const text = buildWeeklyMessage(events, range, hostSignupUrl, { upcoming: false, failedTabs });
   return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
 }
 
@@ -860,7 +958,7 @@ async function generateWeeklyReport(now = new Date()) {
 async function generateWeeklyAnnounceReport(now = new Date()) {
   const range = getNextWeekRange(now);
   const { events, failedTabs, hostSignupUrl, debugCounts } = await collectWeekEvents(range);
-  const text = buildWeeklyMessage(events, range, hostSignupUrl, { upcoming: true });
+  const text = buildWeeklyMessage(events, range, hostSignupUrl, { upcoming: true, failedTabs });
   return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
 }
 
@@ -888,7 +986,7 @@ async function generateCheckReport(now = new Date()) {
   const range = getCurrentWeekRange(now);
   const { events, failedTabs, hostSignupUrl, debugCounts } = await collectWeekEvents(range);
   const tags = loadCommunityTags();
-  const text = buildCheckMessage(events, range, hostSignupUrl, tags);
+  const text = buildCheckMessage(events, range, hostSignupUrl, tags, failedTabs);
   return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
 }
 
@@ -1014,17 +1112,17 @@ async function runDailyHostDiffCheck(now = new Date(), { updateLastRunDate = fal
 
   const allEvents = [];
   const failedTabs = [];
+  const failedTabNames = new Set();
 
-  await Promise.all(
-    monitoredTabs.map(async (tab) => {
-      try {
-        const events = await fetchTabEvents(config.spreadsheetId, tab);
-        allEvents.push(...events.filter((e) => inRange(e.date, range.start, range.end)));
-      } catch (err) {
-        failedTabs.push(`${tab.name}: ${err.message}`);
-      }
-    })
-  );
+  const results = await fetchAllTabEvents(config.spreadsheetId, monitoredTabs);
+  for (const { tab, events, error } of results) {
+    if (error) {
+      failedTabs.push(`${tab.name}: ${error.message}`);
+      failedTabNames.add(tab.name);
+      continue;
+    }
+    allEvents.push(...events.filter((e) => inRange(e.date, range.start, range.end)));
+  }
 
   const currentByKey = new Map(allEvents.map((e) => [eventKey(e), e]));
   const prevState = readDiffState();
@@ -1035,8 +1133,13 @@ async function runDailyHostDiffCheck(now = new Date(), { updateLastRunDate = fal
   // reschedule-proof identity (tab+session-label) so a "new" key below can
   // be matched back to the slot it moved from, rather than reported as an
   // unrelated brand-new event with no explanation for the one that vanished.
+  // Entries belonging to a tab that failed to load THIS run are excluded
+  // entirely — an absence caused by a fetch failure is not evidence the
+  // class disappeared or the host removed themselves, and must never be
+  // read as either.
   const vanishedByIdentity = new Map();
   for (const [key, prev] of Object.entries(prevEvents)) {
+    if (failedTabNames.has(prev.tabName)) continue;
     if (currentByKey.has(key)) continue;
     const id = stableIdentity(prev.tabName, prev.title || '');
     if (id) vanishedByIdentity.set(id, prev);
@@ -1065,6 +1168,13 @@ async function runDailyHostDiffCheck(now = new Date(), { updateLastRunDate = fal
   }
 
   const snapshot = {};
+  // Carry forward every entry belonging to a tab that failed to load this
+  // run, exactly as it was — see the vanishedByIdentity comment above. This
+  // keeps tomorrow's comparison accurate once that tab loads successfully
+  // again, instead of the failed tab's whole prior state being dropped.
+  for (const [key, prev] of Object.entries(prevEvents)) {
+    if (failedTabNames.has(prev.tabName)) snapshot[key] = prev;
+  }
   for (const [key, e] of currentByKey) {
     snapshot[key] = {
       host: e.host,
@@ -1093,16 +1203,24 @@ async function runDailyHostDiffCheck(now = new Date(), { updateLastRunDate = fal
   }
 
   // "Silence if nothing changed" applies ONLY when there's neither a host
-  // removal, nor a new event, nor a reschedule — as soon as any one of the
-  // three shows up, Elena gets a message no matter what, even if e.g. a
-  // new event already has a host assigned (in that case it's purely
-  // informational: the 🆕 line below, nothing more). Do not add an
-  // `e.hasHost` check here.
-  if (hostRemoved.length === 0 && newEvents.length === 0 && timeChanged.length === 0) {
+  // removal, nor a new event, nor a reschedule, AND every tab actually
+  // loaded — as soon as any one of the three shows up, Elena gets a message
+  // no matter what, even if e.g. a new event already has a host assigned
+  // (in that case it's purely informational: the 🆕 line below, nothing
+  // more). Do not add an `e.hasHost` check here. Partial data is the fourth
+  // reason to break silence: silence normally means "confirmed no
+  // changes", and staying quiet over a tab that simply failed to load would
+  // mean the same silence, which she'd read the same way, even though
+  // nothing was actually confirmed that day.
+  const hasPartialData = failedTabs.length > 0;
+  if (hostRemoved.length === 0 && newEvents.length === 0 && timeChanged.length === 0 && !hasPartialData) {
     return { text: null, hostRemoved: 0, newEvents: 0, timeChanged: 0, failedTabs };
   }
 
   const lines = [];
+  if (hasPartialData) {
+    lines.push(partialDataWarningRu(failedTabs));
+  }
   for (const { event: e, previousHost } of hostRemoved) {
     lines.push(
       `⚠️ Хост убрал себя с эфира: ${programLine(e.tabName, e.title)}, ${diffStampRu(e)}. Был назначен: ${previousHost}. Сейчас хост не назначен.`
