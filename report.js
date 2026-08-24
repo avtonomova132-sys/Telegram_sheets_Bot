@@ -620,6 +620,30 @@ function programLine(tabName, title) {
   return label ? `${tabName} — ${label}` : tabName;
 }
 
+// All /check and /weekly messages are sent with parse_mode: 'HTML' (see
+// index.js) so the program-name link/bold treatment below works — which
+// means every piece of free text from the spreadsheet (tab names, session
+// titles, host names) flowing into that message MUST go through this
+// first, or a stray & < > breaks Telegram's parser and the whole message
+// fails to send (the exact class of bug /курсы hit with unescaped
+// zoomCode/zoomLink).
+function escapeHtml(text) {
+  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Program name: always bold. Linked to its tab ONLY while a host is still
+// needed — the link itself (blue, underlined) is the "needs a host"
+// signal, not just decoration, so it must disappear the moment someone
+// hosts. `text` may be a raw tab name (/check) or a full "{tab} —
+// {session}" programLine (/weekly); either way it's escaped here, once,
+// right before formatting — callers must pass the RAW value, never
+// pre-escaped.
+function formatProgramNameHtml(text, url, hasHost) {
+  const escaped = escapeHtml(text);
+  if (hasHost || !url) return `<b>${escaped}</b>`;
+  return `<b><a href="${url}">${escaped}</a></b>`;
+}
+
 function ruIsOneForm(n) {
   return n % 10 === 1 && n % 100 !== 11;
 }
@@ -659,21 +683,19 @@ function enMissingHeader(n) {
 
 function checkEventBlockEn(e) {
   return [
-    `${programEmoji(e.tabName)} ${e.tabName}`,
+    `${programEmoji(e.tabName)} ${formatProgramNameHtml(e.tabName, e.tabUrl, e.hasHost)}`,
     `🕒 Arizona: ${formatMonthDayEn(e.date)}, ${formatRange12h(e.azStartMin, e.azEndMin)}`,
     `🕒 Moscow: ${formatMonthDayEn(mskDate(e))}, ${formatRange12h(e.mskStartMin, e.mskEndMin)}`,
     '➖👤 Host: needed',
-    e.tabUrl,
   ].join('\n');
 }
 
 function checkEventBlockRu(e) {
   return [
-    `${programEmoji(e.tabName)} ${e.tabName}`,
+    `${programEmoji(e.tabName)} ${formatProgramNameHtml(e.tabName, e.tabUrl, e.hasHost)}`,
     `🕒 Аризона: ${formatMonthDayRu(e.date)}, ${formatRange24h(e.azStartMin, e.azEndMin)}`,
     `🕒 Москва: ${formatMonthDayRu(mskDate(e))}, ${formatRange24h(e.mskStartMin, e.mskEndMin)}`,
     '➖👤 Хост: нужен',
-    e.tabUrl,
   ].join('\n');
 }
 
@@ -688,7 +710,7 @@ function partialDataWarningEn(failedTabs) {
   if (failedTabs.length === 0) return '';
   return [
     `⚠️ Could not fully check the schedule — ${failedTabs.length} tab${failedTabs.length === 1 ? '' : 's'} failed to load:`,
-    failedTabs.join('\n'),
+    failedTabs.map(escapeHtml).join('\n'),
     'This result may be incomplete — please try again in a minute.',
   ].join('\n');
 }
@@ -697,7 +719,7 @@ function partialDataWarningRu(failedTabs) {
   if (failedTabs.length === 0) return '';
   return [
     `⚠️ Не удалось полностью проверить расписание — часть вкладок не загрузилась (${failedTabs.length}):`,
-    failedTabs.join('\n'),
+    failedTabs.map(escapeHtml).join('\n'),
     'Результат может быть неполным, попробуйте ещё раз через минуту.',
   ].join('\n');
 }
@@ -765,11 +787,11 @@ function buildCheckMessage(events, range, tags, failedTabs = []) {
     .join('\n');
 
   // No general host-signup link here on purpose — every open slot above
-  // already links straight to its own tab (see checkEventBlockEn/Ru's
-  // e.tabUrl), which is more useful than one shared link to the whole
-  // spreadsheet.
+  // already has its own tab link baked into the bolded program name (see
+  // checkEventBlockEn/Ru → formatProgramNameHtml), which is more useful
+  // than one shared link to the whole spreadsheet.
   const parts = [enBlock, ruBlock];
-  if (tags && tags.length > 0) parts.push(tags.map(formatCommunityTag).join(' '));
+  if (tags && tags.length > 0) parts.push(tags.map((t) => escapeHtml(formatCommunityTag(t))).join(' '));
 
   return parts.join('\n\n');
 }
@@ -778,23 +800,23 @@ function buildCheckMessage(events, range, tags, failedTabs = []) {
 
 function weeklyHostLineEn(e) {
   if (e.hasHost) {
-    const co = e.coHost ? `, Co-Host: ${e.coHost}` : '';
-    return `✅👤 Host: ${e.host}${co}`;
+    const co = e.coHost ? `, Co-Host: ${escapeHtml(e.coHost)}` : '';
+    return `✅👤 Host: ${escapeHtml(e.host)}${co}`;
   }
   return '➖👤 Host: volunteer needed 🙏';
 }
 
 function weeklyHostLineRu(e) {
   if (e.hasHost) {
-    const co = e.coHost ? `, Ко-хост: ${e.coHost}` : '';
-    return `✅👤 Хост: ${e.host}${co}`;
+    const co = e.coHost ? `, Ко-хост: ${escapeHtml(e.coHost)}` : '';
+    return `✅👤 Хост: ${escapeHtml(e.host)}${co}`;
   }
   return '➖👤 Хост: нужен волонтёр 🙏';
 }
 
 function weeklyEventBlockEn(e) {
   return [
-    `${programEmoji(e.tabName)} ${programLine(e.tabName, e.title)}`,
+    `${programEmoji(e.tabName)} ${formatProgramNameHtml(programLine(e.tabName, e.title), e.tabUrl, e.hasHost)}`,
     `🕒 Arizona: ${formatMonthDayEn(e.date)}, ${formatRange12h(e.azStartMin, e.azEndMin)}`,
     `🕒 Moscow: ${formatMonthDayEn(mskDate(e))}, ${formatRange24h(e.mskStartMin, e.mskEndMin)}`,
     weeklyHostLineEn(e),
@@ -803,7 +825,7 @@ function weeklyEventBlockEn(e) {
 
 function weeklyEventBlockRu(e) {
   return [
-    `${programEmoji(e.tabName)} ${programLine(e.tabName, e.title)}`,
+    `${programEmoji(e.tabName)} ${formatProgramNameHtml(programLine(e.tabName, e.title), e.tabUrl, e.hasHost)}`,
     `🕒 Аризона: ${formatMonthDayRu(e.date)}, ${formatRange24h(e.azStartMin, e.azEndMin)}`,
     `🕒 Москва: ${formatMonthDayRu(mskDate(e))}, ${formatRange24h(e.mskStartMin, e.mskEndMin)}`,
     weeklyHostLineRu(e),
@@ -827,7 +849,7 @@ function tabBreakdownEn(events) {
     .map((name, i) => {
       const isLast = i === order.length - 1;
       const alert = missing.get(name) ? ' ‼️' : '';
-      return `${counts.get(name)} from ${name}${alert}${isLast ? '.' : ','}`;
+      return `${counts.get(name)} from ${escapeHtml(name)}${alert}${isLast ? '.' : ','}`;
     })
     .join('\n');
 }
@@ -849,7 +871,7 @@ function tabBreakdownRu(events) {
     .map((name, i) => {
       const isLast = i === order.length - 1;
       const alert = missing.get(name) ? ' ‼️' : '';
-      return `${counts.get(name)} — ${name}${alert}${isLast ? '.' : ','}`;
+      return `${counts.get(name)} — ${escapeHtml(name)}${alert}${isLast ? '.' : ','}`;
     })
     .join('\n');
 }
@@ -859,7 +881,7 @@ function warningBlockEn(missing) {
   const items = missing
     .map(
       (e) =>
-        `${e.tabName},\nArizona: ${formatMonthDayEn(e.date)}, ${formatPoint12h(e.azStartMin)},\nMoscow: ${formatMonthDayEn(mskDate(e))}, ${formatPoint24h(e.mskStartMin)}.`
+        `${escapeHtml(e.tabName)},\nArizona: ${formatMonthDayEn(e.date)}, ${formatPoint12h(e.azStartMin)},\nMoscow: ${formatMonthDayEn(mskDate(e))}, ${formatPoint24h(e.mskStartMin)}.`
     )
     .join('\n\n');
   return `⚠️ ${enMissingHeader(missing.length)}\n${items}`;
@@ -870,7 +892,7 @@ function warningBlockRu(missing) {
   const items = missing
     .map(
       (e) =>
-        `${e.tabName},\nАризона: ${formatMonthDayRu(e.date)}, ${formatPoint24h(e.azStartMin)},\nМосква: ${formatMonthDayRu(mskDate(e))}, ${formatPoint24h(e.mskStartMin)}.`
+        `${escapeHtml(e.tabName)},\nАризона: ${formatMonthDayRu(e.date)}, ${formatPoint24h(e.azStartMin)},\nМосква: ${formatMonthDayRu(mskDate(e))}, ${formatPoint24h(e.mskStartMin)}.`
     )
     .join('\n\n');
   return `⚠️ ${ruMissingHeader(missing.length)}\n${items}`;
@@ -880,7 +902,7 @@ function ctaLineEn(missing) {
   if (missing.length === 0) return '';
   if (missing.length === 1) {
     const e = missing[0];
-    const label = sessionLabel(e.title) || e.tabName;
+    const label = escapeHtml(sessionLabel(e.title) || e.tabName);
     return `If anyone can host ${label} (${formatMonthDayShortEn(e.date)}) — please sign up via the link below 🙏`;
   }
   return 'If anyone can host one of the sessions above — please sign up via the link below 🙏';
@@ -890,7 +912,7 @@ function ctaLineRu(missing) {
   if (missing.length === 0) return '';
   if (missing.length === 1) {
     const e = missing[0];
-    const label = sessionLabel(e.title) || e.tabName;
+    const label = escapeHtml(sessionLabel(e.title) || e.tabName);
     return `Если кто-то может провести «${label}» (${formatMonthDayRu(e.date)}) — пожалуйста, запишитесь по ссылке ниже 🙏`;
   }
   return 'Если вы можете провести одну из сессий выше — пожалуйста, запишитесь по ссылке ниже 🙏';
@@ -1099,7 +1121,7 @@ function diffStampEn(e) {
 
 function timeChangeHostNoticeEn(e, prevPseudo) {
   return [
-    `👤 ${e.host}, the time for this broadcast has changed.`,
+    `👤 ${escapeHtml(e.host)}, the time for this broadcast has changed.`,
     `Was: ${diffStampEn(prevPseudo)}`,
     `Now: ${diffStampEn(e)}`,
     'Please confirm you can still host at the new time, or let us know if we need to find a replacement 🙏',
@@ -1108,7 +1130,7 @@ function timeChangeHostNoticeEn(e, prevPseudo) {
 
 function timeChangeHostNoticeRu(e, prevPseudo) {
   return [
-    `👤 ${e.host}, время этого эфира изменилось.`,
+    `👤 ${escapeHtml(e.host)}, время этого эфира изменилось.`,
     `Было: ${diffStampRu(prevPseudo)}`,
     `Стало: ${diffStampRu(e)}`,
     'Пожалуйста, подтвердите, что сможете вести в новое время, или дайте знать, если нужно найти замену 🙏',
@@ -1246,17 +1268,17 @@ async function runDailyHostDiffCheck(now = new Date(), { updateLastRunDate = fal
   }
   for (const { event: e, previousHost } of hostRemoved) {
     lines.push(
-      `⚠️ Хост убрал себя с эфира: ${programLine(e.tabName, e.title)}, ${diffStampRu(e)}. Был назначен: ${previousHost}. Сейчас хост не назначен.`
+      `⚠️ Хост убрал себя с эфира: ${escapeHtml(programLine(e.tabName, e.title))}, ${diffStampRu(e)}. Был назначен: ${escapeHtml(previousHost)}. Сейчас хост не назначен.`
     );
   }
   for (const e of newEvents) {
-    const hostLabel = e.hasHost ? e.host : 'не назначен';
-    lines.push(`🆕 Новый эфир в расписании: ${programLine(e.tabName, e.title)}, ${diffStampRu(e)}, хост: ${hostLabel}.`);
+    const hostLabel = e.hasHost ? escapeHtml(e.host) : 'не назначен';
+    lines.push(`🆕 Новый эфир в расписании: ${escapeHtml(programLine(e.tabName, e.title))}, ${diffStampRu(e)}, хост: ${hostLabel}.`);
   }
   for (const { event: e, prev } of timeChanged) {
     const prevPseudo = pseudoEventFromSnapshot(prev.dateISO, prev.azStartMin);
     lines.push(
-      `⏰ Изменилось время эфира: ${programLine(e.tabName, e.title)}.\nБыло: ${diffStampRu(prevPseudo)}\nСтало: ${diffStampRu(e)}`
+      `⏰ Изменилось время эфира: ${escapeHtml(programLine(e.tabName, e.title))}.\nБыло: ${diffStampRu(prevPseudo)}\nСтало: ${diffStampRu(e)}`
     );
     // Host assigned → also give Elena a ready-to-paste group message
     // addressed to that host by name, asking them to reconfirm. No host →

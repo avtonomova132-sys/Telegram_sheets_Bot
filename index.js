@@ -249,8 +249,13 @@ async function handleReportCommand(chatId, label, generate) {
 
     const { text, totalEvents, failedTabs, debug } = await generate();
 
+    // parse_mode: 'HTML' — report.js's buildCheckMessage/buildWeeklyMessage
+    // bold the program name and link it to its tab whenever a host is still
+    // needed (escaping every dynamic value from the spreadsheet along the
+    // way; see escapeHtml there). Without this, the <b>/<a> tags they emit
+    // would show up as literal text instead of being rendered.
     for (const chunk of chunkMessage(text)) {
-      await bot.sendMessage(chatId, chunk);
+      await bot.sendMessage(chatId, chunk, { parse_mode: 'HTML' });
     }
 
     if (failedTabs.length > 0) {
@@ -316,8 +321,11 @@ async function runDiffCheck(chatId, { updateLastRunDate = false, announceNoChang
   const { text, failedTabs } = await runDailyHostDiffCheck(new Date(), { updateLastRunDate });
 
   if (text) {
+    // Same HTML formatting as /check and /weekly (see handleReportCommand)
+    // — this text can include an escaped-and-linked program name via the
+    // appended buildCheckMessage recap, plus escaped host names elsewhere.
     for (const chunk of chunkMessage(text)) {
-      await bot.sendMessage(chatId, chunk);
+      await bot.sendMessage(chatId, chunk, { parse_mode: 'HTML' });
     }
   } else if (announceNoChange) {
     await bot.sendMessage(chatId, 'Изменений с прошлой проверки не найдено — тишина 🤫');
