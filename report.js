@@ -366,7 +366,16 @@ async function fetchTabEvents(spreadsheetId, tab) {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const text = await res.text();
   const rows = parseCsv(text);
-  return parseTabEvents(tab.name, rows);
+  const events = parseTabEvents(tab.name, rows);
+  // Deep link to the PHYSICAL tab this event was read from — attached here,
+  // not looked up later from e.tabName, because a multi-program tab (e.g.
+  // "DCC & GBOCS") reports several different programLabel values off one
+  // gid; matching by name later could point at the wrong tab or no tab at
+  // all. /check's per-event listing uses this so each open slot links
+  // straight to where its host would actually sign up, not the general
+  // host-signup sheet.
+  const tabUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit?gid=${tab.gid}#gid=${tab.gid}`;
+  return events.map((e) => ({ ...e, tabUrl }));
 }
 
 function sleep(ms) {
@@ -645,6 +654,7 @@ function checkEventBlockEn(e) {
     `🕒 Arizona: ${formatMonthDayEn(e.date)}, ${formatRange12h(e.azStartMin, e.azEndMin)}`,
     `🕒 Moscow: ${formatMonthDayEn(mskDate(e))}, ${formatRange12h(e.mskStartMin, e.mskEndMin)}`,
     '👤 Host: needed',
+    e.tabUrl,
   ].join('\n');
 }
 
@@ -654,6 +664,7 @@ function checkEventBlockRu(e) {
     `🕒 Аризона: ${formatMonthDayRu(e.date)}, ${formatRange24h(e.azStartMin, e.azEndMin)}`,
     `🕒 Москва: ${formatMonthDayRu(mskDate(e))}, ${formatRange24h(e.mskStartMin, e.mskEndMin)}`,
     '👤 Хост: нужен',
+    e.tabUrl,
   ].join('\n');
 }
 
