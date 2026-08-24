@@ -698,7 +698,7 @@ function partialDataWarningRu(failedTabs) {
 // all-clear is never possible — the warning replaces the "Hooray"/"Ура"
 // claim instead of just decorating it, since "no open slots found" over
 // partial data isn't the same fact as "no open slots exist".
-function buildCheckMessage(events, range, hostSignupUrl, tags, failedTabs = []) {
+function buildCheckMessage(events, range, tags, failedTabs = []) {
   const missing = events.filter((e) => !e.hasHost);
   const rangeEn = formatWeekRangeEn(range.start, range.end);
   const rangeRu = formatWeekRangeRu(range.start, range.end);
@@ -755,9 +755,12 @@ function buildCheckMessage(events, range, hostSignupUrl, tags, failedTabs = []) 
     .filter((line) => line !== null)
     .join('\n');
 
+  // No general host-signup link here on purpose — every open slot above
+  // already links straight to its own tab (see checkEventBlockEn/Ru's
+  // e.tabUrl), which is more useful than one shared link to the whole
+  // spreadsheet.
   const parts = [enBlock, ruBlock];
   if (tags && tags.length > 0) parts.push(tags.join(' '));
-  parts.push(hostSignupUrl);
 
   return parts.join('\n\n');
 }
@@ -995,9 +998,9 @@ function markWeeklyAnnounceSent(dateStr) {
 
 async function generateCheckReport(now = new Date()) {
   const range = getCurrentWeekRange(now);
-  const { events, failedTabs, hostSignupUrl, debugCounts } = await collectWeekEvents(range);
+  const { events, failedTabs, debugCounts } = await collectWeekEvents(range);
   const tags = loadCommunityTags();
-  const text = buildCheckMessage(events, range, hostSignupUrl, tags, failedTabs);
+  const text = buildCheckMessage(events, range, tags, failedTabs);
   return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
 }
 
@@ -1265,8 +1268,7 @@ async function runDailyHostDiffCheck(now = new Date(), { updateLastRunDate = fal
   // the pasted text reflects the whole week, not just the one session.
   if (allEvents.some((e) => !e.hasHost)) {
     const tags = loadCommunityTags();
-    const hostSignupUrl = `https://docs.google.com/spreadsheets/d/${config.spreadsheetId}/edit?gid=${config.hostSignupGid}#gid=${config.hostSignupGid}`;
-    lines.push(buildCheckMessage(allEvents, range, hostSignupUrl, tags));
+    lines.push(buildCheckMessage(allEvents, range, tags));
   }
 
   return {
