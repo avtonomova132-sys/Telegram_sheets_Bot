@@ -1213,6 +1213,45 @@ bot.onText(/^\/устаревшие(?:@\S+)?$/, async (msg) => {
   }
 });
 
+// Разовая очистка volume от записей, где есть zoomLink, но groupLink пустой —
+// для них нет способа связаться с учителем при проблемах, а исходный чат
+// восстановить неоткуда. Удаляет сразу (не список для ручного разбора, как
+// /дубли/устаревшие) — этот случай однозначен, альтернативы нет.
+bot.onText(/^\/безгруппы(?:@\S+)?$/, async (msg) => {
+  const chatId = msg.chat.id;
+
+  if (!isTrustedUser(chatId)) {
+    await bot.sendMessage(chatId, 'Эта команда доступна только организаторам.');
+    return;
+  }
+
+  try {
+    const all = readPeredachi();
+    const toRemove = all.filter((r) => String(r.zoomLink || '').trim() && !String(r.groupLink || '').trim());
+
+    if (toRemove.length === 0) {
+      await bot.sendMessage(chatId, 'Записей без ссылки на чат не найдено.');
+      return;
+    }
+
+    const removeIds = new Set(toRemove.map((r) => r.id));
+    savePeredachi(all.filter((r) => !removeIds.has(r.id)));
+
+    const lines = toRemove.map((r) => {
+      const kursLabel = r.postfix ? `${r.kurs} (${r.postfix})` : r.kurs || '?';
+      return `• Курс ${kursLabel} — ${r.dateISO || '?'}, ${r.timeMSK || '?'} МСК — ${r.zanyatie || '—'}`;
+    });
+
+    for (const chunk of chunkMessage(`🗑 Удалено записей без ссылки на чат: ${toRemove.length}\n${lines.join('\n')}`)) {
+      await bot.sendMessage(chatId, chunk);
+    }
+  } catch (err) {
+    console.error('[peredachi] ошибка очистки записей без groupLink:', err.message);
+    console.error(err.stack);
+    await bot.sendMessage(chatId, 'Не получилось почистить записи без ссылки на чат 😔');
+  }
+});
+
 // ===== Новое событие в афише (/new) =====
 // Сессия по chatId: history — messages для Anthropic (весь диалог, чтобы
 // уточнения не теряли уже распознанный контекст), parsed — последний

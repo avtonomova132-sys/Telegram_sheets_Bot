@@ -23,10 +23,19 @@ function validateEntry(entry) {
   const hasLink = isUsableLink(entry.zoomLink) || isUsableLink(entry.groupLink);
   if (!hasLink) missing.push('ссылка на zoom или группу');
 
+  const hasZoomLink = String(entry.zoomLink || '').trim();
+
   // Код нужен только если есть сама ссылка на Zoom — если известна только
   // groupLink, код узнают в чате, требовать его тут смысла нет.
-  if (String(entry.zoomLink || '').trim() && !String(entry.zoomCode || '').trim()) {
+  if (hasZoomLink && !String(entry.zoomCode || '').trim()) {
     missing.push('код доступа к Zoom');
+  }
+
+  // Если есть Zoom, но нет ссылки на чат/канал — некуда написать вопрос при
+  // проблемах, и восстановить исходный чат потом неоткуда. Если есть только
+  // groupLink без zoomLink — это по-прежнему ок, Zoom учитель скинет в чате.
+  if (hasZoomLink && !isUsableLink(entry.groupLink)) {
+    missing.push('ссылка на чат/канал (куда писать вопросы)');
   }
 
   return { valid: missing.length === 0, missing };
