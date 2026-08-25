@@ -57,7 +57,6 @@ function formatReminderMessage(record) {
   const { day, month, weekday } = formatMskDateRu(record.dateISO);
   const isMeditation = String(record.kurs || '').trim() === 'медитация';
   const header = isMeditation ? 'Медитация' : `${record.kurs} курс прямая передача`;
-  const link = record.zoomLink || record.groupLink || '';
 
   const lines = [
     `❣️${header}❣️`,
@@ -72,11 +71,19 @@ function formatReminderMessage(record) {
     '',
     'Присоединяйтесь, наслаждайтесь 🧉',
     '',
-    'Ссылка на зум в этом чате 🙏🌱',
-    link,
   ];
-  if (record.zoomCode) {
-    lines.push(`Код: ${record.zoomCode}`);
+
+  if (record.zoomLink && record.groupLink) {
+    // Обе ссылки заполнены — показываем оба блока с подписями, чтобы не
+    // перепутать, где Zoom, а где чат.
+    lines.push('Zoom:', record.zoomLink);
+    if (record.zoomCode) lines.push(`Код: ${record.zoomCode}`);
+    lines.push('', `Чат: ${record.groupLink}`);
+  } else {
+    // Только одна ссылка — формат как раньше, единый блок.
+    const link = record.zoomLink || record.groupLink || 'ссылка появится позже, следи за группой';
+    lines.push('Ссылка на зум в этом чате 🙏🌱', link);
+    if (record.zoomLink && record.zoomCode) lines.push(`Код: ${record.zoomCode}`);
   }
 
   return lines.join('\n');
