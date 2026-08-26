@@ -27,7 +27,15 @@ const {
 } = require('./verse/progress');
 const { extractPeredachi } = require('./peredachi/extract');
 const { addRecords, readAll: readPeredachi, saveAll: savePeredachi } = require('./peredachi/store');
-const { formatKursOverview, formatKursDetail, formatMeditations, formatNearest, recordMatchesKurs } = require('./peredachi/query');
+const {
+  formatKursOverview,
+  formatKursDetail,
+  formatMeditations,
+  formatNearest,
+  formatByDate,
+  recordMatchesKurs,
+  getNowMsk,
+} = require('./peredachi/query');
 const { analyzeDuplicates, isSameEvent } = require('./peredachi/dedupe');
 const { validateEntry, describeEntry } = require('./peredachi/validate');
 const { analyzeSplits } = require('./peredachi/split');
@@ -862,6 +870,69 @@ bot.onText(/^\/ближайший(?:@\S+)?(?:\s+(\S+))?$/, async (msg, match) =>
     console.error('[peredachi] ошибка формирования ближайшей передачи:', err.message);
     console.error(err.stack);
     await bot.sendMessage(chatId, 'Не получилось получить ближайшую передачу 😔');
+  }
+});
+
+// ДД.ММ -> {day, month} или null, если формат неверный.
+function parseDDMM(token) {
+  const match = /^(\d{1,2})\.(\d{1,2})$/.exec(String(token || '').trim());
+  if (!match) return null;
+  const day = parseInt(match[1], 10);
+  const month = parseInt(match[2], 10);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return { day, month };
+}
+
+// Собирает и проверяет реальную календарную дату для конкретного года —
+// отсекает несуществующие даты вроде 31.02 (через UTC round-trip: если
+// day/month "переполнились" при сборке, Date.UTC их нормализует, и сверка
+// с исходными значениями не совпадёт).
+function buildDateISO(year, month, day) {
+  const dt = new Date(Date.UTC(year, month - 1, day));
+  if (dt.getUTCFullYear() !== year || dt.getUTCMonth() !== month - 1 || dt.getUTCDate() !== day) return null;
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+// /дата <ДД.ММ> — год подбирается автоматически: если день.месяц ещё не
+// прошёл в этом году (по МСК) — текущий год, иначе — следующий.
+function resolveDateArg(token, todayISO) {
+  const parsed = parseDDMM(token);
+  if (!parsed) return null;
+
+  const currentYear = Number(todayISO.slice(0, 4));
+  const thisYear = buildDateISO(currentYear, parsed.month, parsed.day);
+  if (thisYear && thisYear >= todayISO) return thisYear;
+
+  const nextYear = buildDateISO(currentYear + 1, parsed.month, parsed.day);
+  if (nextYear) return nextYear;
+
+  return thisYear; // редкий край (29 февраля, невисокосный ни в этом, ни в следующем) — вернём валидный, если он вообще был
+}
+
+// Доступна всем, как /курсы и /медитации — показывает все записи (курсы и
+// медитации вместе) на конкретную дату, независимо от курса.
+bot.onText(/^\/дата(?:@\S+)?(?:\s+(\S+))?$/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const dateArg = match[1] ? match[1].trim() : '';
+  const usage = 'Используй формат: /дата 27.08';
+
+  const { dateISO: todayISO } = getNowMsk();
+  const resolvedDateISO = dateArg ? resolveDateArg(dateArg, todayISO) : null;
+
+  if (!resolvedDateISO) {
+    await bot.sendMessage(chatId, usage);
+    return;
+  }
+
+  try {
+    const all = readPeredachi();
+    for (const chunk of chunkMessage(formatByDate(all, resolvedDateISO))) {
+      await bot.sendMessage(chatId, chunk, { parse_mode: 'Markdown' });
+    }
+  } catch (err) {
+    console.error('[peredachi] ошибка формирования списка на дату:', err.message);
+    console.error(err.stack);
+    await bot.sendMessage(chatId, 'Не получилось получить список передач 😔');
   }
 });
 

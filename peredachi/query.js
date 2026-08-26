@@ -183,6 +183,29 @@ function formatNearest(all, kursArg) {
   return formatSection(sectionTitleSingle(kursArg), [filtered[0]]);
 }
 
+// /дата <ДД.ММ> — все записи (курсы и медитации вместе) на конкретную
+// dateISO, отсортированные по времени. В отличие от /курс1...курс6 (где
+// курс понятен из общего заголовка), список смешанный — поэтому у каждой
+// карточки свой ярлык "Курс N" / "Медитация".
+function formatByDate(all, dateISO) {
+  const displayDate = formatDateRu(dateISO);
+  const records = sortRecords(all.filter((r) => String(r.dateISO || '').trim() === dateISO));
+
+  if (records.length === 0) {
+    return `На ${displayDate} передач не найдено.`;
+  }
+
+  const blocks = records.map((r) => {
+    const isMeditation = String(r.kurs || '').trim() === 'медитация';
+    const label = isMeditation
+      ? 'Медитация'
+      : `Курс ${escapeMarkdown(r.kurs)}${r.postfix ? ` (${escapeMarkdown(r.postfix)})` : ''}`;
+    return `*${label}*\n${formatRecordBlock(r)}`;
+  });
+
+  return `📅 *Передачи на ${displayDate}:*\n\n${blocks.join('\n\n')}`;
+}
+
 module.exports = {
   getNowMsk,
   extractCourseNumbers,
@@ -194,4 +217,5 @@ module.exports = {
   formatKursDetail,
   formatMeditations,
   formatNearest,
+  formatByDate,
 };
