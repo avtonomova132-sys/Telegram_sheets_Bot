@@ -186,10 +186,22 @@ function formatNearest(all, kursArg) {
 // /дата <ДД.ММ> — все записи (курсы и медитации вместе) на конкретную
 // dateISO, отсортированные по времени. В отличие от /курс1...курс6 (где
 // курс понятен из общего заголовка), список смешанный — поэтому у каждой
-// карточки свой ярлык "Курс N" / "Медитация".
+// карточки свой ярлык "Курс N" / "Медитация". Если запрошенная дата —
+// сегодня (по МСК), уже прошедшие по времени записи скрываются (та же
+// логика, что isUpcoming уже применяет везде); для будущей даты фильтрации
+// по времени суток нет — resolveDateArg в index.js в принципе не может
+// вернуть дату в прошлом, так что "сегодня" — единственный случай, где
+// внутри одного дня есть что фильтровать.
 function formatByDate(all, dateISO) {
   const displayDate = formatDateRu(dateISO);
-  const records = sortRecords(all.filter((r) => String(r.dateISO || '').trim() === dateISO));
+  const now = getNowMsk();
+  const isToday = dateISO === now.dateISO;
+
+  let records = all.filter((r) => String(r.dateISO || '').trim() === dateISO);
+  if (isToday) {
+    records = records.filter((r) => isUpcoming(r, now));
+  }
+  records = sortRecords(records);
 
   if (records.length === 0) {
     return `На ${displayDate} передач не найдено.`;
