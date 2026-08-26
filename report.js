@@ -313,6 +313,26 @@ function deriveMsk(azMin) {
   return { min: ((raw % 1440) + 1440) % 1440, dayOffset: Math.floor(raw / 1440) };
 }
 
+// Arizona is fixed UTC-7 — turns an event's AZ-local start (e.date, the
+// AZ calendar day at UTC midnight, plus e.azStartMin AZ-local minutes)
+// back into an absolute instant, so it can be compared against "now".
+const AZ_UTC_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+function azStartInstant(e) {
+  return e.date.getTime() + e.azStartMin * 60000 + AZ_UTC_OFFSET_MS;
+}
+
+// A "host needed" solicitation for a slot whose Arizona start time has
+// already passed is actively misleading — asking people to sign up for
+// something that already happened. Every "missing host" listing (/check,
+// /weekly's warning block + CTA, the daily diff-check's recap) filters
+// on this, but NOT /weekly's full per-event listing, which deliberately
+// keeps past events visible as a historical record regardless of host
+// status — see buildWeeklyMessage.
+function isPastAzStart(e, now) {
+  return azStartInstant(e) <= now.getTime();
+}
+
 function parseTabEvents(tabName, rows) {
   const segments = findHeaderSegments(rows, tabName);
   const events = [];
@@ -728,9 +748,12 @@ function partialDataWarningRu(failedTabs) {
 // if everything is covered. When some tabs failed to load, a confirmed
 // all-clear is never possible — the warning replaces the "Hooray"/"Ура"
 // claim instead of just decorating it, since "no open slots found" over
-// partial data isn't the same fact as "no open slots exist".
-function buildCheckMessage(events, range, tags, failedTabs = []) {
-  const missing = events.filter((e) => !e.hasHost);
+// partial data isn't the same fact as "no open slots exist". Also excludes
+// any slot whose Arizona start time has already passed relative to `now`
+// — asking for a host for something that already happened is misleading,
+// even though it's technically still "this week".
+function buildCheckMessage(events, range, tags, failedTabs = [], now = new Date()) {
+  const missing = events.filter((e) => !e.hasHost && !isPastAzStart(e, now));
   const rangeEn = formatWeekRangeEn(range.start, range.end);
   const rangeRu = formatWeekRangeRu(range.start, range.end);
   const partial = failedTabs.length > 0;
@@ -923,8 +946,13 @@ function ctaLineRu(missing) {
 // (range is genuinely next week), false for the manual command (range is
 // the week already in progress) — see generateWeeklyReport vs
 // generateWeeklyAnnounceReport.
-function buildWeeklyMessage(events, range, hostSignupUrl, { upcoming = false, failedTabs = [] } = {}) {
-  const missing = events.filter((e) => !e.hasHost);
+function buildWeeklyMessage(events, range, hostSignupUrl, { upcoming = false, failedTabs = [], now = new Date() } = {}) {
+  // Excludes slots whose Arizona start has already passed — only from the
+  // "still needs a host" set used by the warning block + CTA below. The
+  // full per-event listing further down uses `events` directly, not
+  // `missing`, so past sessions still show up there as a historical
+  // record regardless of host status, on purpose.
+  const missing = events.filter((e) => !e.hasHost && !isPastAzStart(e, now));
   const rangeEn = formatWeekRangeEn(range.start, range.end);
   const rangeRu = formatWeekRangeRu(range.start, range.end);
   const scheduleLabelEn = upcoming ? 'Zoom broadcast schedule for the upcoming week' : 'Zoom broadcast schedule for this week';
@@ -993,7 +1021,7 @@ function buildWeeklyMessage(events, range, hostSignupUrl, { upcoming = false, fa
 async function generateWeeklyReport(now = new Date()) {
   const range = getCurrentWeekRange(now);
   const { events, failedTabs, hostSignupUrl, debugCounts } = await collectWeekEvents(range);
-  const text = buildWeeklyMessage(events, range, hostSignupUrl, { upcoming: false, failedTabs });
+  const text = buildWeeklyMessage(events, range, hostSignupUrl, { upcoming: false, failedTabs, now });
   return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
 }
 
@@ -1003,7 +1031,7 @@ async function generateWeeklyReport(now = new Date()) {
 async function generateWeeklyAnnounceReport(now = new Date()) {
   const range = getNextWeekRange(now);
   const { events, failedTabs, hostSignupUrl, debugCounts } = await collectWeekEvents(range);
-  const text = buildWeeklyMessage(events, range, hostSignupUrl, { upcoming: true, failedTabs });
+  const text = buildWeeklyMessage(events, range, hostSignupUrl, { upcoming: true, failedTabs, now });
   return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
 }
 
@@ -1031,7 +1059,7 @@ async function generateCheckReport(now = new Date()) {
   const range = getCurrentWeekRange(now);
   const { events, failedTabs, debugCounts } = await collectWeekEvents(range);
   const tags = loadCommunityTags();
-  const text = buildCheckMessage(events, range, tags, failedTabs);
+  const text = buildCheckMessage(events, range, tags, failedTabs, now);
   return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
 }
 
@@ -1292,14 +1320,17 @@ async function runDailyHostDiffCheck(now = new Date(), { updateLastRunDate = fal
   // A brand-new or rescheduled event with no host must additionally get
   // Elena the ready-to-paste group announcement — same /check format (EN
   // then RU, "host needed" / "нужен волонтёр"). Gating on "does ANY event
-  // this week still lack a host" (rather than "is the new/moved event
-  // itself unhosted") is deliberate, not an approximation: such an event is
-  // always a member of allEvents, so this condition fires for it every
-  // time, and it also naturally folds in any other already-open slot so
-  // the pasted text reflects the whole week, not just the one session.
-  if (allEvents.some((e) => !e.hasHost)) {
+  // this week still lack a host AND hasn't already started" (rather than
+  // "is the new/moved event itself unhosted") is deliberate, not an
+  // approximation: such an event is always a member of allEvents, so this
+  // condition fires for it every time, and it also naturally folds in any
+  // other already-open slot so the pasted text reflects the whole week,
+  // not just the one session — the past-start exclusion keeps a slot that
+  // already happened from both triggering this block pointlessly and (via
+  // buildCheckMessage's own identical filter) showing up inside it.
+  if (allEvents.some((e) => !e.hasHost && !isPastAzStart(e, now))) {
     const tags = loadCommunityTags();
-    lines.push(buildCheckMessage(allEvents, range, tags));
+    lines.push(buildCheckMessage(allEvents, range, tags, [], now));
   }
 
   return {
