@@ -113,11 +113,27 @@ function hasEntry(id) {
   return readEntries().some((e) => e.id === id);
 }
 
+// Тестовые записи от /дневник_принцип с явным номером — не часть реальной
+// практики дня, не должны попадать ни в дневной отчёт для партнёров, ни в
+// обычную ленту последних записей.
+function isTestSlot(entry) {
+  return typeof entry.slotIndex === 'string' && entry.slotIndex.startsWith('test-');
+}
+
 function getRecent(limit = 10) {
   return readEntries()
-    .slice()
+    .filter((e) => !isTestSlot(e))
     .sort((a, b) => b.sentAt.localeCompare(a.sentAt))
     .slice(0, limit);
+}
+
+// Все настоящие (не тестовые) записи конкретного дня, по порядку слотов —
+// для дневного отчёта, который можно скопировать и отправить партнёру по
+// практике (кармическому/по щедрости).
+function getDay(dateBali) {
+  return readEntries()
+    .filter((e) => e.dateBali === dateBali && !isTestSlot(e))
+    .sort((a, b) => Number(a.slotIndex) - Number(b.slotIndex));
 }
 
 function getByDateRange(fromDateBali, toDateBali) {
@@ -166,6 +182,7 @@ module.exports = {
   getOldestPending,
   countPending,
   getMissedToday,
+  getDay,
   saveAnswer,
   getRecent,
   getByDateRange,

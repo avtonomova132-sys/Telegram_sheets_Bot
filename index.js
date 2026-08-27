@@ -81,6 +81,7 @@ const {
   getOldestPending,
   countPending,
   getMissedToday,
+  getDay: getDnevnikDay,
   saveAnswer,
   getRecent: getRecentDnevnik,
   getNextPrincipleNumber,
@@ -96,6 +97,7 @@ const {
   buildDnevnikSummary,
   buildMissedListMessage,
   buildEveningBatchConfirmation,
+  buildDayReport,
 } = require('./dnevnik/view');
 
 const app = express();
@@ -326,13 +328,27 @@ async function handleDnevnikPendingText(chatId, rawText) {
   }
 }
 
-// Ручная проверка вне расписания — присылает принцип, который сейчас должен
-// был бы прийти следующим, не сдвигая ротацию (аналог /verse). Полезно,
-// чтобы "потрогать" формат, не дожидаясь реального времени слота.
-bot.onText(/^\/дневник_принцип(?:@\S+)?$/, async (msg) => {
+// Ручная проверка вне расписания — присылает принцип (по умолчанию тот, что
+// должен был бы прийти следующим по ротации; можно указать конкретный номер,
+// например "/дневник_принцип 5"), не сдвигая реальную ротацию (аналог
+// /verse). Создаёт настоящую "живую" запись с обычным 30-минутным окном —
+// можно по-настоящему ответить и получить полноценный разбор, не дожидаясь
+// реального времени слота.
+bot.onText(/^\/дневник_принцип(?:@\S+)?(?:\s+(\d{1,2}))?$/, async (msg, match) => {
   const chatId = msg.chat.id;
-  const next = getNextPrincipleNumber();
-  const principle = getPrinciple(next);
+  const requested = match[1] ? Number(match[1]) : null;
+  const principleNumber = requested && requested >= 1 && requested <= 10 ? requested : getNextPrincipleNumber();
+  const principle = getPrinciple(principleNumber);
+
+  // test-<timestamp> как slotIndex — не пересекается с реальными 1..6,
+  // поэтому не мешает ежедневной ротации и дедупликации настоящих слотов.
+  addSentSlot({
+    dateBali: baliDateString(),
+    slotIndex: `test-${Date.now()}`,
+    principleNumber,
+    sentAt: new Date().toISOString(),
+  });
+
   await bot.sendMessage(chatId, buildSlotMessage(principle, '?'));
 });
 
@@ -342,6 +358,16 @@ bot.onText(/^\/дневник(?:@\S+)?$/, async (msg) => {
   const recent = getRecentDnevnik(10);
   const pending = countPending();
   await bot.sendMessage(chatId, buildDnevnikSummary(recent, pending));
+});
+
+// Отчёт за сегодня одним текстом — удобно копировать и отправлять партнёру
+// по практике (кармическому или по щедрости). Тестовые записи (через
+// /дневник_принцип с номером) сюда не попадают — только настоящие слоты дня.
+bot.onText(/^\/дневник_день(?:@\S+)?$/, async (msg) => {
+  const chatId = msg.chat.id;
+  const today = baliDateString();
+  const entries = getDnevnikDay(today);
+  await bot.sendMessage(chatId, buildDayReport(today, entries));
 });
 
 // Отправляет слот, если наступило его время по Бали и он ещё не отправлялся

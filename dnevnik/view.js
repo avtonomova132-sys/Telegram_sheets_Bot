@@ -76,6 +76,29 @@ function buildEveningBatchConfirmation(results) {
   return blocks.join('\n\n〜〜〜\n\n');
 }
 
+// Дневной отчёт — все записи конкретного дня одним текстом, чтобы можно
+// было скопировать и отправить партнёру по практике (кармическому или по
+// щедрости). В отличие от buildDnevnikSummary (для себя, с усечением) —
+// здесь полный разбор каждого пункта, как в обычных подтверждениях.
+function buildDayReport(dateBali, entries) {
+  if (entries.length === 0) {
+    return `📿 Шестиразовый дневник — ${dateBali}\n\nПока сегодня записей нет.`;
+  }
+
+  const blocks = entries.map((entry) => {
+    const principle = getPrinciple(entry.principleNumber);
+    if (!entry.answeredAt) {
+      return `⏳ №${entry.principleNumber} (${principle.category}) — ещё не отвечено`;
+    }
+    if (entry.type === 'plus') {
+      return buildPlusConfirmation(principle, entry);
+    }
+    return buildMinusConfirmation(principle, entry);
+  });
+
+  return `📿 Шестиразовый дневник — ${dateBali}\n\n${blocks.join('\n\n〜〜〜\n\n')}`;
+}
+
 module.exports = {
   buildSlotMessage,
   buildPlusConfirmation,
@@ -83,4 +106,5 @@ module.exports = {
   buildDnevnikSummary,
   buildMissedListMessage,
   buildEveningBatchConfirmation,
+  buildDayReport,
 };
