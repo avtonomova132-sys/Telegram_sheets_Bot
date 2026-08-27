@@ -28,6 +28,14 @@ function buildMinusConfirmation(principle, parsed) {
   );
 }
 
+// Общий блок для ещё не отвеченного принципа — с полным текстом (❌/✅), а не
+// только номером, чтобы можно было сразу, не заглядывая никуда, включить
+// микрофон и рассказать по существу.
+function buildUnansweredBlock(entry) {
+  const principle = getPrinciple(entry.principleNumber);
+  return `⏳ №${entry.principleNumber} (${principle.category})\n❌ ${principle.negative}\n✅ ${principle.positive}`;
+}
+
 function buildEntryLine(entry) {
   const time = entry.sentAt ? entry.sentAt.slice(11, 16) : '--:--';
   if (!entry.answeredAt) {
@@ -48,17 +56,15 @@ function buildDnevnikSummary(recentEntries, pendingCount) {
 }
 
 // Вечерний список пропущенных за день слотов (окно 30 минут истекло без
-// ответа). Elena отвечает одним сообщением, называя номера принципов.
+// ответа). Elena отвечает одним сообщением, называя номера принципов —
+// текст каждого принципа сразу тут же, чтобы не искать отдельно.
 function buildMissedListMessage(missedEntries) {
-  const lines = missedEntries
+  const blocks = missedEntries
     .slice()
     .sort((a, b) => a.slotIndex - b.slotIndex)
-    .map((entry) => {
-      const principle = getPrinciple(entry.principleNumber);
-      return `№${entry.principleNumber} (${principle.category}) — ${principle.positive}`;
-    });
+    .map(buildUnansweredBlock);
   return (
-    `🌙 Вечерний обзор — сегодня пропущено (в моменте не ответили):\n\n${lines.join('\n')}\n\n` +
+    `🌙 Вечерний обзор — сегодня пропущено (в моменте не ответили):\n\n${blocks.join('\n\n')}\n\n` +
     `Одним сообщением, текстом или голосом, расскажи, что было по каждому — просто называй номер принципа перед тем, что расскажешь. То, что не назовёшь, — не страшно, просто останется пропущенным сегодня.`
   );
 }
@@ -79,17 +85,18 @@ function buildEveningBatchConfirmation(results) {
 // Дневной отчёт — все записи конкретного дня одним текстом, чтобы можно
 // было скопировать и отправить партнёру по практике (кармическому или по
 // щедрости). В отличие от buildDnevnikSummary (для себя, с усечением) —
-// здесь полный разбор каждого пункта, как в обычных подтверждениях.
+// здесь полный разбор каждого пункта, как в обычных подтверждениях, и полный
+// текст принципа для ещё не отвеченных — можно сразу наговорить по нему.
 function buildDayReport(dateBali, entries) {
   if (entries.length === 0) {
     return `📿 Шестиразовый дневник — ${dateBali}\n\nПока сегодня записей нет.`;
   }
 
   const blocks = entries.map((entry) => {
-    const principle = getPrinciple(entry.principleNumber);
     if (!entry.answeredAt) {
-      return `⏳ №${entry.principleNumber} (${principle.category}) — ещё не отвечено`;
+      return buildUnansweredBlock(entry);
     }
+    const principle = getPrinciple(entry.principleNumber);
     if (entry.type === 'plus') {
       return buildPlusConfirmation(principle, entry);
     }
