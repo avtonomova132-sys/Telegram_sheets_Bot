@@ -1,10 +1,14 @@
 const { getPrinciple } = require('./principles');
 
+function formatExamples(examples) {
+  return examples.map((e) => `   • ${e}`).join('\n');
+}
+
 function buildSlotMessage(principle, slotIndex) {
   return (
-    `📿 Дневник ${slotIndex}/6 — Принцип №${principle.number} (${principle.category})\n\n` +
-    `❌ ${principle.negative}\n` +
-    `✅ ${principle.positive}\n\n` +
+    `📿 Дневник ${slotIndex}/6 — Принцип №${principle.number} (${principle.category}): ${principle.title}\n\n` +
+    `❌ ${principle.negative}\n${formatExamples(principle.negativeExamples)}\n\n` +
+    `✅ ${principle.positive}\n${formatExamples(principle.positiveExamples)}\n\n` +
     `Что сейчас происходит по этому принципу? Напиши или надиктуй голосом — отвечу прямо сюда.\n\n` +
     `(если сейчас не момент — не страшно, через 30 минут окно закроется само, вечером соберу список пропущенного)`
   );
@@ -12,7 +16,7 @@ function buildSlotMessage(principle, slotIndex) {
 
 function buildPlusConfirmation(principle, parsed) {
   return (
-    `✅ Принцип №${principle.number} — плюс\n\n` +
+    `✅ Принцип №${principle.number} (${principle.category}): ${principle.title} — плюс\n\n` +
     `${parsed.text}\n\n` +
     `🙏 Посвящение: ${parsed.posvyashenie}`
   );
@@ -20,7 +24,7 @@ function buildPlusConfirmation(principle, parsed) {
 
 function buildMinusConfirmation(principle, parsed) {
   return (
-    `❌ Принцип №${principle.number} — минус\n\n` +
+    `❌ Принцип №${principle.number} (${principle.category}): ${principle.title} — минус\n\n` +
     `1️⃣ Опора: ${parsed.opora}\n` +
     `2️⃣ Сожаление: ${parsed.sozhalenie}\n` +
     `3️⃣ Антидот: ${parsed.antidot}\n` +
@@ -28,22 +32,28 @@ function buildMinusConfirmation(principle, parsed) {
   );
 }
 
-// Общий блок для ещё не отвеченного принципа — с полным текстом (❌/✅), а не
-// только номером, чтобы можно было сразу, не заглядывая никуда, включить
-// микрофон и рассказать по существу.
+// Общий блок для ещё не отвеченного принципа — с полным текстом (❌/✅) и
+// примерами, а не только номером, чтобы можно было сразу, не заглядывая
+// никуда, включить микрофон и рассказать по существу.
 function buildUnansweredBlock(entry) {
   const principle = getPrinciple(entry.principleNumber);
-  return `⏳ №${entry.principleNumber} (${principle.category})\n❌ ${principle.negative}\n✅ ${principle.positive}`;
+  return (
+    `⏳ №${entry.principleNumber} (${principle.category}): ${principle.title}\n` +
+    `❌ ${principle.negative}\n${formatExamples(principle.negativeExamples)}\n` +
+    `✅ ${principle.positive}\n${formatExamples(principle.positiveExamples)}`
+  );
 }
 
 function buildEntryLine(entry) {
   const time = entry.sentAt ? entry.sentAt.slice(11, 16) : '--:--';
+  const principle = getPrinciple(entry.principleNumber);
+  const categoryTag = principle ? ` (${principle.category})` : '';
   if (!entry.answeredAt) {
-    return `⏳ ${entry.dateBali} ${time} — принцип №${entry.principleNumber} (ещё не отвечено)`;
+    return `⏳ ${entry.dateBali} ${time} — принцип №${entry.principleNumber}${categoryTag} (ещё не отвечено)`;
   }
   const marker = entry.type === 'plus' ? '✅' : '❌';
   const preview = entry.type === 'plus' ? entry.text : entry.sozhalenie;
-  return `${marker} ${entry.dateBali} ${time} — принцип №${entry.principleNumber}: ${preview || ''}`;
+  return `${marker} ${entry.dateBali} ${time} — принцип №${entry.principleNumber}${categoryTag}: ${preview || ''}`;
 }
 
 function buildDnevnikSummary(recentEntries, pendingCount) {
