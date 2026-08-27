@@ -301,7 +301,23 @@ async function handleDnevnikPendingText(chatId, rawText) {
   try {
     const missedPrinciples = missed.map((e) => getPrinciple(e.principleNumber));
     const results = await parseEveningBatch(missedPrinciples, rawText);
-    if (results.length === 0) return false; // не про пропущенные принципы — не перехватываем сообщение
+
+    if (results.length === 0) {
+      // Пустой результат — ИЛИ сообщение вообще не про дневник (тогда молча
+      // отдаём дальше по цепочке), ИЛИ это была попытка ответить, но парсер
+      // не смог связать с конкретным пропущенным принципом. Различаем по
+      // упоминанию слова "принцип" — грубо, но не даёт утекать чужой личной
+      // рефлексии в обычное эхо, если явно было похоже на попытку ответить.
+      if (/принцип/i.test(rawText)) {
+        const numbers = missedPrinciples.map((p) => p.number).join(', ');
+        await bot.sendMessage(
+          chatId,
+          `Не смогла точно понять, к какому из пропущенных принципов (№${numbers}) это относится 😔 Попробуй начать с номера явно, например: "принцип 2: ...".`
+        );
+        return true;
+      }
+      return false; // похоже, сообщение вообще не про дневник — не перехватываем
+    }
 
     for (const result of results) {
       const entry = missed.find((e) => e.principleNumber === result.principleNumber);
