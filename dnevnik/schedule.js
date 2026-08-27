@@ -10,6 +10,15 @@ const SLOTS = [
   { index: 6, hour: 19, minute: 30 },
 ];
 
+// Сколько времени слот "живой" и ждёт ответа сразу (момент осознанности).
+// После этого — тихо становится "пропущенным", не держит очередь, и
+// попадает в вечерний список вместо того, чтобы висеть в ожидании весь день.
+const PENDING_WINDOW_MINUTES = 30;
+
+// Когда вечером прилетает список пропущенных за день слотов — уже после
+// последнего слота (19:30), с запасом.
+const EVENING_SUMMARY = { hour: 21, minute: 45 };
+
 // "Сейчас" в минутах от полуночи по Бали (Asia/Makassar, UTC+8, без DST) —
 // тот же фиксированный сдвиг, что и в verse/progress.js (baliHour), только
 // сразу с минутами, чтобы сравнивать с получасовыми слотами.
@@ -26,4 +35,11 @@ function formatSlotTime(slot) {
   return `${String(slot.hour).padStart(2, '0')}:${String(slot.minute).padStart(2, '0')}`;
 }
 
-module.exports = { SLOTS, baliMinutesNow, slotMinutes, formatSlotTime };
+module.exports = {
+  SLOTS,
+  PENDING_WINDOW_MINUTES,
+  EVENING_SUMMARY,
+  baliMinutesNow,
+  slotMinutes,
+  formatSlotTime,
+};

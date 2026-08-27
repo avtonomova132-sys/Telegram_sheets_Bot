@@ -74,19 +74,29 @@ const {
   DONE_PREFIX: ZAD_DONE_PREFIX,
 } = require('./zadachi/view');
 const { getPrinciple } = require('./dnevnik/principles');
-const { SLOTS, baliMinutesNow, slotMinutes, formatSlotTime } = require('./dnevnik/schedule');
+const { SLOTS, EVENING_SUMMARY, baliMinutesNow, slotMinutes, formatSlotTime } = require('./dnevnik/schedule');
 const {
   addSentSlot,
   hasEntry: hasDnevnikEntry,
   getOldestPending,
   countPending,
+  getMissedToday,
   saveAnswer,
   getRecent: getRecentDnevnik,
   getNextPrincipleNumber,
   setLastPrincipleSent,
+  getEveningSummaryDate,
+  setEveningSummaryDate,
 } = require('./dnevnik/store');
-const { parseDnevnikAnswer, isConfigured: dnevnikConfigured } = require('./dnevnik/parse');
-const { buildSlotMessage, buildPlusConfirmation, buildMinusConfirmation, buildDnevnikSummary } = require('./dnevnik/view');
+const { parseDnevnikAnswer, parseEveningBatch, isConfigured: dnevnikConfigured } = require('./dnevnik/parse');
+const {
+  buildSlotMessage,
+  buildPlusConfirmation,
+  buildMinusConfirmation,
+  buildDnevnikSummary,
+  buildMissedListMessage,
+  buildEveningBatchConfirmation,
+} = require('./dnevnik/view');
 
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
@@ -225,8 +235,9 @@ bot.on('message', async (msg) => {
 // Anthropic API раскладывается либо на плюс+посвящение, либо на минус через
 // четыре противосилы (dnevnik/parse.js), и сохраняется в /data/dnevnik.json.
 
-// Общая логика разбора ответа — используется и из текстового, и из голосового
-// обработчика. entry — самая старая неотвеченная запись (getOldestPending()).
+// Общая логика разбора ОДНОГО живого ответа (в момент слота, пока окно
+// PENDING_WINDOW_MINUTES открыто) — используется и из текстового, и из
+// голосового обработчика.
 async function handleDnevnikAnswer(chatId, entry, rawText) {
   const principle = getPrinciple(entry.principleNumber);
 
@@ -257,27 +268,62 @@ async function handleDnevnikAnswer(chatId, entry, rawText) {
       });
       await bot.sendMessage(chatId, buildMinusConfirmation(principle, parsed));
     }
-
-    // Если пока разбирали этот ответ, уже накопились другие неотвеченные
-    // слоты (например, отвечала не сразу) — мягко напоминаем, что дневник
-    // ждёт ещё записи, не дублируя сам текст принципа.
-    const stillPending = countPending();
-    if (stillPending > 0) {
-      await bot.sendMessage(chatId, `📿 Ещё ждёт ответа: ${stillPending} ${stillPending === 1 ? 'запись' : 'записи'}. Когда будет момент — просто напиши или надиктуй, отвечу на самую раннюю.`);
-    }
+    // Намеренно НЕ напоминаем здесь о других неотвеченных записях — Elena
+    // явно попросила не подвязывать один ответ к следующему: пропущенное
+    // само уйдёт в вечерний список, никакого "довеска" мидень.
   } catch (err) {
     console.error('[dnevnik] ошибка разбора ответа:', err.message);
     bot.sendMessage(chatId, 'Не получилось разобрать запись 😔 Попробуй переформулировать ещё раз.');
   }
 }
 
-// Возвращает true, если текст был перехвачен как ответ на дневник (и тем
-// самым обработка в bot.on('message') должна остановиться).
-async function handleDnevnikPendingText(chatId, text) {
-  const entry = getOldestPending();
-  if (!entry) return false;
-  await handleDnevnikAnswer(chatId, entry, text);
-  return true;
+// Перехватывает свободный текст/голос под дневник — сначала пробует живой
+// слот (в пределах 30-минутного окна), затем, если живого слота нет, но
+// сегодня есть пропущенные — пробует разобрать как вечерний пакетный ответ.
+// Возвращает true, если сообщение обработано как дневник (и обработка в
+// bot.on('message')/bot.on('voice') должна остановиться), иначе false — и
+// сообщение уходит дальше по цепочке (задача/напоминание/эхо) как обычно.
+async function handleDnevnikPendingText(chatId, rawText) {
+  const liveEntry = getOldestPending();
+  if (liveEntry) {
+    await handleDnevnikAnswer(chatId, liveEntry, rawText);
+    return true;
+  }
+
+  if (!dnevnikConfigured) return false;
+
+  const today = baliDateString();
+  const missed = getMissedToday(today);
+  if (missed.length === 0) return false;
+
+  try {
+    const missedPrinciples = missed.map((e) => getPrinciple(e.principleNumber));
+    const results = await parseEveningBatch(missedPrinciples, rawText);
+    if (results.length === 0) return false; // не про пропущенные принципы — не перехватываем сообщение
+
+    for (const result of results) {
+      const entry = missed.find((e) => e.principleNumber === result.principleNumber);
+      if (!entry) continue;
+      if (result.type === 'plus') {
+        saveAnswer(entry.id, { type: 'plus', rawText, text: result.text, posvyashenie: result.posvyashenie });
+      } else {
+        saveAnswer(entry.id, {
+          type: 'minus',
+          rawText,
+          opora: result.opora,
+          sozhalenie: result.sozhalenie,
+          antidot: result.antidot,
+          reshenie: result.reshenie,
+        });
+      }
+    }
+    await bot.sendMessage(chatId, buildEveningBatchConfirmation(results));
+    return true;
+  } catch (err) {
+    console.error('[dnevnik] ошибка вечернего разбора:', err.message);
+    await bot.sendMessage(chatId, 'Не получилось разобрать вечерний ответ 😔 Попробуй ещё раз, можно короче или по одному принципу за раз.');
+    return true; // это точно была попытка разобрать пропущенное — не отдаём дальше в эхо/задачи
+  }
 }
 
 // Ручная проверка вне расписания — присылает принцип, который сейчас должен
@@ -290,7 +336,7 @@ bot.onText(/^\/дневник_принцип(?:@\S+)?$/, async (msg) => {
   await bot.sendMessage(chatId, buildSlotMessage(principle, '?'));
 });
 
-// Последние записи + сколько ещё не отвечено.
+// Последние записи + сколько ещё живых, не отвеченных.
 bot.onText(/^\/дневник(?:@\S+)?$/, async (msg) => {
   const chatId = msg.chat.id;
   const recent = getRecentDnevnik(10);
@@ -335,6 +381,28 @@ async function checkAndSendDnevnikSlots() {
 }
 
 cron.schedule('*/5 * * * *', checkAndSendDnevnikSlots);
+
+// В 21:45 по Бали (после последнего слота 19:30, с запасом) — если за
+// сегодня остались пропущенные слоты, присылает список, чтобы Elena могла
+// одним сообщением разобрать всё перед сном. Отправляется максимум один раз
+// в день (флаг eveningSummaryDate в /data/dnevnik_progress.json).
+async function checkAndSendEveningDnevnikSummary() {
+  if (!myChatId) return;
+
+  const today = baliDateString();
+  if (getEveningSummaryDate() === today) return; // уже отправляли сегодня
+
+  const nowMinutes = baliMinutesNow();
+  if (nowMinutes < EVENING_SUMMARY.hour * 60 + EVENING_SUMMARY.minute) return;
+
+  const missed = getMissedToday(today);
+  if (missed.length > 0) {
+    await bot.sendMessage(myChatId, buildMissedListMessage(missed));
+  }
+  setEveningSummaryDate(today); // отмечаем в любом случае — и когда пропусков нет, чтобы не проверять весь остаток дня
+}
+
+cron.schedule('*/5 * * * *', checkAndSendEveningDnevnikSummary);
 
 // ===== Голосовые сообщения =====
 async function transcribeVoice(buffer, attempts = 3) {
@@ -382,14 +450,11 @@ bot.on('voice', async (msg) => {
 
     const transcription = await transcribeVoice(buffer);
 
-    // Голосовой ответ на дневник перехватывается так же, как и текстовый —
-    // FIFO по самой старой неотвеченной записи (см. handleDnevnikPendingText
-    // в секции "Шестиразовый дневник" выше).
-    const pendingEntry = getOldestPending();
-    if (pendingEntry) {
-      await handleDnevnikAnswer(chatId, pendingEntry, transcription.text);
-      return;
-    }
+    // Голосовой ответ на дневник перехватывается той же функцией, что и
+    // текстовый — сначала живой слот (окно 30 минут), затем, если живого
+    // нет, но сегодня есть пропущенные — как вечерний пакетный разбор.
+    const handledAsDnevnik = await handleDnevnikPendingText(chatId, transcription.text);
+    if (handledAsDnevnik) return;
 
     bot.sendMessage(chatId, `Я услышал:\n\n"${transcription.text}"\n\n(Пока просто показываю распознанный текст — скоро научусь красиво его оформлять)`);
   } catch (err) {

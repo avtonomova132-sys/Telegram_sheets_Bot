@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { PENDING_WINDOW_MINUTES } = require('./schedule');
 
 // /data — тот же примонтированный Railway Volume, что уже используется для
 // остальных хранилищ бота (verse/progress.js, proekty/store.js, zadachi/store.js).
@@ -17,7 +18,7 @@ function atomicWrite(filePath, data) {
 // Массив объектов вида:
 // {
 //   id: "2026-08-27#3",           // dateBali + slotIndex, уникально
-//   dateBali, slotIndex, principleNumber, sentAt (ISO),
+//   dateBali, slotIndex, principleNumber, sentAt (ISO), expiresAt (ISO),
 //   answeredAt: null | ISO,
 //   type: null | 'plus' | 'minus',
 //   rawText: null | string,       // как есть, что написала/надиктовала Elena
@@ -44,12 +45,14 @@ function addSentSlot({ dateBali, slotIndex, principleNumber, sentAt }) {
   const entries = readEntries();
   const id = `${dateBali}#${slotIndex}`;
   if (entries.some((e) => e.id === id)) return entries.find((e) => e.id === id); // защита от повторной отправки
+  const expiresAt = new Date(new Date(sentAt).getTime() + PENDING_WINDOW_MINUTES * 60 * 1000).toISOString();
   const entry = {
     id,
     dateBali,
     slotIndex,
     principleNumber,
     sentAt,
+    expiresAt,
     answeredAt: null,
     type: null,
     rawText: null,
@@ -65,17 +68,32 @@ function addSentSlot({ dateBali, slotIndex, principleNumber, sentAt }) {
   return entry;
 }
 
-// Самая старая неотвеченная запись — на неё и должен упасть следующий
-// свободный текст/голос от Elena (FIFO: если пропустила несколько слотов
-// подряд, первым разбираем самый ранний).
+// Самая старая ЖИВАЯ (в пределах PENDING_WINDOW_MINUTES) неотвеченная
+// запись — на неё падает следующий свободный текст/голос "в моменте".
+// Как только окно истекло — запись сюда больше не попадает, она "тихо"
+// становится пропущенной и ждёт вечернего разбора (см. getMissedToday),
+// а очередь не держит следующие слоты.
 function getOldestPending() {
-  const entries = readEntries().filter((e) => !e.answeredAt);
+  const now = new Date();
+  const entries = readEntries().filter((e) => !e.answeredAt && new Date(e.expiresAt) > now);
   if (entries.length === 0) return null;
   return entries.sort((a, b) => a.sentAt.localeCompare(b.sentAt))[0];
 }
 
+// То же самое, но для отображения ("сколько сейчас ещё живых, не отвеченных").
 function countPending() {
-  return readEntries().filter((e) => !e.answeredAt).length;
+  const now = new Date();
+  return readEntries().filter((e) => !e.answeredAt && new Date(e.expiresAt) > now).length;
+}
+
+// Пропущенные слоты именно СЕГОДНЯШНЕГО дня — окно истекло, ответа не было.
+// Не тянутся из прошлых дней: если вчера что-то пропустила — оно просто
+// осталось пропущенным, не будет всплывать бесконечно.
+function getMissedToday(dateBali) {
+  const now = new Date();
+  return readEntries().filter(
+    (e) => e.dateBali === dateBali && !e.answeredAt && new Date(e.expiresAt) <= now
+  );
 }
 
 function saveAnswer(id, fields) {
@@ -106,13 +124,19 @@ function getByDateRange(fromDateBali, toDateBali) {
   return readEntries().filter((e) => e.dateBali >= fromDateBali && e.dateBali <= toDateBali);
 }
 
-// ===== Прогресс ротации (какой принцип отправлять следующим) =====
+// ===== Прогресс (ротация принципов + флаг вечерней сводки) =====
+// Один и тот же файл хранит оба поля — writeProgress всегда мёржит поверх
+// текущего состояния, чтобы одна функция не затирала поле, записанное другой.
 function readProgress() {
   try {
     return JSON.parse(fs.readFileSync(PROGRESS_PATH, 'utf8'));
   } catch {
-    return { lastPrincipleSent: 0 };
+    return { lastPrincipleSent: 0, eveningSummaryDate: null };
   }
+}
+
+function writeProgress(patch) {
+  atomicWrite(PROGRESS_PATH, { ...readProgress(), ...patch });
 }
 
 function getLastPrincipleSent() {
@@ -125,7 +149,15 @@ function getNextPrincipleNumber() {
 }
 
 function setLastPrincipleSent(n) {
-  atomicWrite(PROGRESS_PATH, { lastPrincipleSent: n });
+  writeProgress({ lastPrincipleSent: n });
+}
+
+function getEveningSummaryDate() {
+  return readProgress().eveningSummaryDate || null;
+}
+
+function setEveningSummaryDate(dateBali) {
+  writeProgress({ eveningSummaryDate: dateBali });
 }
 
 module.exports = {
@@ -133,9 +165,12 @@ module.exports = {
   hasEntry,
   getOldestPending,
   countPending,
+  getMissedToday,
   saveAnswer,
   getRecent,
   getByDateRange,
   getNextPrincipleNumber,
   setLastPrincipleSent,
+  getEveningSummaryDate,
+  setEveningSummaryDate,
 };

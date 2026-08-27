@@ -94,4 +94,93 @@ function extractJson(rawText) {
   }
 }
 
-module.exports = { parseDnevnikAnswer, isConfigured };
+// То же самое, но для массива (вечерний пакетный разбор — сразу несколько
+// принципов в одном ответе).
+function extractJsonArray(rawText) {
+  const trimmed = rawText.trim();
+  try {
+    const direct = JSON.parse(trimmed);
+    return Array.isArray(direct) ? direct : null;
+  } catch {
+    // падаем дальше на regex-попытку
+  }
+
+  const start = trimmed.indexOf('[');
+  const end = trimmed.lastIndexOf(']');
+  if (start === -1 || end === -1 || end < start) return null;
+
+  try {
+    const parsed = JSON.parse(trimmed.slice(start, end + 1));
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// ===== Вечерний пакетный разбор =====
+// Список принципов, которые сегодня остались без ответа в момент слота
+// (окно PENDING_WINDOW_MINUTES истекло). Elena вечером разбирает их одним
+// сообщением, обычно называя номер принципа перед тем, что расскажет.
+function buildEveningSystemPrompt(missedPrinciples) {
+  const list = missedPrinciples
+    .map((p) => `№${p.number} (${p.category}): ❌ ${p.negative} / ✅ ${p.positive}`)
+    .join('\n');
+  const numbers = missedPrinciples.map((p) => p.number).join(', ');
+
+  return `Elena вечером разбирает пропущенные за день слоты "шестиразового дневника" (буддийская практика осознанности, традиция Гэше Майкла Роуча/ACI). Вот принципы, которые сегодня остались без ответа в момент напоминания:
+${list}
+
+Она одним сообщением (часто через голосовой ввод — сбивчиво, разговорно) рассказывает про один или несколько из них, обычно называя номер принципа перед тем, что расскажет ("принцип такой-то..."), но может и не называть явно — тогда определяй по смыслу, к какому из перечисленных принципов ближе всего относится кусок текста.
+
+Раздели её рассказ на части — по одной на каждый принцип, который она реально затронула. Принципы из списка, которые она НЕ упомянула вообще, — просто не включай в ответ, ничего не выдумывай.
+
+Для каждого затронутого принципа — та же логика, что и для обычной записи:
+- type "plus": text (кратко её словами) + posvyashenie (посвящение заслуг, в её стиле "Пусть это семя... станет причиной...")
+- type "minus" — через четыре противосилы: opora (по умолчанию "Ради блага всех существ"), sozhalenie (что именно и почему вредно — самое важное), antidot (конкретное противодействие), reshenie (конкретный срок воздержания, не абстрактный)
+
+Ответь СТРОГО валидным JSON-массивом, без markdown, без пояснений. principleNumber — обязательно одно из: ${numbers}.
+[
+  {
+    "principleNumber": число,
+    "type": "plus" | "minus",
+    "text": "строка (только для plus)",
+    "posvyashenie": "строка (только для plus)",
+    "opora": "строка (только для minus)",
+    "sozhalenie": "строка (только для minus)",
+    "antidot": "строка (только для minus)",
+    "reshenie": "строка (только для minus)"
+  }
+]
+Если она вообще ничего не сказала по существу ни про один из перечисленных принципов — верни пустой массив [].`;
+}
+
+async function parseEveningBatch(missedPrinciples, rawText) {
+  if (!anthropic) {
+    throw new Error('ANTHROPIC_API_KEY не задан');
+  }
+
+  const response = await anthropic.messages.create({
+    model: MODEL,
+    max_tokens: 2048,
+    system: buildEveningSystemPrompt(missedPrinciples),
+    messages: [{ role: 'user', content: rawText }],
+  });
+
+  const textBlock = response.content.find((block) => block.type === 'text');
+  if (!textBlock || !textBlock.text) {
+    throw new Error('пустой ответ от Anthropic API');
+  }
+
+  const parsed = extractJsonArray(textBlock.text);
+  if (!parsed) {
+    console.error('[dnevnik] не удалось найти JSON-массив в вечернем ответе модели, сырой текст:', textBlock.text);
+    throw new Error('невалидный JSON-массив в ответе Anthropic API');
+  }
+
+  const validNumbers = new Set(missedPrinciples.map((p) => p.number));
+  return parsed.filter(
+    (item) => validNumbers.has(item.principleNumber) && (item.type === 'plus' || item.type === 'minus')
+  );
+}
+
+module.exports = { parseDnevnikAnswer, parseEveningBatch, isConfigured };

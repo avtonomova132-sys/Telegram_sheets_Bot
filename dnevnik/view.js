@@ -1,9 +1,12 @@
+const { getPrinciple } = require('./principles');
+
 function buildSlotMessage(principle, slotIndex) {
   return (
     `📿 Дневник ${slotIndex}/6 — Принцип №${principle.number} (${principle.category})\n\n` +
     `❌ ${principle.negative}\n` +
     `✅ ${principle.positive}\n\n` +
-    `Что сейчас происходит по этому принципу? Напиши или надиктуй голосом — отвечу прямо сюда.`
+    `Что сейчас происходит по этому принципу? Напиши или надиктуй голосом — отвечу прямо сюда.\n\n` +
+    `(если сейчас не момент — не страшно, через 30 минут окно закроется само, вечером соберу список пропущенного)`
   );
 }
 
@@ -40,8 +43,44 @@ function buildDnevnikSummary(recentEntries, pendingCount) {
     return 'Пока нет ни одной записи в шестиразовом дневнике.';
   }
   const lines = recentEntries.map(buildEntryLine);
-  const pendingNote = pendingCount > 0 ? `\n\n⏳ Неотвеченных записей: ${pendingCount}` : '';
+  const pendingNote = pendingCount > 0 ? `\n\n⏳ Ждёт ответа прямо сейчас: ${pendingCount}` : '';
   return `📿 Шестиразовый дневник — последние записи:\n\n${lines.join('\n')}${pendingNote}`;
 }
 
-module.exports = { buildSlotMessage, buildPlusConfirmation, buildMinusConfirmation, buildDnevnikSummary };
+// Вечерний список пропущенных за день слотов (окно 30 минут истекло без
+// ответа). Elena отвечает одним сообщением, называя номера принципов.
+function buildMissedListMessage(missedEntries) {
+  const lines = missedEntries
+    .slice()
+    .sort((a, b) => a.slotIndex - b.slotIndex)
+    .map((entry) => {
+      const principle = getPrinciple(entry.principleNumber);
+      return `№${entry.principleNumber} (${principle.category}) — ${principle.positive}`;
+    });
+  return (
+    `🌙 Вечерний обзор — сегодня пропущено (в моменте не ответили):\n\n${lines.join('\n')}\n\n` +
+    `Одним сообщением, текстом или голосом, расскажи, что было по каждому — просто называй номер принципа перед тем, что расскажешь. То, что не назовёшь, — не страшно, просто останется пропущенным сегодня.`
+  );
+}
+
+// Подтверждение после вечернего пакетного разбора — блок на каждый принцип,
+// который реально был затронут в её ответе.
+function buildEveningBatchConfirmation(results) {
+  const blocks = results.map((r) => {
+    const principle = getPrinciple(r.principleNumber);
+    if (r.type === 'plus') {
+      return buildPlusConfirmation(principle, r);
+    }
+    return buildMinusConfirmation(principle, r);
+  });
+  return blocks.join('\n\n〜〜〜\n\n');
+}
+
+module.exports = {
+  buildSlotMessage,
+  buildPlusConfirmation,
+  buildMinusConfirmation,
+  buildDnevnikSummary,
+  buildMissedListMessage,
+  buildEveningBatchConfirmation,
+};
