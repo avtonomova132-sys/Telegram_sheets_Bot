@@ -59,10 +59,9 @@ async function parseDnevnikAnswer(principle, rawText) {
     throw new Error('пустой ответ от Anthropic API');
   }
 
-  let parsed;
-  try {
-    parsed = JSON.parse(textBlock.text.trim());
-  } catch (err) {
+  const parsed = extractJson(textBlock.text);
+  if (!parsed) {
+    console.error('[dnevnik] не удалось найти JSON в ответе модели, сырой текст:', textBlock.text);
     throw new Error('невалидный JSON в ответе Anthropic API');
   }
 
@@ -71,6 +70,28 @@ async function parseDnevnikAnswer(principle, rawText) {
   }
 
   return parsed;
+}
+
+// Модель иногда оборачивает JSON в ```json ... ``` несмотря на явную
+// просьбу этого не делать, или добавляет пояснение до/после объекта.
+// Пробуем напрямую, затем вырезаем блок между первой { и последней }.
+function extractJson(rawText) {
+  const trimmed = rawText.trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    // падаем дальше на regex-попытку
+  }
+
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start === -1 || end === -1 || end < start) return null;
+
+  try {
+    return JSON.parse(trimmed.slice(start, end + 1));
+  } catch {
+    return null;
+  }
 }
 
 module.exports = { parseDnevnikAnswer, isConfigured };
