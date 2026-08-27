@@ -78,6 +78,7 @@ const { SLOTS, EVENING_SUMMARY, baliMinutesNow, slotMinutes, formatSlotTime } = 
 const {
   addSentSlot,
   hasEntry: hasDnevnikEntry,
+  getById: getDnevnikEntryById,
   getOldestPending,
   countPending,
   getMissedToday,
@@ -98,6 +99,9 @@ const {
   buildMissedListMessage,
   buildEveningBatchConfirmation,
   buildDayReport,
+  buildPrincipleDetail,
+  buildUnansweredKeyboard,
+  SELECT_CALLBACK_PREFIX: DNEVNIK_SELECT_PREFIX,
 } = require('./dnevnik/view');
 
 const app = express();
@@ -237,9 +241,16 @@ bot.on('message', async (msg) => {
 // Anthropic API раскладывается либо на плюс+посвящение, либо на минус через
 // четыре противосилы (dnevnik/parse.js), и сохраняется в /data/dnevnik.json.
 
+// chatId -> entryId. Заполняется нажатием кнопки под /дневник_день или под
+// вечерним автосписком (см. bot.on('callback_query') ниже) — самый надёжный
+// способ ответить: никакого угадывания моделью, какой принцип имеется в
+// виду, кнопка уже это однозначно зафиксировала. Не персистится на диск —
+// это чисто UI-удобство, переживать рестарт контейнера ему не обязательно.
+const dnevnikSelectedEntryId = new Map();
+
 // Общая логика разбора ОДНОГО живого ответа (в момент слота, пока окно
-// PENDING_WINDOW_MINUTES открыто) — используется и из текстового, и из
-// голосового обработчика.
+// PENDING_WINDOW_MINUTES открыто, ИЛИ выбранного явно по кнопке) —
+// используется и из текстового, и из голосового обработчика.
 async function handleDnevnikAnswer(chatId, entry, rawText) {
   const principle = getPrinciple(entry.principleNumber);
 
@@ -279,13 +290,29 @@ async function handleDnevnikAnswer(chatId, entry, rawText) {
   }
 }
 
-// Перехватывает свободный текст/голос под дневник — сначала пробует живой
-// слот (в пределах 30-минутного окна), затем, если живого слота нет, но
-// сегодня есть пропущенные — пробует разобрать как вечерний пакетный ответ.
+// Перехватывает свободный текст/голос под дневник. Порядок приоритета:
+// 1) запись, явно выбранная нажатием кнопки (самый надёжный вариант —
+//    никакого угадывания, какой принцип имеется в виду);
+// 2) живой слот (в пределах 30-минутного окна, автоматически по расписанию);
+// 3) если ни того, ни другого нет, но сегодня есть пропущенные — пробует
+//    разобрать свободный текст как вечерний пакетный ответ (угадывание по
+//    смыслу/номеру, менее надёжно, чем кнопка, но не требует её нажимать).
 // Возвращает true, если сообщение обработано как дневник (и обработка в
 // bot.on('message')/bot.on('voice') должна остановиться), иначе false — и
 // сообщение уходит дальше по цепочке (задача/напоминание/эхо) как обычно.
 async function handleDnevnikPendingText(chatId, rawText) {
+  const selectedId = dnevnikSelectedEntryId.get(chatId);
+  if (selectedId) {
+    dnevnikSelectedEntryId.delete(chatId); // выбор одноразовый — использовали и сбросили
+    const selectedEntry = getDnevnikEntryById(selectedId);
+    if (selectedEntry && !selectedEntry.answeredAt) {
+      await handleDnevnikAnswer(chatId, selectedEntry, rawText);
+      return true;
+    }
+    // запись уже отвечена или не найдена (устаревшая кнопка) — падаем дальше
+    // по обычной цепочке ниже, как будто выбора не было
+  }
+
   const liveEntry = getOldestPending();
   if (liveEntry) {
     await handleDnevnikAnswer(chatId, liveEntry, rawText);
@@ -379,11 +406,15 @@ bot.onText(/^\/дневник(?:@\S+)?$/, async (msg) => {
 // Отчёт за сегодня одним текстом — удобно копировать и отправлять партнёру
 // по практике (кармическому или по щедрости). Тестовые записи (через
 // /дневник_принцип с номером) сюда не попадают — только настоящие слоты дня.
+// Под неотвеченными — кнопки: нажатие однозначно связывает следующий ответ
+// с конкретным принципом, надёжнее, чем угадывание текста.
 bot.onText(/^\/дневник_день(?:@\S+)?$/, async (msg) => {
   const chatId = msg.chat.id;
   const today = baliDateString();
   const entries = getDnevnikDay(today);
-  await bot.sendMessage(chatId, buildDayReport(today, entries));
+  const unanswered = entries.filter((e) => !e.answeredAt);
+  const reply_markup = buildUnansweredKeyboard(unanswered);
+  await bot.sendMessage(chatId, buildDayReport(today, entries), reply_markup ? { reply_markup } : undefined);
 });
 
 // Отправляет слот, если наступило его время по Бали и он ещё не отправлялся
@@ -439,12 +470,39 @@ async function checkAndSendEveningDnevnikSummary() {
 
   const missed = getMissedToday(today);
   if (missed.length > 0) {
-    await bot.sendMessage(myChatId, buildMissedListMessage(missed));
+    const reply_markup = buildUnansweredKeyboard(missed);
+    await bot.sendMessage(myChatId, buildMissedListMessage(missed), reply_markup ? { reply_markup } : undefined);
   }
   setEveningSummaryDate(today); // отмечаем в любом случае — и когда пропусков нет, чтобы не проверять весь остаток дня
 }
 
 cron.schedule('*/5 * * * *', checkAndSendEveningDnevnikSummary);
+
+// Нажатие кнопки под /дневник_день или вечерним автосписком — фиксирует
+// выбор (dnevnikSelectedEntryId) и сразу присылает полную карточку принципа
+// (весь список примеров, не усечённый). Следующий текст/голос от Elena
+// уйдёт именно на эту запись — см. приоритет в handleDnevnikPendingText.
+bot.on('callback_query', async (query) => {
+  const data = query.data || '';
+  if (!data.startsWith(DNEVNIK_SELECT_PREFIX)) return;
+
+  const chatId = query.message.chat.id;
+  const entryId = data.slice(DNEVNIK_SELECT_PREFIX.length);
+  const entry = getDnevnikEntryById(entryId);
+
+  if (!entry) {
+    await bot.answerCallbackQuery(query.id, { text: 'Запись не найдена' });
+    return;
+  }
+  if (entry.answeredAt) {
+    await bot.answerCallbackQuery(query.id, { text: 'Уже отвечено' });
+    return;
+  }
+
+  dnevnikSelectedEntryId.set(chatId, entryId);
+  await bot.answerCallbackQuery(query.id);
+  await bot.sendMessage(chatId, buildPrincipleDetail(getPrinciple(entry.principleNumber)));
+});
 
 // ===== Голосовые сообщения =====
 async function transcribeVoice(buffer, attempts = 3) {

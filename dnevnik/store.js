@@ -113,6 +113,10 @@ function hasEntry(id) {
   return readEntries().some((e) => e.id === id);
 }
 
+function getById(id) {
+  return readEntries().find((e) => e.id === id) || null;
+}
+
 // Тестовые записи от /дневник_принцип с явным номером — не часть реальной
 // практики дня, не должны попадать ни в дневной отчёт для партнёров, ни в
 // обычную ленту последних записей.
@@ -179,6 +183,7 @@ function setEveningSummaryDate(dateBali) {
 module.exports = {
   addSentSlot,
   hasEntry,
+  getById,
   getOldestPending,
   countPending,
   getMissedToday,

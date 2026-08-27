@@ -1,5 +1,15 @@
 const { getPrinciple } = require('./principles');
 
+// Префикс callback_data для кнопок выбора принципа в /дневник_день и в
+// вечернем автосписке — единое место, чтобы index.js (кнопки) и обработчик
+// нажатий ссылались на одну и ту же строку.
+const SELECT_CALLBACK_PREFIX = 'dnevnik_select:';
+
+// Сколько примеров показывать в компактных местах (уведомление о слоте,
+// список пропущенного) — полный список в разы длиннее и годится только для
+// отдельной карточки принципа (buildPrincipleDetail), открытой по кнопке.
+const PREVIEW_EXAMPLES_COUNT = 4;
+
 function formatExamples(examples) {
   return examples.map((e) => `   • ${e}`).join('\n');
 }
@@ -7,8 +17,8 @@ function formatExamples(examples) {
 function buildSlotMessage(principle, slotIndex) {
   return (
     `📿 Дневник ${slotIndex}/6 — Принцип №${principle.number} (${principle.category}): ${principle.title}\n\n` +
-    `❌ ${principle.negative}\n${formatExamples(principle.negativeExamples)}\n\n` +
-    `✅ ${principle.positive}\n${formatExamples(principle.positiveExamples)}\n\n` +
+    `❌ ${principle.negative}\n${formatExamples(principle.negativeExamples.slice(0, PREVIEW_EXAMPLES_COUNT))}\n\n` +
+    `✅ ${principle.positive}\n${formatExamples(principle.positiveExamples.slice(0, PREVIEW_EXAMPLES_COUNT))}\n\n` +
     `Что сейчас происходит по этому принципу? Напиши или надиктуй голосом — отвечу прямо сюда.\n\n` +
     `(если сейчас не момент — не страшно, через 30 минут окно закроется само, вечером соберу список пропущенного)`
   );
@@ -32,16 +42,42 @@ function buildMinusConfirmation(principle, parsed) {
   );
 }
 
-// Общий блок для ещё не отвеченного принципа — с полным текстом (❌/✅) и
-// примерами, а не только номером, чтобы можно было сразу, не заглядывая
-// никуда, включить микрофон и рассказать по существу.
+// Компактный блок для ещё не отвеченного принципа (в текстовых списках) —
+// с примерами, но усечённо (см. PREVIEW_EXAMPLES_COUNT).
 function buildUnansweredBlock(entry) {
   const principle = getPrinciple(entry.principleNumber);
   return (
     `⏳ №${entry.principleNumber} (${principle.category}): ${principle.title}\n` +
-    `❌ ${principle.negative}\n${formatExamples(principle.negativeExamples)}\n` +
-    `✅ ${principle.positive}\n${formatExamples(principle.positiveExamples)}`
+    `❌ ${principle.negative}\n${formatExamples(principle.negativeExamples.slice(0, PREVIEW_EXAMPLES_COUNT))}\n` +
+    `✅ ${principle.positive}\n${formatExamples(principle.positiveExamples.slice(0, PREVIEW_EXAMPLES_COUNT))}`
   );
+}
+
+// Полная карточка принципа — открывается по нажатию кнопки. Весь список
+// примеров, как в оригинальных карточках Gold Клуб, без усечения.
+function buildPrincipleDetail(principle) {
+  return (
+    `📖 Принцип №${principle.number} (${principle.category}): ${principle.title}\n\n` +
+    `❌ ${principle.negative}\n${formatExamples(principle.negativeExamples)}\n\n` +
+    `✅ ${principle.positive}\n${formatExamples(principle.positiveExamples)}\n\n` +
+    `Расскажи, что было сегодня по этому принципу — я жду именно этот ответ, ничего разбирать не нужно называть отдельно.`
+  );
+}
+
+// Кнопки для неотвеченных записей — используются и в /дневник_день, и в
+// вечернем автосписке. Нажатие однозначно связывает следующий ответ с
+// конкретной записью — никакого угадывания текста моделью.
+function buildUnansweredKeyboard(unansweredEntries) {
+  if (unansweredEntries.length === 0) return undefined;
+  return {
+    inline_keyboard: unansweredEntries
+      .slice()
+      .sort((a, b) => a.principleNumber - b.principleNumber)
+      .map((entry) => {
+        const principle = getPrinciple(entry.principleNumber);
+        return [{ text: `№${entry.principleNumber}: ${principle.title}`, callback_data: `${SELECT_CALLBACK_PREFIX}${entry.id}` }];
+      }),
+  };
 }
 
 function buildEntryLine(entry) {
@@ -124,4 +160,7 @@ module.exports = {
   buildMissedListMessage,
   buildEveningBatchConfirmation,
   buildDayReport,
+  buildPrincipleDetail,
+  buildUnansweredKeyboard,
+  SELECT_CALLBACK_PREFIX,
 };
