@@ -14,17 +14,23 @@ function formatExamples(examples) {
   return examples.map((e) => `   • ${e}`).join('\n');
 }
 
+// На случай, если модель пропустит какое-то поле (бывает редко, но
+// случается) — подстраховка от буквального "undefined" в сообщении.
+function safe(value, fallback = '(не указано)') {
+  return value === undefined || value === null || value === '' ? fallback : value;
+}
+
 function buildOneMoment(moment, index, total, isPlus) {
   const label = total > 1 ? `${isPlus ? '✅' : '❌'} ${isPlus ? 'Плюс' : 'Минус'} ${index + 1}` : `${isPlus ? '✅' : '❌'} ${isPlus ? 'Плюс' : 'Минус'}`;
   if (isPlus) {
-    return `${label}\n${moment.text}\n😊 ${moment.radost}\n🙏 Посвящение: ${moment.posvyashenie}`;
+    return `${label}\n${safe(moment.text)}\n😊 ${safe(moment.radost)}\n🙏 Посвящение: ${safe(moment.posvyashenie)}`;
   }
   return (
     `${label}\n` +
-    `1️⃣ Опора: ${moment.opora}\n` +
-    `2️⃣ Сожаление: ${moment.sozhalenie}\n` +
-    `3️⃣ Антидот: ${moment.antidot}\n` +
-    `4️⃣ Решение: ${moment.reshenie}`
+    `1️⃣ Опора: ${safe(moment.opora)}\n` +
+    `2️⃣ Сожаление: ${safe(moment.sozhalenie)}\n` +
+    `3️⃣ Антидот: ${safe(moment.antidot)}\n` +
+    `4️⃣ Решение: ${safe(moment.reshenie)}`
   );
 }
 
@@ -33,8 +39,21 @@ function buildOneMoment(moment, index, total, isPlus) {
 // ничего не сжимается в один. entry/result — объект с полями pluses[],
 // minuses[] (см. dnevnik/store.js).
 function buildPrincipleResult(principle, entryLike) {
-  const pluses = entryLike.pluses || [];
-  const minuses = entryLike.minuses || [];
+  let pluses = entryLike.pluses || [];
+  let minuses = entryLike.minuses || [];
+
+  // Совместимость со старыми записями — до перехода на массивы был один
+  // type + плоские поля (text/radost/posvyashenie или opora/sozhalenie/
+  // antidot/reshenie). Сами данные никуда не делись из файла, просто в
+  // другом формате — превращаем их в массив из одного элемента для показа.
+  if (pluses.length === 0 && minuses.length === 0 && entryLike.type) {
+    if (entryLike.type === 'plus') {
+      pluses = [{ text: entryLike.text, radost: entryLike.radost, posvyashenie: entryLike.posvyashenie }];
+    } else if (entryLike.type === 'minus') {
+      minuses = [{ opora: entryLike.opora, sozhalenie: entryLike.sozhalenie, antidot: entryLike.antidot, reshenie: entryLike.reshenie }];
+    }
+  }
+
   const header = `📿 Принцип №${principle.number} (${principle.category}): ${principle.title}`;
   const momentBlocks = [
     ...pluses.map((m, i) => buildOneMoment(m, i, pluses.length, true)),
@@ -49,7 +68,7 @@ function buildSlotMessage(principle, slotIndex) {
     `❌ ${principle.negative}\n${formatExamples(principle.negativeExamples.slice(0, PREVIEW_EXAMPLES_COUNT))}\n\n` +
     `✅ ${principle.positive}\n${formatExamples(principle.positiveExamples.slice(0, PREVIEW_EXAMPLES_COUNT))}\n\n` +
     `Что сейчас происходит по этому принципу? Если ситуаций несколько — рассказывай все, ничего не потеряется. Напиши или надиктуй голосом — отвечу прямо сюда.\n\n` +
-    `(если сейчас не момент — не страшно, через 30 минут окно закроется само, вечером соберу список пропущенного)`
+    `(если сейчас не момент — не страшно, окно останется живым почти до следующего слота, вечером соберу список того, что всё же не успели)`
   );
 }
 
@@ -115,9 +134,10 @@ function buildDnevnikSummary(recentEntries, pendingCount) {
   return `📿 Шестиразовый дневник — последние записи:\n\n${lines.join('\n')}${pendingNote}`;
 }
 
-// Вечерний список пропущенных за день слотов (окно 30 минут истекло без
-// ответа). Elena отвечает одним сообщением, называя номера принципов —
-// текст каждого принципа сразу тут же, чтобы не искать отдельно.
+// Вечерний список пропущенных за день слотов (окно почти до следующего
+// слота истекло без ответа). Elena отвечает одним сообщением, называя
+// номера принципов — текст каждого принципа сразу тут же, чтобы не искать
+// отдельно.
 function buildMissedListMessage(missedEntries) {
   const blocks = missedEntries
     .slice()
