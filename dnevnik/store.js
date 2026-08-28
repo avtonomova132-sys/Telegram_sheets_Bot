@@ -20,11 +20,10 @@ function atomicWrite(filePath, data) {
 //   id: "2026-08-27#3",           // dateBali + slotIndex, уникально
 //   dateBali, slotIndex, principleNumber, sentAt (ISO), expiresAt (ISO),
 //   answeredAt: null | ISO,
-//   type: null | 'plus' | 'minus',
 //   rawText: null | string,       // как есть, что написала/надиктовала Elena
-//   text, posvyashenie,           // заполняются для type === 'plus'
-//   opora, sozhalenie, antidot, reshenie, // заполняются для type === 'minus'
-// }
+//   pluses: [{ text, radost, posvyashenie }, ...],   // может быть несколько
+//   minuses: [{ opora, sozhalenie, antidot, reshenie }, ...], // ситуаций
+// }                                                  // за один принцип
 function readEntries() {
   try {
     const data = JSON.parse(fs.readFileSync(ENTRIES_PATH, 'utf8'));
@@ -54,15 +53,9 @@ function addSentSlot({ dateBali, slotIndex, principleNumber, sentAt }) {
     sentAt,
     expiresAt,
     answeredAt: null,
-    type: null,
     rawText: null,
-    text: null,
-    radost: null,
-    posvyashenie: null,
-    opora: null,
-    sozhalenie: null,
-    antidot: null,
-    reshenie: null,
+    pluses: [],
+    minuses: [],
   };
   entries.push(entry);
   writeEntries(entries);

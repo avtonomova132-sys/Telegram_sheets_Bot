@@ -90,14 +90,12 @@ const {
   getEveningSummaryDate,
   setEveningSummaryDate,
 } = require('./dnevnik/store');
-const { parseDnevnikAnswer, parseEveningBatch, isConfigured: dnevnikConfigured } = require('./dnevnik/parse');
+const { parseDnevnikBatch, parseSinglePrincipleFallback, isConfigured: dnevnikConfigured } = require('./dnevnik/parse');
 const {
   buildSlotMessage,
-  buildPlusConfirmation,
-  buildMinusConfirmation,
+  buildDnevnikConfirmation,
   buildDnevnikSummary,
   buildMissedListMessage,
-  buildEveningBatchConfirmation,
   buildDayReport,
   buildPrincipleDetail,
   buildUnansweredKeyboard,
@@ -248,127 +246,95 @@ bot.on('message', async (msg) => {
 // это чисто UI-удобство, переживать рестарт контейнера ему не обязательно.
 const dnevnikSelectedEntryId = new Map();
 
-// Общая логика разбора ОДНОГО живого ответа (в момент слота, пока окно
-// PENDING_WINDOW_MINUTES открыто, ИЛИ выбранного явно по кнопке) —
-// используется и из текстового, и из голосового обработчика.
-async function handleDnevnikAnswer(chatId, entry, rawText) {
-  const principle = getPrinciple(entry.principleNumber);
-
-  if (!dnevnikConfigured) {
-    bot.sendMessage(chatId, 'Не получилось разобрать запись дневника — ANTHROPIC_API_KEY не задан 😔 Запись пока останется неотвеченной.');
-    return;
-  }
-
-  try {
-    const parsed = await parseDnevnikAnswer(principle, rawText);
-
-    if (parsed.type === 'plus') {
-      saveAnswer(entry.id, {
-        type: 'plus',
-        rawText,
-        text: parsed.text,
-        radost: parsed.radost,
-        posvyashenie: parsed.posvyashenie,
-      });
-      await bot.sendMessage(chatId, buildPlusConfirmation(principle, parsed));
-    } else {
-      saveAnswer(entry.id, {
-        type: 'minus',
-        rawText,
-        opora: parsed.opora,
-        sozhalenie: parsed.sozhalenie,
-        antidot: parsed.antidot,
-        reshenie: parsed.reshenie,
-      });
-      await bot.sendMessage(chatId, buildMinusConfirmation(principle, parsed));
-    }
-    // Намеренно НЕ напоминаем здесь о других неотвеченных записях — Elena
-    // явно попросила не подвязывать один ответ к следующему: пропущенное
-    // само уйдёт в вечерний список, никакого "довеска" мидень.
-  } catch (err) {
-    console.error('[dnevnik] ошибка разбора ответа:', err.message);
-    bot.sendMessage(chatId, 'Не получилось разобрать запись 😔 Попробуй переформулировать ещё раз.');
-  }
+function saveDnevnikResult(entry, rawText, result) {
+  saveAnswer(entry.id, { rawText, pluses: result.pluses, minuses: result.minuses });
 }
 
 // Перехватывает свободный текст/голос под дневник. Порядок приоритета:
-// 1) запись, явно выбранная нажатием кнопки (самый надёжный вариант —
-//    никакого угадывания, какой принцип имеется в виду);
-// 2) живой слот (в пределах 30-минутного окна, автоматически по расписанию);
+// 1) запись, явно выбранная нажатием кнопки — "гарантированный" принцип:
+//    модель ОБЯЗАНА привязать к нему хоть что-то (см. parseDnevnikBatch),
+//    а если всё-таки не привяжет — есть аварийный одиночный fallback;
+// 2) живой слот (в пределах 30-минутного окна, автоматически по расписанию)
+//    — тот же гарантированный статус;
 // 3) если ни того, ни другого нет, но сегодня есть пропущенные — пробует
-//    разобрать свободный текст как вечерний пакетный ответ (угадывание по
-//    смыслу/номеру, менее надёжно, чем кнопка, но не требует её нажимать).
+//    разобрать свободный текст как вечерний пакетный ответ, без гарантии.
+//
+// В любом случае модели передаётся список ВСЕХ сейчас открытых принципов
+// (не только один) — Elena часто рассказывает сразу несколько историй в
+// одном сообщении, и раньше при "гарантированном" одиночном принципе
+// вторая история просто терялась. Теперь распределяется по всем, кого
+// реально коснулась.
+//
 // Возвращает true, если сообщение обработано как дневник (и обработка в
 // bot.on('message')/bot.on('voice') должна остановиться), иначе false — и
 // сообщение уходит дальше по цепочке (задача/напоминание/эхо) как обычно.
 async function handleDnevnikPendingText(chatId, rawText) {
-  const selectedId = dnevnikSelectedEntryId.get(chatId);
-  if (selectedId) {
-    dnevnikSelectedEntryId.delete(chatId); // выбор одноразовый — использовали и сбросили
-    const selectedEntry = getDnevnikEntryById(selectedId);
-    if (selectedEntry && !selectedEntry.answeredAt) {
-      await handleDnevnikAnswer(chatId, selectedEntry, rawText);
-      return true;
-    }
-    // запись уже отвечена или не найдена (устаревшая кнопка) — падаем дальше
-    // по обычной цепочке ниже, как будто выбора не было
-  }
-
-  const liveEntry = getOldestPending();
-  if (liveEntry) {
-    await handleDnevnikAnswer(chatId, liveEntry, rawText);
-    return true;
-  }
-
   if (!dnevnikConfigured) return false;
 
+  const selectedId = dnevnikSelectedEntryId.get(chatId);
+  dnevnikSelectedEntryId.delete(chatId); // выбор одноразовый — использовали и сбросили, даже если запись устарела
+
+  let primaryEntry = null;
+  if (selectedId) {
+    const selectedEntry = getDnevnikEntryById(selectedId);
+    if (selectedEntry && !selectedEntry.answeredAt) primaryEntry = selectedEntry;
+  }
+  if (!primaryEntry) {
+    const liveEntry = getOldestPending();
+    if (liveEntry) primaryEntry = liveEntry;
+  }
+
   const today = baliDateString();
-  const missed = getMissedToday(today);
-  if (missed.length === 0) return false;
+  const candidateEntries = new Map(); // id -> entry, чтобы не задвоить
+  for (const e of getMissedToday(today)) candidateEntries.set(e.id, e);
+  if (primaryEntry) candidateEntries.set(primaryEntry.id, primaryEntry);
+
+  if (candidateEntries.size === 0) return false; // сегодня вообще нечего разбирать — не перехватываем
+
+  const entries = [...candidateEntries.values()];
+  const candidatePrinciples = entries.map((e) => getPrinciple(e.principleNumber));
+  const primaryNumber = primaryEntry ? primaryEntry.principleNumber : null;
 
   try {
-    const missedPrinciples = missed.map((e) => getPrinciple(e.principleNumber));
-    const results = await parseEveningBatch(missedPrinciples, rawText);
+    let results = await parseDnevnikBatch(candidatePrinciples, primaryNumber, rawText);
+
+    // Гарантия: если был "прямой" принцип (кнопка/живой слот), а модель его
+    // всё равно не включила — аварийный одиночный разбор именно под него,
+    // чтобы ответ никогда не терялся молча.
+    if (primaryEntry && !results.some((r) => r.principleNumber === primaryEntry.principleNumber)) {
+      const fallback = await parseSinglePrincipleFallback(getPrinciple(primaryEntry.principleNumber), rawText);
+      results = [...results, fallback];
+    }
 
     if (results.length === 0) {
-      // Пустой результат — ИЛИ сообщение вообще не про дневник (тогда молча
-      // отдаём дальше по цепочке), ИЛИ это была попытка ответить, но парсер
-      // не смог связать с конкретным пропущенным принципом. Различаем по
-      // упоминанию слова "принцип" — грубо, но не даёт утекать чужой личной
-      // рефлексии в обычное эхо, если явно было похоже на попытку ответить.
+      // Без гарантированного принципа (чистый вечерний случай) — либо
+      // сообщение вообще не про дневник (молча отдаём дальше), либо это
+      // была попытка ответить, но не удалось связать ни с чем конкретным.
       if (/принцип/i.test(rawText)) {
-        const numbers = missedPrinciples.map((p) => p.number).join(', ');
+        const numbers = candidatePrinciples.map((p) => p.number).join(', ');
         await bot.sendMessage(
           chatId,
           `Не смогла точно понять, к какому из пропущенных принципов (№${numbers}) это относится 😔 Попробуй начать с номера явно, например: "принцип 2: ...".`
         );
         return true;
       }
-      return false; // похоже, сообщение вообще не про дневник — не перехватываем
+      return false;
     }
 
     for (const result of results) {
-      const entry = missed.find((e) => e.principleNumber === result.principleNumber);
+      const entry = entries.find((e) => e.principleNumber === result.principleNumber);
       if (!entry) continue;
-      if (result.type === 'plus') {
-        saveAnswer(entry.id, { type: 'plus', rawText, text: result.text, radost: result.radost, posvyashenie: result.posvyashenie });
-      } else {
-        saveAnswer(entry.id, {
-          type: 'minus',
-          rawText,
-          opora: result.opora,
-          sozhalenie: result.sozhalenie,
-          antidot: result.antidot,
-          reshenie: result.reshenie,
-        });
-      }
+      saveDnevnikResult(entry, rawText, result);
     }
-    await bot.sendMessage(chatId, buildEveningBatchConfirmation(results));
+    // Намеренно НЕ напоминаем здесь о других неотвеченных записях — Elena
+    // явно попросила не подвязывать один ответ к следующему: пропущенное
+    // само уйдёт в вечерний список, никакого "довеска" мидень.
+    await bot.sendMessage(chatId, buildDnevnikConfirmation(results));
     return true;
   } catch (err) {
-    console.error('[dnevnik] ошибка вечернего разбора:', err.message);
-    await bot.sendMessage(chatId, 'Не получилось разобрать вечерний ответ 😔 Попробуй ещё раз, можно короче или по одному принципу за раз.');
-    return true; // это точно была попытка разобрать пропущенное — не отдаём дальше в эхо/задачи
+    console.error('[dnevnik] ошибка разбора ответа:', err.message);
+    await bot.sendMessage(chatId, 'Не получилось разобрать запись 😔 Попробуй переформулировать ещё раз.');
+    return true;
   }
 }
 

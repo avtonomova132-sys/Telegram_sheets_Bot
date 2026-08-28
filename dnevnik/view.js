@@ -14,32 +14,42 @@ function formatExamples(examples) {
   return examples.map((e) => `   • ${e}`).join('\n');
 }
 
+function buildOneMoment(moment, index, total, isPlus) {
+  const label = total > 1 ? `${isPlus ? '✅' : '❌'} ${isPlus ? 'Плюс' : 'Минус'} ${index + 1}` : `${isPlus ? '✅' : '❌'} ${isPlus ? 'Плюс' : 'Минус'}`;
+  if (isPlus) {
+    return `${label}\n${moment.text}\n😊 ${moment.radost}\n🙏 Посвящение: ${moment.posvyashenie}`;
+  }
+  return (
+    `${label}\n` +
+    `1️⃣ Опора: ${moment.opora}\n` +
+    `2️⃣ Сожаление: ${moment.sozhalenie}\n` +
+    `3️⃣ Антидот: ${moment.antidot}\n` +
+    `4️⃣ Решение: ${moment.reshenie}`
+  );
+}
+
+// Одна карточка принципа со ВСЕМИ ситуациями, которые под ним записаны —
+// может быть несколько плюсов и/или несколько минусов за один принцип,
+// ничего не сжимается в один. entry/result — объект с полями pluses[],
+// minuses[] (см. dnevnik/store.js).
+function buildPrincipleResult(principle, entryLike) {
+  const pluses = entryLike.pluses || [];
+  const minuses = entryLike.minuses || [];
+  const header = `📿 Принцип №${principle.number} (${principle.category}): ${principle.title}`;
+  const momentBlocks = [
+    ...pluses.map((m, i) => buildOneMoment(m, i, pluses.length, true)),
+    ...minuses.map((m, i) => buildOneMoment(m, i, minuses.length, false)),
+  ];
+  return `${header}\n\n${momentBlocks.join('\n\n')}`;
+}
+
 function buildSlotMessage(principle, slotIndex) {
   return (
     `📿 Дневник ${slotIndex}/6 — Принцип №${principle.number} (${principle.category}): ${principle.title}\n\n` +
     `❌ ${principle.negative}\n${formatExamples(principle.negativeExamples.slice(0, PREVIEW_EXAMPLES_COUNT))}\n\n` +
     `✅ ${principle.positive}\n${formatExamples(principle.positiveExamples.slice(0, PREVIEW_EXAMPLES_COUNT))}\n\n` +
-    `Что сейчас происходит по этому принципу? Напиши или надиктуй голосом — отвечу прямо сюда.\n\n` +
+    `Что сейчас происходит по этому принципу? Если ситуаций несколько — рассказывай все, ничего не потеряется. Напиши или надиктуй голосом — отвечу прямо сюда.\n\n` +
     `(если сейчас не момент — не страшно, через 30 минут окно закроется само, вечером соберу список пропущенного)`
-  );
-}
-
-function buildPlusConfirmation(principle, parsed) {
-  return (
-    `✅ Принцип №${principle.number} (${principle.category}): ${principle.title} — плюс\n\n` +
-    `${parsed.text}\n\n` +
-    `😊 ${parsed.radost}\n\n` +
-    `🙏 Посвящение: ${parsed.posvyashenie}`
-  );
-}
-
-function buildMinusConfirmation(principle, parsed) {
-  return (
-    `❌ Принцип №${principle.number} (${principle.category}): ${principle.title} — минус\n\n` +
-    `1️⃣ Опора: ${parsed.opora}\n` +
-    `2️⃣ Сожаление: ${parsed.sozhalenie}\n` +
-    `3️⃣ Антидот: ${parsed.antidot}\n` +
-    `4️⃣ Решение: ${parsed.reshenie}`
   );
 }
 
@@ -61,7 +71,7 @@ function buildPrincipleDetail(principle) {
     `📖 Принцип №${principle.number} (${principle.category}): ${principle.title}\n\n` +
     `❌ ${principle.negative}\n${formatExamples(principle.negativeExamples)}\n\n` +
     `✅ ${principle.positive}\n${formatExamples(principle.positiveExamples)}\n\n` +
-    `Расскажи, что было сегодня по этому принципу — я жду именно этот ответ, ничего разбирать не нужно называть отдельно.`
+    `Расскажи, что было сегодня по этому принципу — если ситуаций несколько, рассказывай все подряд, ничего называть отдельно не нужно.`
   );
 }
 
@@ -88,9 +98,12 @@ function buildEntryLine(entry) {
   if (!entry.answeredAt) {
     return `⏳ ${entry.dateBali} ${time} — принцип №${entry.principleNumber}${categoryTag} (ещё не отвечено)`;
   }
-  const marker = entry.type === 'plus' ? '✅' : '❌';
-  const preview = entry.type === 'plus' ? entry.text : entry.sozhalenie;
-  return `${marker} ${entry.dateBali} ${time} — принцип №${entry.principleNumber}${categoryTag}: ${preview || ''}`;
+  const pluses = entry.pluses || [];
+  const minuses = entry.minuses || [];
+  const marker = pluses.length > 0 && minuses.length > 0 ? '✅❌' : pluses.length > 0 ? '✅' : '❌';
+  const preview = pluses[0]?.text || minuses[0]?.sozhalenie || '';
+  const countsNote = pluses.length + minuses.length > 1 ? ` (+${pluses.length}/−${minuses.length})` : '';
+  return `${marker} ${entry.dateBali} ${time} — принцип №${entry.principleNumber}${categoryTag}${countsNote}: ${preview}`;
 }
 
 function buildDnevnikSummary(recentEntries, pendingCount) {
@@ -112,20 +125,15 @@ function buildMissedListMessage(missedEntries) {
     .map(buildUnansweredBlock);
   return (
     `🌙 Вечерний обзор — сегодня пропущено (в моменте не ответили):\n\n${blocks.join('\n\n')}\n\n` +
-    `Одним сообщением, текстом или голосом, расскажи, что было по каждому — просто называй номер принципа перед тем, что расскажешь. То, что не назовёшь, — не страшно, просто останется пропущенным сегодня.`
+    `Одним сообщением, текстом или голосом, расскажи, что было по каждому — просто называй номер принципа перед тем, что расскажешь. Если по одному принципу было несколько ситуаций — рассказывай все, ничего не потеряется. То, что не назовёшь, — не страшно, просто останется пропущенным сегодня.`
   );
 }
 
-// Подтверждение после вечернего пакетного разбора — блок на каждый принцип,
-// который реально был затронут в её ответе.
-function buildEveningBatchConfirmation(results) {
-  const blocks = results.map((r) => {
-    const principle = getPrinciple(r.principleNumber);
-    if (r.type === 'plus') {
-      return buildPlusConfirmation(principle, r);
-    }
-    return buildMinusConfirmation(principle, r);
-  });
+// Подтверждение после разбора — блок на каждый принцип, который реально был
+// затронут в ответе (может быть один принцип с несколькими плюсами/минусами
+// внутри, может быть несколько принципов сразу).
+function buildDnevnikConfirmation(results) {
+  const blocks = results.map((r) => buildPrincipleResult(getPrinciple(r.principleNumber), r));
   return blocks.join('\n\n〜〜〜\n\n');
 }
 
@@ -143,11 +151,7 @@ function buildDayReport(dateBali, entries) {
     if (!entry.answeredAt) {
       return buildUnansweredBlock(entry);
     }
-    const principle = getPrinciple(entry.principleNumber);
-    if (entry.type === 'plus') {
-      return buildPlusConfirmation(principle, entry);
-    }
-    return buildMinusConfirmation(principle, entry);
+    return buildPrincipleResult(getPrinciple(entry.principleNumber), entry);
   });
 
   return `📿 Шестиразовый дневник — ${dateBali}\n\n${blocks.join('\n\n〜〜〜\n\n')}`;
@@ -155,11 +159,10 @@ function buildDayReport(dateBali, entries) {
 
 module.exports = {
   buildSlotMessage,
-  buildPlusConfirmation,
-  buildMinusConfirmation,
+  buildPrincipleResult,
+  buildDnevnikConfirmation,
   buildDnevnikSummary,
   buildMissedListMessage,
-  buildEveningBatchConfirmation,
   buildDayReport,
   buildPrincipleDetail,
   buildUnansweredKeyboard,
