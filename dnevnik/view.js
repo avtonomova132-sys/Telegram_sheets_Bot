@@ -28,6 +28,7 @@ function buildPlusConfirmation(principle, parsed) {
   return (
     `✅ Принцип №${principle.number} (${principle.category}): ${principle.title} — плюс\n\n` +
     `${parsed.text}\n\n` +
+    `😊 ${parsed.radost}\n\n` +
     `🙏 Посвящение: ${parsed.posvyashenie}`
   );
 }

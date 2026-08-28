@@ -57,6 +57,7 @@ function addSentSlot({ dateBali, slotIndex, principleNumber, sentAt }) {
     type: null,
     rawText: null,
     text: null,
+    radost: null,
     posvyashenie: null,
     opora: null,
     sozhalenie: null,

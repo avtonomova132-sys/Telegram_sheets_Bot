@@ -267,6 +267,7 @@ async function handleDnevnikAnswer(chatId, entry, rawText) {
         type: 'plus',
         rawText,
         text: parsed.text,
+        radost: parsed.radost,
         posvyashenie: parsed.posvyashenie,
       });
       await bot.sendMessage(chatId, buildPlusConfirmation(principle, parsed));
@@ -350,7 +351,7 @@ async function handleDnevnikPendingText(chatId, rawText) {
       const entry = missed.find((e) => e.principleNumber === result.principleNumber);
       if (!entry) continue;
       if (result.type === 'plus') {
-        saveAnswer(entry.id, { type: 'plus', rawText, text: result.text, posvyashenie: result.posvyashenie });
+        saveAnswer(entry.id, { type: 'plus', rawText, text: result.text, radost: result.radost, posvyashenie: result.posvyashenie });
       } else {
         saveAnswer(entry.id, {
           type: 'minus',
