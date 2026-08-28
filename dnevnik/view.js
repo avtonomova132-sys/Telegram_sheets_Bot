@@ -21,7 +21,9 @@ function safe(value, fallback = '(не указано)') {
 }
 
 function buildOneMoment(moment, index, total, isPlus) {
-  const label = total > 1 ? `${isPlus ? '✅' : '❌'} ${isPlus ? 'Плюс' : 'Минус'} ${index + 1}` : `${isPlus ? '✅' : '❌'} ${isPlus ? 'Плюс' : 'Минус'}`;
+  const symbol = isPlus ? '➕' : '➖';
+  const word = isPlus ? 'Плюс' : 'Минус';
+  const label = total > 1 ? `${symbol} ${word} ${index + 1}` : `${symbol} ${word}`;
   if (isPlus) {
     return `${label}\n${safe(moment.text)}\n😊 ${safe(moment.radost)}\n🙏 Посвящение: ${safe(moment.posvyashenie)}`;
   }
@@ -37,7 +39,9 @@ function buildOneMoment(moment, index, total, isPlus) {
 // Одна карточка принципа со ВСЕМИ ситуациями, которые под ним записаны —
 // может быть несколько плюсов и/или несколько минусов за один принцип,
 // ничего не сжимается в один. entry/result — объект с полями pluses[],
-// minuses[] (см. dnevnik/store.js).
+// minuses[] (см. dnevnik/store.js). Elena: обе стороны (➕/➖) должны быть
+// видны ВСЕГДА, даже если по одной из них сегодня ничего не было — тогда
+// прямо пишем "не наблюдался", чтобы было видно, что про обе подумали.
 function buildPrincipleResult(principle, entryLike) {
   let pluses = entryLike.pluses || [];
   let minuses = entryLike.minuses || [];
@@ -55,10 +59,9 @@ function buildPrincipleResult(principle, entryLike) {
   }
 
   const header = `📿 Принцип №${principle.number} (${principle.category}): ${principle.title}`;
-  const momentBlocks = [
-    ...pluses.map((m, i) => buildOneMoment(m, i, pluses.length, true)),
-    ...minuses.map((m, i) => buildOneMoment(m, i, minuses.length, false)),
-  ];
+  const plusBlocks = pluses.length > 0 ? pluses.map((m, i) => buildOneMoment(m, i, pluses.length, true)) : ['➕ Плюс: не наблюдался'];
+  const minusBlocks = minuses.length > 0 ? minuses.map((m, i) => buildOneMoment(m, i, minuses.length, false)) : ['➖ Минус: не наблюдался'];
+  const momentBlocks = [...plusBlocks, ...minusBlocks];
   return `${header}\n\n${momentBlocks.join('\n\n')}`;
 }
 
