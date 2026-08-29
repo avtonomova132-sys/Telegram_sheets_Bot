@@ -261,6 +261,21 @@ bot.on('message', async (msg) => {
 // это чисто UI-удобство, переживать рестарт контейнера ему не обязательно.
 const dnevnikSelectedEntryId = new Map();
 
+// Telegram отклоняет сообщения длиннее 4096 символов ошибкой 400 — и что
+// критично, необработанная ошибка в async-обработчике роняла ВЕСЬ процесс
+// бота (unhandled promise rejection). После перехода на полные списки
+// примеров Gold Клуб длинные отчёты (/дневник_день, вечерний список,
+// подтверждение с несколькими принципами) стали регулярно превышать лимит.
+// Всегда шлём дневник через это — режет на части по chunkMessage (границы
+// абзацев), reply_markup (кнопки) — только на последний кусок.
+async function sendDnevnikMessage(chatId, text, options = {}) {
+  const chunks = chunkMessage(text);
+  for (let i = 0; i < chunks.length; i += 1) {
+    const isLast = i === chunks.length - 1;
+    await bot.sendMessage(chatId, chunks[i], isLast ? options : undefined);
+  }
+}
+
 function saveDnevnikResult(entry, rawText, result) {
   saveAnswer(entry.id, { rawText, pluses: result.pluses, minuses: result.minuses });
 }
@@ -344,7 +359,7 @@ async function handleDnevnikPendingText(chatId, rawText) {
     // Намеренно НЕ напоминаем здесь о других неотвеченных записях — Elena
     // явно попросила не подвязывать один ответ к следующему: пропущенное
     // само уйдёт в вечерний список, никакого "довеска" мидень.
-    await bot.sendMessage(chatId, buildDnevnikConfirmation(results));
+    await sendDnevnikMessage(chatId, buildDnevnikConfirmation(results));
     return true;
   } catch (err) {
     console.error('[dnevnik] ошибка разбора ответа:', err.message);
@@ -374,7 +389,7 @@ bot.onText(/^\/дневник_принцип(?:@\S+)?(?:\s+(\d{1,2}))?$/, async 
     sentAt: new Date().toISOString(),
   });
 
-  await bot.sendMessage(chatId, buildSlotMessage(principle, '?'));
+  await sendDnevnikMessage(chatId, buildSlotMessage(principle, '?'));
 });
 
 // Последние записи + сколько ещё живых, не отвеченных.
@@ -382,7 +397,7 @@ bot.onText(/^\/дневник(?:@\S+)?$/, async (msg) => {
   const chatId = msg.chat.id;
   const recent = getRecentDnevnik(10);
   const pending = countPending();
-  await bot.sendMessage(chatId, buildDnevnikSummary(recent, pending));
+  await sendDnevnikMessage(chatId, buildDnevnikSummary(recent, pending));
 });
 
 // Отчёт за сегодня одним текстом — удобно копировать и отправлять партнёру
@@ -396,7 +411,7 @@ bot.onText(/^\/дневник_день(?:@\S+)?$/, async (msg) => {
   const entries = getDnevnikDay(today);
   const unanswered = entries.filter((e) => !e.answeredAt);
   const reply_markup = buildUnansweredKeyboard(unanswered);
-  await bot.sendMessage(chatId, buildDayReport(today, entries), reply_markup ? { reply_markup } : undefined);
+  await sendDnevnikMessage(chatId, buildDayReport(today, entries), reply_markup ? { reply_markup } : undefined);
 });
 
 // Отправляет слот, если наступило его время по Бали и он ещё не отправлялся
@@ -425,7 +440,7 @@ async function checkAndSendDnevnikSlots() {
     const principle = getPrinciple(principleNumber);
 
     try {
-      await bot.sendMessage(myChatId, buildSlotMessage(principle, slot.index));
+      await sendDnevnikMessage(myChatId, buildSlotMessage(principle, slot.index));
       addSentSlot({ dateBali: today, slotIndex: slot.index, principleNumber, sentAt: new Date().toISOString() });
       setLastPrincipleSent(principleNumber);
     } catch (err) {
@@ -453,7 +468,7 @@ async function checkAndSendEveningDnevnikSummary() {
   const missed = getMissedToday(today);
   if (missed.length > 0) {
     const reply_markup = buildUnansweredKeyboard(missed);
-    await bot.sendMessage(myChatId, buildMissedListMessage(missed), reply_markup ? { reply_markup } : undefined);
+    await sendDnevnikMessage(myChatId, buildMissedListMessage(missed), reply_markup ? { reply_markup } : undefined);
   }
   setEveningSummaryDate(today); // отмечаем в любом случае — и когда пропусков нет, чтобы не проверять весь остаток дня
 }
@@ -483,7 +498,7 @@ bot.on('callback_query', async (query) => {
 
   dnevnikSelectedEntryId.set(chatId, entryId);
   await bot.answerCallbackQuery(query.id);
-  await bot.sendMessage(chatId, buildPrincipleDetail(getPrinciple(entry.principleNumber)));
+  await sendDnevnikMessage(chatId, buildPrincipleDetail(getPrinciple(entry.principleNumber)));
 });
 
 // ===== Голосовые сообщения =====
