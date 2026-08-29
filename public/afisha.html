@@ -8,83 +8,86 @@
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root{
-    --bg-a: #fbf6ea;
-    --bg-b: #f2e6c8;
+    --bg: #fdfbf6;
+    --surface: #ffffff;
     --ink: #2a2620;
     --ink-soft: #5c5644;
     --gold: #c8a24d;
     --gold-deep: #93711f;
     --gold-soft: #e9cf8f;
-    --parchment: #fffdf7;
     --maroon: #7a3226;
+    --maroon-deep: #5c2018;
     --sage: #5c7a63;
     --muted: #948a6f;
+    --line: rgba(42,38,32,0.08);
   }
   *{box-sizing:border-box; margin:0; padding:0;}
   body{
-    background-color: var(--bg-a);
-    background-image:
-      radial-gradient(55% 38% at 12% -6%, rgba(255,255,255,0.95) 0%, transparent 70%),
-      radial-gradient(42% 32% at 88% 0%, rgba(228,207,143,0.55) 0%, transparent 70%),
-      radial-gradient(60% 42% at 50% 105%, rgba(200,162,77,0.14) 0%, transparent 70%),
-      linear-gradient(160deg, #fbf6ea 0%, #f2e6c8 100%);
-    background-attachment: fixed;
+    background: var(--bg);
     font-family: 'Inter', sans-serif;
     color: var(--ink);
     min-height: 100vh;
-    padding-bottom: 60px;
   }
-  header{
-    padding: 36px 20px 24px;
-    text-align: center;
-    border-bottom: 1px solid rgba(200,162,77,0.35);
-    position: relative;
-    overflow: hidden;
+
+  /* ===== Шапка ===== */
+  .topbar{
+    display:flex;
+    align-items:center;
+    gap: 18px;
+    padding: 14px 24px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+    flex-wrap: wrap;
   }
-  header::after{
-    content:"";
-    position:absolute;
-    left:-20%; right:-20%; bottom:-2px;
-    height: 2px;
-    background: linear-gradient(90deg, transparent 0%, var(--gold-soft) 20%, #fff 50%, var(--gold-soft) 80%, transparent 100%);
-    background-size: 200% 100%;
-    animation: shine 7s linear infinite;
-    opacity: 0.8;
+  .topbar-brand{
+    display:flex;
+    align-items:center;
+    gap: 10px;
   }
-  @keyframes shine{
-    0%{ background-position: 200% 0; }
-    100%{ background-position: -200% 0; }
-  }
-  .eyebrow{
-    font-size: 12px;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
+  .topbar-brand .logo-icon{
+    font-size: 22px;
     color: var(--gold-deep);
-    margin-bottom: 10px;
+    line-height:1;
   }
-  h1{
+  .brand-title{
     font-family: 'Cormorant Garamond', serif;
     font-weight: 600;
-    font-size: 38px;
+    font-size: 20px;
     color: var(--ink);
     line-height: 1.15;
+    white-space: nowrap;
   }
-  .subtitle{
+  .brand-subtitle{
     font-family: 'Cormorant Garamond', serif;
     font-style: italic;
-    font-size: 17px;
+    font-size: 12px;
     color: var(--ink-soft);
-    margin-top: 8px;
-    max-width: 480px;
-    margin-left: auto;
-    margin-right: auto;
+    margin-top: 1px;
   }
+  .topbar-search{
+    flex: 1;
+    min-width: 160px;
+    max-width: 420px;
+  }
+  .topbar-search input{
+    width: 100%;
+    padding: 9px 16px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'Inter';
+    font-size: 13px;
+    outline: none;
+  }
+  .topbar-search input::placeholder{ color: var(--muted); }
+  .topbar-search input:focus{ border-color: var(--gold); }
   .lang-toggle{
     display: inline-flex;
-    margin-top: 18px;
-    border: 1px solid rgba(200,162,77,0.5);
+    border: 1px solid var(--line);
     border-radius: 20px;
     overflow: hidden;
+    flex-shrink: 0;
   }
   .lang-toggle button{
     background: none;
@@ -93,7 +96,7 @@
     font-family: 'Inter';
     font-size: 13px;
     font-weight: 600;
-    padding: 7px 18px;
+    padding: 7px 16px;
     cursor: pointer;
     transition: all 0.2s;
   }
@@ -102,91 +105,198 @@
     color: #fff;
   }
 
-  .path-nav{
+  /* ===== Ряд программ ===== */
+  .program-tabs{
     display: flex;
-    justify-content: center;
-    align-items: flex-start;
-    gap: 4px;
-    padding: 26px 12px 6px;
-    flex-wrap: wrap;
-    position: relative;
+    gap: 24px;
+    overflow-x: auto;
+    padding: 14px 24px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+    scrollbar-width: none;
   }
-  .path-dot{
+  .program-tabs::-webkit-scrollbar{ display:none; }
+  .program-tab{
+    font-family: 'Inter';
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--muted);
+    white-space: nowrap;
+    cursor: pointer;
+    padding-bottom: 6px;
+    border-bottom: 2px solid transparent;
+    transition: color .15s, border-color .15s;
+  }
+  .program-tab:hover{ color: var(--ink); }
+  .program-tab.active{
+    color: var(--maroon);
+    border-bottom-color: var(--maroon);
+  }
+
+  /* ===== Секция афиши / лента дат ===== */
+  .section-title{
+    font-family: 'Cormorant Garamond', serif;
+    font-weight: 600;
+    font-size: 22px;
+    color: var(--ink);
+    padding: 22px 24px 4px;
+  }
+  .date-ribbon-wrap{
+    position: relative;
+    padding: 6px 24px 8px;
+  }
+  .date-ribbon{
+    display: flex;
+    gap: 4px;
+    overflow-x: auto;
+    scroll-behavior: smooth;
+    scrollbar-width: none;
+    padding-right: 44px;
+  }
+  .date-ribbon::-webkit-scrollbar{ display:none; }
+  .date-cell{
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 8px;
+    min-width: 44px;
+    padding: 4px 3px 6px;
+    border-radius: 10px;
     cursor: pointer;
-    padding: 6px 10px;
-    width: 96px;
+    user-select: none;
+    transition: background .15s;
   }
-  .path-dot .star{
-    width: 10px; height: 10px;
-    border-radius: 50%;
-    background: var(--muted);
-    box-shadow: 0 0 0 3px rgba(200,162,77,0.08);
-    transition: all 0.25s;
+  .date-cell:hover{ background: rgba(200,162,77,0.10); }
+  .date-cell.selected{ background: var(--maroon); }
+  .date-cell.selected .date-num,
+  .date-cell.selected .date-wd,
+  .date-cell.selected .date-month{ color: #fff; }
+  .date-month{
+    font-size: 9.5px;
+    letter-spacing: 0.05em;
+    font-weight: 700;
+    color: var(--gold-deep);
+    min-height: 12px;
+    margin-bottom: 3px;
+    white-space: nowrap;
   }
-  .path-dot.active .star{
-    background: var(--gold);
-    box-shadow: 0 0 12px 3px rgba(200,162,77,0.55);
+  .date-num{
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--ink);
+    line-height: 1.2;
   }
-  .path-dot span.label{
-    font-size: 11.5px;
-    line-height: 1.25;
+  .date-wd{
+    font-size: 10.5px;
     color: var(--muted);
-    text-align: center;
+    margin-top: 2px;
   }
-  .path-dot.active span.label{ color: var(--gold-deep); font-weight: 600; }
+  .date-cell.weekend .date-num,
+  .date-cell.weekend .date-wd{ color: var(--maroon); }
+  .date-cell.today{ box-shadow: inset 0 0 0 1.5px var(--gold); }
+  .date-scroll-arrow{
+    position: absolute;
+    right: 18px;
+    top: 50%;
+    transform: translateY(-4px);
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--ink-soft);
+    font-size: 15px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  }
 
+  /* ===== Фильтры ===== */
+  .filters-row{
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 24px 18px;
+    flex-wrap: wrap;
+  }
+  .all-filters-btn{
+    font-family: 'Inter';
+    font-weight: 600;
+    font-size: 13px;
+    padding: 8px 16px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--ink);
+    cursor: pointer;
+  }
+  .all-filters-btn:hover{ border-color: var(--gold); }
+  .format-pills{ display:flex; gap: 8px; flex-wrap: wrap; }
+  .format-pill{
+    font-family: 'Inter';
+    font-weight: 600;
+    font-size: 13px;
+    padding: 8px 16px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--ink);
+    cursor: pointer;
+    transition: all .15s;
+  }
+  .format-pill.active{
+    background: var(--maroon);
+    border-color: var(--maroon);
+    color: #fff;
+  }
+
+  /* ===== Заголовок программы + "О программе" ===== */
   .program-header{
-    max-width: 680px;
-    margin: 8px auto 0;
-    padding: 10px 16px 0;
+    max-width: 720px;
+    margin: 4px auto 0;
+    padding: 6px 24px 0;
     text-align: center;
   }
   .program-header h2{
     font-family: 'Cormorant Garamond', serif;
     font-weight: 600;
-    font-size: 26px;
+    font-size: 24px;
     color: var(--ink);
   }
   .program-header .program-subtitle{
     font-family: 'Cormorant Garamond', serif;
     font-style: italic;
-    font-size: 15px;
+    font-size: 14px;
     color: var(--ink-soft);
     margin-top: 4px;
   }
 
   .about-card{
-    max-width: 680px;
-    margin: 18px auto 0;
-    padding: 22px 24px;
+    max-width: 720px;
+    margin: 16px auto 0;
+    padding: 20px 22px;
     border-radius: 12px;
-    background: linear-gradient(135deg, #fffaea 0%, #f6ecc8 100%);
-    border: 1px solid rgba(200,162,77,0.55);
-    box-shadow: 0 4px 18px rgba(147,113,31,0.15);
-    margin-left: 16px;
-    margin-right: 16px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 4px solid var(--gold);
+    box-shadow: 0 2px 12px rgba(42,38,32,0.05);
+    margin-left: 24px;
+    margin-right: 24px;
   }
   .about-card .about-label{
     font-size: 11px;
     letter-spacing: 0.16em;
     text-transform: uppercase;
     color: var(--gold-deep);
-    font-weight: 600;
+    font-weight: 700;
     margin-bottom: 10px;
     display: flex;
     align-items: center;
     gap: 6px;
   }
-  .about-card .about-label::before{
-    content: "✦";
-    font-size: 12px;
-  }
+  .about-card .about-label::before{ content: "✦"; font-size: 12px; }
   .about-card .about-body{
-    font-size: 14.5px;
+    font-size: 14px;
     line-height: 1.6;
     color: var(--ink-soft);
   }
@@ -197,11 +307,7 @@
     font-style: italic;
     color: var(--muted);
   }
-  .about-card .houses-list{
-    list-style: none;
-    margin: 8px 0 12px;
-    padding: 0;
-  }
+  .about-card .houses-list{ list-style: none; margin: 8px 0 12px; padding: 0; }
   .about-card .houses-list li{
     padding: 5px 0 5px 16px;
     border-left: 2px solid var(--gold);
@@ -210,132 +316,174 @@
     font-weight: 500;
   }
 
-  .format-tabs{
-    display:flex;
-    justify-content:center;
-    gap: 10px;
-    margin: 22px auto 4px;
-  }
-  .format-tabs button{
-    font-family:'Inter'; font-weight:600; font-size:14px;
-    background: rgba(255,255,255,0.5);
-    border: 1px solid rgba(200,162,77,0.5);
-    color: var(--ink);
-    padding: 9px 22px;
-    border-radius: 999px;
-    cursor:pointer;
-    transition: all .2s;
-  }
-  .format-tabs button.active{
-    background: var(--maroon);
-    border-color: var(--maroon);
-    color: var(--parchment);
-  }
-
-  main{
-    max-width: 680px;
+  /* ===== Карточки событий ===== */
+  .cards-wrap{
+    max-width: 1200px;
     margin: 0 auto;
-    padding: 20px 16px;
+    padding: 10px 24px 48px;
   }
-  .card{
-    background: var(--parchment);
-    color: var(--ink);
-    border-radius: 10px;
-    padding: 18px 20px;
-    margin-bottom: 14px;
-    box-shadow: 0 6px 20px rgba(147,113,31,0.14);
-    border-left: 4px solid var(--gold);
-    position: relative;
+  .cards-grid{
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 20px;
   }
-  .card.offline{ border-left-color: var(--sage); }
-  .tag-row{
-    display:flex; gap:8px; align-items:center; margin-bottom:8px; flex-wrap: wrap;
+  .event-card{
+    background: var(--surface);
+    border-radius: 14px;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    box-shadow: 0 2px 12px rgba(42,38,32,0.05);
+    display: flex;
+    flex-direction: column;
+    transition: transform .15s, box-shadow .15s;
   }
-  .tag{
-    font-size: 11px; font-weight:600; letter-spacing:0.03em;
+  .event-card:hover{
+    transform: translateY(-2px);
+    box-shadow: 0 10px 26px rgba(42,38,32,0.10);
+  }
+  .event-photo{
+    height: 112px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 32px;
+    color: rgba(255,255,255,0.9);
+  }
+  .event-body{
+    padding: 14px 16px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 1;
+  }
+  .badge-row{ display:flex; gap: 6px; flex-wrap: wrap; }
+  .badge{
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
     text-transform: uppercase;
-    padding: 3px 9px;
+    padding: 3px 8px;
     border-radius: 5px;
   }
-  .tag.program{ background: rgba(92,122,99,0.12); color: var(--sage); }
-  .tag.format-online{ background: rgba(200,162,77,0.18); color: #8a6d1f; }
-  .tag.format-offline{ background: rgba(92,122,99,0.15); color: var(--sage); }
-  .tag.format-records{ background: rgba(122,50,38,0.1); color: var(--maroon); }
-  .card h3{
+  .badge.program{ background: rgba(92,122,99,0.12); color: var(--sage); }
+  .badge.format-online{ background: rgba(200,162,77,0.18); color: #8a6d1f; }
+  .badge.format-offline{ background: rgba(92,122,99,0.15); color: var(--sage); }
+  .badge.format-records{ background: rgba(122,50,38,0.1); color: var(--maroon); }
+  .event-title{
     font-family: 'Cormorant Garamond', serif;
     font-weight: 600;
-    font-size: 21px;
+    font-size: 19px;
     line-height: 1.3;
-    margin-bottom: 6px;
     color: var(--ink);
   }
-  .meta{
-    font-size: 13px;
+  .event-meta{
+    font-size: 12.5px;
     color: #5a5548;
     display: flex;
     flex-direction: column;
     gap: 3px;
-    margin-bottom: 10px;
+    margin-top: auto;
+    padding-top: 4px;
   }
-  .meta b{ color: var(--ink); }
-  .card a.link{
-    display:inline-block;
+  .event-meta b{ color: var(--ink); }
+  .event-link{
+    margin-top: 8px;
+    display: inline-block;
+    text-align: center;
     font-size: 13px;
-    font-weight: 600;
-    color: var(--maroon);
+    font-weight: 700;
+    color: #fff;
+    background: var(--maroon);
+    padding: 8px 14px;
+    border-radius: 999px;
     text-decoration: none;
-    border-bottom: 1px solid var(--maroon);
+    transition: background .15s;
   }
+  .event-link:hover{ background: var(--maroon-deep); }
+
   .empty-note{
     text-align:center;
     color: var(--muted);
     font-family: 'Cormorant Garamond', serif;
     font-style: italic;
     font-size: 16px;
-    padding: 40px 20px;
+    padding: 50px 20px;
   }
+
   footer{
     text-align:center;
-    padding: 30px 20px 10px;
+    padding: 24px 20px 30px;
     font-size: 12px;
     color: var(--muted);
     font-style: italic;
+  }
+
+  @media (max-width: 560px){
+    .topbar{ padding: 12px 16px; }
+    .topbar-search{ order: 3; max-width: none; flex-basis: 100%; }
+    .program-tabs{ padding: 12px 16px; gap: 18px; }
+    .section-title{ padding: 18px 16px 4px; }
+    .date-ribbon-wrap{ padding: 6px 16px 8px; }
+    .filters-row{ padding: 10px 16px 16px; }
+    .program-header{ padding: 6px 16px 0; }
+    .about-card{ margin-left: 16px; margin-right: 16px; }
+    .cards-wrap{ padding: 10px 16px 40px; }
   }
 </style>
 </head>
 <body>
 
-<header>
-  <div class="eyebrow" data-i18n="eyebrow">Маршрутная карта</div>
-  <h1 data-i18n="title">Афиша Алмазного пути</h1>
-  <p class="subtitle" data-i18n="subtitle">Где встретиться с Дхармой — онлайн и вживую, на разных языках мира</p>
+<header class="topbar">
+  <div class="topbar-brand">
+    <span class="logo-icon">✦</span>
+    <div>
+      <div class="brand-title" data-i18n="title">Афиша Алмазного пути</div>
+      <div class="brand-subtitle" data-i18n="subtitle">Где встретиться с Дхармой</div>
+    </div>
+  </div>
+  <div class="topbar-search">
+    <input type="text" data-i18n-placeholder="searchPlaceholder" placeholder="Поиск по афише">
+  </div>
   <div class="lang-toggle">
     <button id="btn-ru" class="active" onclick="setLang('ru')">РУС</button>
     <button id="btn-en" onclick="setLang('en')">ENG</button>
   </div>
 </header>
 
-<div class="path-nav" id="program-nav"></div>
+<div class="program-tabs" id="program-nav"></div>
+
+<div class="section-title" data-i18n="sectionTitle">Афиша событий</div>
+<div class="date-ribbon-wrap">
+  <div class="date-ribbon" id="date-ribbon"></div>
+  <button class="date-scroll-arrow" id="date-scroll-btn" aria-label="Прокрутить">›</button>
+</div>
+
+<div class="filters-row">
+  <button class="all-filters-btn" id="reset-filters-btn" data-i18n="allFilters">Все фильтры</button>
+  <div class="format-pills" id="format-pills">
+    <button class="format-pill active" data-format="online" data-i18n="fmt-online">Онлайн</button>
+    <button class="format-pill" data-format="offline" data-i18n="fmt-offline">Офлайн</button>
+    <button class="format-pill" data-format="records" data-i18n="fmt-records">Записи</button>
+  </div>
+</div>
 
 <div class="program-header" id="program-header"></div>
 <div id="about-wrap"></div>
 
-<div class="format-tabs">
-  <button class="active" data-format="online" data-i18n="fmt-online">Онлайн</button>
-  <button data-format="offline" data-i18n="fmt-offline">Офлайн</button>
-  <button data-format="records" data-i18n="fmt-records">Записи</button>
+<div class="cards-wrap">
+  <main id="cards"></main>
 </div>
-
-<main id="cards"></main>
 
 <footer data-i18n="footer">Черновик · WVP 2026 · данные будут дополняться</footer>
 
 <script>
 const i18n = {
   ru: {
-    eyebrow: "Маршрутная карта",
     title: "Афиша Алмазного пути",
-    subtitle: "Где встретиться с Дхармой — онлайн и вживую, на разных языках мира",
+    subtitle: "Где встретиться с Дхармой",
+    searchPlaceholder: "Поиск по афише",
+    sectionTitle: "Афиша событий",
+    allFilters: "Все фильтры",
     navAll: "Все",
     "fmt-online":"Онлайн", "fmt-offline":"Офлайн", "fmt-records":"Записи",
     labelAZ: "Аризона (MST)", labelMSK: "Москва (MSK)",
@@ -346,9 +494,11 @@ const i18n = {
     emptyDefault: "Пока нет событий в этой категории — скоро добавим"
   },
   en: {
-    eyebrow: "A route map",
     title: "Diamond Way Guide",
-    subtitle: "Where to meet the Dharma — online and in person, in many languages",
+    subtitle: "Where to meet the Dharma",
+    searchPlaceholder: "Search the schedule",
+    sectionTitle: "Event schedule",
+    allFilters: "All filters",
     navAll: "All",
     "fmt-online":"Online", "fmt-offline":"In person", "fmt-records":"Recordings",
     labelAZ: "Arizona (MST)", labelMSK: "Moscow (MSK)",
@@ -360,7 +510,7 @@ const i18n = {
   }
 };
 
-// Список программ — точки верхней навигации.
+// Список программ — верхний ряд вкладок.
 const programs = [
   { id: "all", nav: { ru: "Все", en: "All" } },
   {
@@ -400,6 +550,17 @@ const programs = [
     subtitle: { ru: "Джецунма, Аризона", en: "Jetsunma, Arizona" }
   }
 ];
+
+// Цвет/иконка фото-плейсхолдера карточки — по программе, вместо реальных фото.
+const PROGRAM_VISUAL = {
+  xuanzang: { gradient: "linear-gradient(135deg, #e9cf8f, #93711f)" },
+  timothy: { gradient: "linear-gradient(135deg, #e3b98f, #a05a2c)" },
+  bluesky: { gradient: "linear-gradient(135deg, #a8c5d6, #4c6f8a)" },
+  utpala: { gradient: "linear-gradient(135deg, #cbb0d9, #6f4a82)" },
+  domov: { gradient: "linear-gradient(135deg, #e3a89a, #7a3226)" },
+  peachtree: { gradient: "linear-gradient(135deg, #f0c48a, #c9793f)" }
+};
+const PLACEHOLDER_ICON = "☸";
 
 const placeholderAbout = {
   ru: "Здесь будет краткое описание программы — добавим позже",
@@ -473,11 +634,12 @@ const emptyMessages = {
 // (вкладки Xuanzang's Tower, ACI with Timothy Lowenhaupt, Blue Sky Friends,
 // ACI with Ven. Utpala). Время MSK для Blue Sky Friends и Ven. Utpala в
 // таблице не указано напрямую — посчитано как AZ +10 часов от колонок,
-// которые в этих вкладках всё же присутствуют.
+// которые в этих вкладках всё же присутствуют. date_az_iso — календарная
+// дата по Аризоне в ISO, нужна для ленты дат (сравнение по клику).
 const events = [
   // --- Xuanzang's Tower ---
   {
-    program: "xuanzang", format: "online",
+    program: "xuanzang", format: "online", date_az_iso: "2026-08-15",
     title_ru: "Высший сад мудрости", title_en: "The Supreme Garden of Wisdom",
     az_ru: "Сб, 15 августа 2026, 11:00", az_en: "Sat, Aug 15, 2026, 11:00",
     msk_ru: "Сб, 15 августа 2026, 21:00", msk_en: "Sat, Aug 15, 2026, 21:00",
@@ -485,7 +647,7 @@ const events = [
     link: "https://xuanzang.live/class"
   },
   {
-    program: "xuanzang", format: "online",
+    program: "xuanzang", format: "online", date_az_iso: "2026-08-17",
     title_ru: "Комментарий Васубандху о взаимозависимом возникновении", title_en: "Master Vasubandhu's Commentary on Dependence",
     az_ru: "Пн, 17 августа 2026, 16:00", az_en: "Mon, Aug 17, 2026, 16:00",
     msk_ru: "Вт, 18 августа 2026, 02:00", msk_en: "Tue, Aug 18, 2026, 02:00",
@@ -493,7 +655,7 @@ const events = [
     link: "https://xuanzang.live/class"
   },
   {
-    program: "xuanzang", format: "online",
+    program: "xuanzang", format: "online", date_az_iso: "2026-08-22",
     title_ru: "Сущность красноречия", title_en: "Essence of Eloquence",
     az_ru: "Сб, 22 августа 2026, 11:00", az_en: "Sat, Aug 22, 2026, 11:00",
     msk_ru: "Сб, 22 августа 2026, 21:00", msk_en: "Sat, Aug 22, 2026, 21:00",
@@ -501,7 +663,7 @@ const events = [
     link: "https://xuanzang.live/class"
   },
   {
-    program: "xuanzang", format: "online",
+    program: "xuanzang", format: "online", date_az_iso: "2026-08-24",
     title_ru: "Путь бодхисаттвы", title_en: "Bodhisattva's Way of Life",
     az_ru: "Пн, 24 августа 2026, 16:00", az_en: "Mon, Aug 24, 2026, 16:00",
     msk_ru: "Вт, 25 августа 2026, 02:00", msk_en: "Tue, Aug 25, 2026, 02:00",
@@ -510,7 +672,7 @@ const events = [
   },
   // --- ACI with Timothy Lowenhaupt ---
   {
-    program: "timothy", format: "online",
+    program: "timothy", format: "online", date_az_iso: "2026-08-23",
     title_ru: "ACI 17, занятие 9", title_en: "ACI 17, Class 9",
     az_ru: "Вс, 23 августа 2026, 05:30", az_en: "Sun, Aug 23, 2026, 05:30",
     msk_ru: "Вс, 23 августа 2026, 15:30", msk_en: "Sun, Aug 23, 2026, 15:30",
@@ -518,7 +680,7 @@ const events = [
     link: "https://us02web.zoom.us/meeting/register/b8sHOoSYTgK-pf3zk_9B1A"
   },
   {
-    program: "timothy", format: "online",
+    program: "timothy", format: "online", date_az_iso: "2026-08-23",
     title_ru: "ACI 17, занятие 10", title_en: "ACI 17, Class 10",
     az_ru: "Вс, 23 августа 2026, 07:30", az_en: "Sun, Aug 23, 2026, 07:30",
     msk_ru: "Вс, 23 августа 2026, 17:30", msk_en: "Sun, Aug 23, 2026, 17:30",
@@ -526,7 +688,7 @@ const events = [
     link: "https://us02web.zoom.us/meeting/register/b8sHOoSYTgK-pf3zk_9B1A"
   },
   {
-    program: "timothy", format: "online",
+    program: "timothy", format: "online", date_az_iso: "2026-09-20",
     title_ru: "ACI 18, занятие 1", title_en: "ACI 18, Class 1",
     az_ru: "Вс, 20 сентября 2026, 05:30", az_en: "Sun, Sep 20, 2026, 05:30",
     msk_ru: "Вс, 20 сентября 2026, 15:30", msk_en: "Sun, Sep 20, 2026, 15:30",
@@ -534,7 +696,7 @@ const events = [
     link: "https://us02web.zoom.us/meeting/register/b8sHOoSYTgK-pf3zk_9B1A"
   },
   {
-    program: "timothy", format: "online",
+    program: "timothy", format: "online", date_az_iso: "2026-09-20",
     title_ru: "ACI 18, занятие 2", title_en: "ACI 18, Class 2",
     az_ru: "Вс, 20 сентября 2026, 07:30", az_en: "Sun, Sep 20, 2026, 07:30",
     msk_ru: "Вс, 20 сентября 2026, 17:30", msk_en: "Sun, Sep 20, 2026, 17:30",
@@ -543,7 +705,7 @@ const events = [
   },
   // --- Blue Sky Friends ---
   {
-    program: "bluesky", format: "online",
+    program: "bluesky", format: "online", date_az_iso: "2026-08-14",
     title_ru: "Забота о тех, кто заботится: осознанная поддержка ухаживающих", title_en: "Caring for Caregivers: Consciously Supporting Those Who Care for Others",
     az_ru: "Пт, 14 августа 2026, 07:00", az_en: "Fri, Aug 14, 2026, 07:00",
     msk_ru: "Пт, 14 августа 2026, 17:00", msk_en: "Fri, Aug 14, 2026, 17:00",
@@ -551,7 +713,7 @@ const events = [
     link: "https://zoom.us/meeting/register/GUy9nOi3Tmm2Ae88O3J_iA"
   },
   {
-    program: "bluesky", format: "online",
+    program: "bluesky", format: "online", date_az_iso: "2026-08-21",
     title_ru: "Тема уточняется", title_en: "Topic to be announced",
     az_ru: "Пт, 21 августа 2026, 07:00", az_en: "Fri, Aug 21, 2026, 07:00",
     msk_ru: "Пт, 21 августа 2026, 17:00", msk_en: "Fri, Aug 21, 2026, 17:00",
@@ -559,7 +721,7 @@ const events = [
     link: "https://zoom.us/meeting/register/GUy9nOi3Tmm2Ae88O3J_iA"
   },
   {
-    program: "bluesky", format: "online",
+    program: "bluesky", format: "online", date_az_iso: "2026-09-04",
     title_ru: "Тема уточняется", title_en: "Topic to be announced",
     az_ru: "Пт, 4 сентября 2026, 07:00", az_en: "Fri, Sep 4, 2026, 07:00",
     msk_ru: "Пт, 4 сентября 2026, 17:00", msk_en: "Fri, Sep 4, 2026, 17:00",
@@ -567,7 +729,7 @@ const events = [
     link: "https://zoom.us/meeting/register/GUy9nOi3Tmm2Ae88O3J_iA"
   },
   {
-    program: "bluesky", format: "online",
+    program: "bluesky", format: "online", date_az_iso: "2026-09-11",
     title_ru: "Тема уточняется", title_en: "Topic to be announced",
     az_ru: "Пт, 11 сентября 2026, 07:00", az_en: "Fri, Sep 11, 2026, 07:00",
     msk_ru: "Пт, 11 сентября 2026, 17:00", msk_en: "Fri, Sep 11, 2026, 17:00",
@@ -576,7 +738,7 @@ const events = [
   },
   // --- ACI with Ven. Utpala ---
   {
-    program: "utpala", format: "online",
+    program: "utpala", format: "online", date_az_iso: "2026-08-14",
     title_ru: "ACI 8, занятие 10 — завершающее занятие курса", title_en: "ACI 8, Class 10 — final class of the course",
     az_ru: "Пт, 14 августа 2026, 06:30", az_en: "Fri, Aug 14, 2026, 06:30",
     msk_ru: "Пт, 14 августа 2026, 16:30", msk_en: "Fri, Aug 14, 2026, 16:30",
@@ -588,23 +750,21 @@ const events = [
 let currentLang = "ru";
 let currentProgram = "all";
 let currentFormat = "online";
+let selectedDate = null; // ISO "YYYY-MM-DD" или null — фильтр по ленте дат
 
 function programById(id){
   return programs.find(p => p.id === id);
 }
 
-function renderProgramNav(){
+function renderProgramTabs(){
   const nav = document.getElementById("program-nav");
   nav.innerHTML = programs.map(p => `
-    <div class="path-dot${p.id === currentProgram ? " active" : ""}" data-program="${p.id}">
-      <div class="star"></div>
-      <span class="label">${p.id === "all" ? i18n[currentLang].navAll : p.nav[currentLang]}</span>
-    </div>
+    <div class="program-tab${p.id === currentProgram ? " active" : ""}" data-program="${p.id}">${p.id === "all" ? i18n[currentLang].navAll : p.nav[currentLang]}</div>
   `).join("");
-  nav.querySelectorAll(".path-dot").forEach(dot => {
-    dot.addEventListener("click", () => {
-      currentProgram = dot.getAttribute("data-program");
-      renderProgramNav();
+  nav.querySelectorAll(".program-tab").forEach(tab => {
+    tab.addEventListener("click", () => {
+      currentProgram = tab.getAttribute("data-program");
+      renderProgramTabs();
       renderProgramHeader();
       render();
     });
@@ -632,10 +792,82 @@ function renderProgramHeader(){
   aboutWrap.innerHTML = `
     <div class="about-card">
       <div class="about-label">${i18n[currentLang].aboutLabel}</div>
-      <div class="about-body${isPlaceholder ? " placeholder" : ""}">${isPlaceholder ? about[currentLang] : about[currentLang]}</div>
+      <div class="about-body${isPlaceholder ? " placeholder" : ""}">${about[currentLang]}</div>
     </div>
   `;
 }
+
+// ===== Лента дат (сегодня + 30 дней) =====
+const WEEKDAYS = {
+  ru: ["Вс","Пн","Вт","Ср","Чт","Пт","Сб"],
+  en: ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]
+};
+const MONTHS = {
+  ru: ["января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"],
+  en: ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+};
+const MONTHS_FULL = {
+  ru: ["ЯНВАРЬ","ФЕВРАЛЬ","МАРТ","АПРЕЛЬ","МАЙ","ИЮНЬ","ИЮЛЬ","АВГУСТ","СЕНТЯБРЬ","ОКТЯБРЬ","НОЯБРЬ","ДЕКАБРЬ"],
+  en: ["JANUARY","FEBRUARY","MARCH","APRIL","MAY","JUNE","JULY","AUGUST","SEPTEMBER","OCTOBER","NOVEMBER","DECEMBER"]
+};
+
+// Локальная календарная дата в ISO — без toISOString(), чтобы не съехать
+// на день из-за перевода в UTC у пользователей с отрицательным смещением.
+function isoOfLocalDate(d){
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function buildDateRange(days){
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const arr = [];
+  for(let i = 0; i < days; i++){
+    const d = new Date(today);
+    d.setDate(d.getDate() + i);
+    arr.push(d);
+  }
+  return arr;
+}
+
+function renderDateRibbon(){
+  const ribbon = document.getElementById("date-ribbon");
+  const dates = buildDateRange(30);
+
+  ribbon.innerHTML = dates.map((d, idx) => {
+    const iso = isoOfLocalDate(d);
+    const wd = d.getDay();
+    const isWeekend = wd === 0 || wd === 6;
+    const showMonthLabel = idx === 0 || d.getDate() === 1;
+    const monthLabel = showMonthLabel ? MONTHS_FULL[currentLang][d.getMonth()] : "";
+    const classes = ["date-cell"];
+    if(isWeekend) classes.push("weekend");
+    if(idx === 0) classes.push("today");
+    if(selectedDate === iso) classes.push("selected");
+    return `
+      <div class="${classes.join(" ")}" data-date="${iso}">
+        <div class="date-month">${monthLabel}</div>
+        <div class="date-num">${d.getDate()}</div>
+        <div class="date-wd">${WEEKDAYS[currentLang][wd]}</div>
+      </div>
+    `;
+  }).join("");
+
+  ribbon.querySelectorAll(".date-cell").forEach(cell => {
+    cell.addEventListener("click", () => {
+      const iso = cell.getAttribute("data-date");
+      selectedDate = selectedDate === iso ? null : iso;
+      renderDateRibbon();
+      render();
+    });
+  });
+}
+
+document.getElementById("date-scroll-btn").addEventListener("click", () => {
+  document.getElementById("date-ribbon").scrollBy({ left: 220, behavior: "smooth" });
+});
 
 function setLang(l){
   currentLang = l;
@@ -645,18 +877,34 @@ function setLang(l){
     const key = el.getAttribute("data-i18n");
     if(i18n[l][key]) el.textContent = i18n[l][key];
   });
-  renderProgramNav();
+  document.querySelectorAll("[data-i18n-placeholder]").forEach(el=>{
+    const key = el.getAttribute("data-i18n-placeholder");
+    if(i18n[l][key]) el.placeholder = i18n[l][key];
+  });
+  renderProgramTabs();
   renderProgramHeader();
+  renderDateRibbon();
   render();
 }
 
-document.querySelectorAll(".format-tabs button").forEach(btn=>{
+document.querySelectorAll(".format-pill").forEach(btn=>{
   btn.addEventListener("click", ()=>{
-    document.querySelectorAll(".format-tabs button").forEach(b=>b.classList.remove("active"));
+    document.querySelectorAll(".format-pill").forEach(b=>b.classList.remove("active"));
     btn.classList.add("active");
     currentFormat = btn.getAttribute("data-format");
     render();
   });
+});
+
+document.getElementById("reset-filters-btn").addEventListener("click", () => {
+  currentProgram = "all";
+  currentFormat = "online";
+  selectedDate = null;
+  document.querySelectorAll(".format-pill").forEach(b => b.classList.toggle("active", b.getAttribute("data-format") === "online"));
+  renderProgramTabs();
+  renderProgramHeader();
+  renderDateRibbon();
+  render();
 });
 
 function getEmptyMessage(){
@@ -673,38 +921,43 @@ function render(){
   const filtered = events.filter(e=>{
     const progOk = currentProgram === "all" || e.program === currentProgram;
     const fmtOk = e.format === currentFormat;
-    return progOk && fmtOk;
+    const dateOk = !selectedDate || e.date_az_iso === selectedDate;
+    return progOk && fmtOk && dateOk;
   });
   if(filtered.length === 0){
     container.innerHTML = `<div class="empty-note">${getEmptyMessage()}</div>`;
     return;
   }
-  container.innerHTML = filtered.map(e=>{
+  container.innerHTML = `<div class="cards-grid">${filtered.map(e=>{
     const title = currentLang === "ru" ? e.title_ru : e.title_en;
     const az = currentLang === "ru" ? e.az_ru : e.az_en;
     const msk = currentLang === "ru" ? e.msk_ru : e.msk_en;
     const fmtLabel = t["fmt-" + e.format];
-    const programTag = currentProgram === "all"
-      ? `<span class="tag program">${programById(e.program).nav[currentLang]}</span>`
+    const visual = PROGRAM_VISUAL[e.program] || PROGRAM_VISUAL.xuanzang;
+    const programBadge = currentProgram === "all"
+      ? `<span class="badge program">${programById(e.program).nav[currentLang]}</span>`
       : "";
     return `
-      <div class="card ${e.format}">
-        <div class="tag-row">
-          ${programTag}
-          <span class="tag format-${e.format}">${fmtLabel}</span>
+      <div class="event-card">
+        <div class="event-photo" style="background:${visual.gradient}">${PLACEHOLDER_ICON}</div>
+        <div class="event-body">
+          <div class="badge-row">
+            ${programBadge}
+            <span class="badge format-${e.format}">${fmtLabel}</span>
+          </div>
+          <div class="event-title">${title}</div>
+          <div class="event-meta">
+            ${az ? `<div><b>${t.labelAZ}:</b> ${az}</div>` : ""}
+            ${msk ? `<div><b>${t.labelMSK}:</b> ${msk}</div>` : ""}
+            <div><b>${t.labelWho}:</b> ${e.who}</div>
+            ${e.city ? `<div><b>${t.labelCity}:</b> ${e.city}</div>` : ""}
+            ${e.lang ? `<div><b>${t.labelLang}:</b> ${e.lang}</div>` : ""}
+          </div>
+          <a class="event-link" href="${e.link}" target="_blank" rel="noopener noreferrer">${t.labelOpen}</a>
         </div>
-        <h3>${title}</h3>
-        <div class="meta">
-          ${az ? `<div><b>${t.labelAZ}:</b> ${az}</div>` : ""}
-          ${msk ? `<div><b>${t.labelMSK}:</b> ${msk}</div>` : ""}
-          <div><b>${t.labelWho}:</b> ${e.who}</div>
-          ${e.city ? `<div><b>${t.labelCity}:</b> ${e.city}</div>` : ""}
-          ${e.lang ? `<div><b>${t.labelLang}:</b> ${e.lang}</div>` : ""}
-        </div>
-        <a class="link" href="${e.link}" target="_blank" rel="noopener noreferrer">${t.labelOpen}</a>
       </div>
     `;
-  }).join("");
+  }).join("")}</div>`;
 }
 
 // Соответствие названий программ, которые хранит /api/events (см. events/
@@ -716,15 +969,6 @@ const PROGRAM_ID_BY_NAME = {
   "Blue Sky Friends": "bluesky",
   "ACI with Ven. Utpala": "utpala",
   "Peach Tree": "peachtree"
-};
-
-const WEEKDAYS = {
-  ru: ["Вс","Пн","Вт","Ср","Чт","Пт","Сб"],
-  en: ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]
-};
-const MONTHS = {
-  ru: ["января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"],
-  en: ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
 };
 
 function formatApiDate(iso, time, lang){
@@ -748,6 +992,7 @@ function mapApiEvent(e){
   const title_en = e.title_en || e.teacher || "";
   return {
     program, format,
+    date_az_iso: e.date_az || null,
     title_ru, title_en,
     az_ru: formatApiDate(e.date_az, e.time_az, "ru"),
     az_en: formatApiDate(e.date_az, e.time_az, "en"),
@@ -775,14 +1020,16 @@ async function loadApiEvents(){
   } catch (err) {
     console.warn("Не удалось загрузить события с сервера, показываю сохранённые данные:", err);
   } finally {
-    renderProgramNav();
+    renderProgramTabs();
     renderProgramHeader();
+    renderDateRibbon();
     render();
   }
 }
 
-renderProgramNav();
+renderProgramTabs();
 renderProgramHeader();
+renderDateRibbon();
 render();
 loadApiEvents();
 </script>
