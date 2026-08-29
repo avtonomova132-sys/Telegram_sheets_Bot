@@ -102,6 +102,21 @@ const {
   SELECT_CALLBACK_PREFIX: DNEVNIK_SELECT_PREFIX,
 } = require('./dnevnik/view');
 
+// Раньше необработанный отказ промиса (например Telegram отклоняет
+// sendMessage с "message is too long") валил весь процесс — Node превращает
+// необработанный rejected promise в необработанное исключение. При polling
+// это означало бесповоротный крэш-луп: контейнер перезапускается, Telegram
+// повторно отдаёт то же самое незаквитованное обновление (offset не
+// продвинулся), тот же обработчик падает снова — и так до бесконечности,
+// пока не поправишь код руками. Логируем и продолжаем работать вместо
+// падения — единичная неудачная отправка не должна укладывать всего бота.
+process.on('unhandledRejection', (err) => {
+  console.error('Необработанный отказ промиса:', err && err.message ? err.message : err);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Необработанное исключение:', err && err.message ? err.message : err);
+});
+
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
 // Отдаёт события, добавленные через /new, — public/afisha.html подтягивает
