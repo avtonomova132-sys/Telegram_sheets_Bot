@@ -5,19 +5,19 @@ const { getPrinciple } = require('./principles');
 // нажатий ссылались на одну и ту же строку.
 const SELECT_CALLBACK_PREFIX = 'dnevnik_select:';
 
-// Примеры в компактных местах (уведомление о слоте, список пропущенного)
-// берутся из вручную отобранных previewNegative/previewPositive в
-// principles.js (не просто первые N из полного списка — Elena отметила,
-// что "первые по порядку" не всегда самые показательные и различимые).
-// Полный список — в отдельной карточке принципа по кнопке
-// (buildPrincipleDetail). Фолбэк на .slice() — на случай, если у какого-то
-// принципа вдруг не окажется preview-полей.
+// Elena попробовала кураторские 4-5 примеров и решила вернуть ПОЛНЫЙ
+// список даже в компактных местах (уведомление о слоте, список
+// пропущенного) — насмотренность и сам процесс пролистывания глазами
+// весь список тоже часть момента осознанности. Кураторские
+// previewNegative/previewPositive остаются в principles.js на случай, если
+// понадобится вернуться к короткому варианту — эти функции просто их не
+// используют сейчас.
 function previewNegative(principle) {
-  return principle.previewNegative || principle.negativeExamples.slice(0, 4);
+  return principle.negativeExamples;
 }
 
 function previewPositive(principle) {
-  return principle.previewPositive || principle.positiveExamples.slice(0, 4);
+  return principle.positiveExamples;
 }
 
 function formatExamples(examples) {
