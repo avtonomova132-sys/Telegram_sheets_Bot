@@ -8,9 +8,17 @@ function loadConfig() {
   return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
 }
 
+// Per Elena: more than 5 @mentions in one Telegram message can fail to
+// notify some of the people tagged, so this hard-caps at 5 regardless of
+// how many entries end up in community-tags.json — the file itself is
+// the actual editable "who gets tagged" list (she edits it directly, no
+// code change needed), this is just a safety ceiling on top of it.
+const MAX_COMMUNITY_TAGS = 5;
+
 function loadCommunityTags() {
   try {
-    return JSON.parse(fs.readFileSync(TAGS_PATH, 'utf8'));
+    const tags = JSON.parse(fs.readFileSync(TAGS_PATH, 'utf8'));
+    return tags.slice(0, MAX_COMMUNITY_TAGS);
   } catch {
     return [];
   }
