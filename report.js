@@ -948,7 +948,7 @@ function ctaLineRu(missing) {
 // (range is genuinely next week), false for the manual command (range is
 // the week already in progress) — see generateWeeklyReport vs
 // generateWeeklyAnnounceReport.
-function buildWeeklyMessage(events, range, { upcoming = false, failedTabs = [], now = new Date() } = {}) {
+function buildWeeklyMessage(events, range, { upcoming = false, failedTabs = [], now = new Date(), tags = [] } = {}) {
   // Excludes slots whose Arizona start has already passed — only from the
   // "still needs a host" set used by the warning block + CTA below. The
   // full per-event listing further down uses `events` directly, not
@@ -1018,7 +1018,15 @@ function buildWeeklyMessage(events, range, { upcoming = false, failedTabs = [], 
   // No general host-signup link here either (see buildCheckMessage's
   // identical reasoning) — every event above already links straight to
   // its own tab via formatProgramNameHtml.
-  return [enSection, '---', ruSection].join('\n\n');
+  const parts = [enSection, '---', ruSection];
+  // Same rule as /check: only tag people when there's actually an open
+  // slot this week to respond to — a fully-covered week has nothing to
+  // ping anyone about.
+  if (missing.length > 0 && tags.length > 0) {
+    parts.push(tags.map((t) => escapeHtml(formatCommunityTag(t))).join(' '));
+  }
+
+  return parts.join('\n\n');
 }
 
 // Manual /weekly — same "current week" range as /check, always the week
@@ -1026,7 +1034,8 @@ function buildWeeklyMessage(events, range, { upcoming = false, failedTabs = [], 
 async function generateWeeklyReport(now = new Date()) {
   const range = getCurrentWeekRange(now);
   const { events, failedTabs, debugCounts } = await collectWeekEvents(range);
-  const text = buildWeeklyMessage(events, range, { upcoming: false, failedTabs, now });
+  const tags = loadCommunityTags();
+  const text = buildWeeklyMessage(events, range, { upcoming: false, failedTabs, now, tags });
   return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
 }
 
@@ -1036,7 +1045,8 @@ async function generateWeeklyReport(now = new Date()) {
 async function generateWeeklyAnnounceReport(now = new Date()) {
   const range = getNextWeekRange(now);
   const { events, failedTabs, debugCounts } = await collectWeekEvents(range);
-  const text = buildWeeklyMessage(events, range, { upcoming: true, failedTabs, now });
+  const tags = loadCommunityTags();
+  const text = buildWeeklyMessage(events, range, { upcoming: true, failedTabs, now, tags });
   return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
 }
 
