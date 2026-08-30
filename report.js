@@ -873,8 +873,8 @@ function tabBreakdownEn(events) {
   return order
     .map((name, i) => {
       const isLast = i === order.length - 1;
-      const alert = missing.get(name) ? ' ‼️' : '';
-      return `${counts.get(name)} from ${escapeHtml(name)}${alert}${isLast ? '.' : ','}`;
+      const alert = missing.get(name) ? '‼️ ' : '';
+      return `${alert}${counts.get(name)} from ${escapeHtml(name)}${isLast ? '.' : ','}`;
     })
     .join('\n');
 }
@@ -895,8 +895,8 @@ function tabBreakdownRu(events) {
   return order
     .map((name, i) => {
       const isLast = i === order.length - 1;
-      const alert = missing.get(name) ? ' ‼️' : '';
-      return `${counts.get(name)} — ${escapeHtml(name)}${alert}${isLast ? '.' : ','}`;
+      const alert = missing.get(name) ? '‼️ ' : '';
+      return `${alert}${counts.get(name)} — ${escapeHtml(name)}${isLast ? '.' : ','}`;
     })
     .join('\n');
 }
