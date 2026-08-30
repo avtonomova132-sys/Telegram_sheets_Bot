@@ -604,6 +604,15 @@ bot.onText(/\/(check|report)\b/, (msg) => {
   handleReportCommand(msg.chat.id, 'проверку по текущей неделе', generateCheckReport);
 });
 
+// /следующая_неделя (он же /next_week) — та же generateWeeklyAnnounceReport,
+// что и воскресная авторассылка ниже (следующая Пн-Вс неделя, формат
+// /weekly), просто по запросу в любой день, а не только в 10:00 по
+// воскресеньям. Не трогает markWeeklyAnnounceSent — вызов вручную никак не
+// связан с "отправляли ли уже сегодня" авторассылки.
+bot.onText(/\/(следующая_неделя|next_week)\b/, (msg) => {
+  handleReportCommand(msg.chat.id, 'расписание на следующую неделю', generateWeeklyAnnounceReport);
+});
+
 // ===== Воскресная авторассылка /weekly =====
 // Каждое воскресенье в WEEKLY_ANNOUNCE_HOUR (по умолчанию 10:00) по Бали бот
 // сам присылает Елене в личку то же самое сообщение, что и команда /weekly —
