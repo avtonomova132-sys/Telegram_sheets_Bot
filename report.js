@@ -522,9 +522,7 @@ async function collectWeekEvents(range) {
     .filter((e) => inRange(e.date, range.start, range.end))
     .sort((a, b) => a.date - b.date || (a.azStartMin ?? 0) - (b.azStartMin ?? 0));
 
-  const hostSignupUrl = `https://docs.google.com/spreadsheets/d/${config.spreadsheetId}/edit?gid=${config.hostSignupGid}#gid=${config.hostSignupGid}`;
-
-  return { events, failedTabs, hostSignupUrl, debugCounts };
+  return { events, failedTabs, debugCounts };
 }
 
 function formatDebugCounts(debugCounts, range) {
@@ -950,7 +948,7 @@ function ctaLineRu(missing) {
 // (range is genuinely next week), false for the manual command (range is
 // the week already in progress) — see generateWeeklyReport vs
 // generateWeeklyAnnounceReport.
-function buildWeeklyMessage(events, range, hostSignupUrl, { upcoming = false, failedTabs = [], now = new Date() } = {}) {
+function buildWeeklyMessage(events, range, { upcoming = false, failedTabs = [], now = new Date() } = {}) {
   // Excludes slots whose Arizona start has already passed — only from the
   // "still needs a host" set used by the warning block + CTA below. The
   // full per-event listing further down uses `events` directly, not
@@ -1017,15 +1015,18 @@ function buildWeeklyMessage(events, range, hostSignupUrl, { upcoming = false, fa
   const enSection = enSectionParts.join('\n');
   const ruSection = ruSectionParts.join('\n');
 
-  return [enSection, '---', ruSection, hostSignupUrl].join('\n\n');
+  // No general host-signup link here either (see buildCheckMessage's
+  // identical reasoning) — every event above already links straight to
+  // its own tab via formatProgramNameHtml.
+  return [enSection, '---', ruSection].join('\n\n');
 }
 
 // Manual /weekly — same "current week" range as /check, always the week
 // containing today's Bali date, regardless of what day it's run on.
 async function generateWeeklyReport(now = new Date()) {
   const range = getCurrentWeekRange(now);
-  const { events, failedTabs, hostSignupUrl, debugCounts } = await collectWeekEvents(range);
-  const text = buildWeeklyMessage(events, range, hostSignupUrl, { upcoming: false, failedTabs, now });
+  const { events, failedTabs, debugCounts } = await collectWeekEvents(range);
+  const text = buildWeeklyMessage(events, range, { upcoming: false, failedTabs, now });
   return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
 }
 
@@ -1034,8 +1035,8 @@ async function generateWeeklyReport(now = new Date()) {
 // current one, since on Sunday "this week" is the one already wrapping up.
 async function generateWeeklyAnnounceReport(now = new Date()) {
   const range = getNextWeekRange(now);
-  const { events, failedTabs, hostSignupUrl, debugCounts } = await collectWeekEvents(range);
-  const text = buildWeeklyMessage(events, range, hostSignupUrl, { upcoming: true, failedTabs, now });
+  const { events, failedTabs, debugCounts } = await collectWeekEvents(range);
+  const text = buildWeeklyMessage(events, range, { upcoming: true, failedTabs, now });
   return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
 }
 
