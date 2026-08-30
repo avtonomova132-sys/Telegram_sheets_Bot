@@ -616,13 +616,6 @@ function formatRange24h(startMin, endMin) {
   return `${pad2(sh)}:${pad2(sm)}–${pad2(eh)}:${pad2(em)}`;
 }
 
-const ACADEMIC_KEYWORDS = ['aci', 'pramana', 'teacher training', 'yoga studies', 'ysi'];
-
-function programEmoji(tabName) {
-  const lower = tabName.toLowerCase();
-  return ACADEMIC_KEYWORDS.some((k) => lower.includes(k)) ? '🎓' : '📛';
-}
-
 // Strips the trailing "(Mon DD, YYYY)" (and anything after it, like
 // "no translation") that almost every session title ends with, since the
 // date is already shown on its own line.
@@ -651,17 +644,20 @@ function escapeHtml(text) {
   return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// Program name: always bold. Linked to its tab ONLY while a host is still
-// needed — the link itself (blue, underlined) is the "needs a host"
-// signal, not just decoration, so it must disappear the moment someone
-// hosts. `text` may be a raw tab name (/check) or a full "{tab} —
-// {session}" programLine (/weekly); either way it's escaped here, once,
-// right before formatting — callers must pass the RAW value, never
-// pre-escaped.
+// Program name: a ✅/📛 marker for THIS event's own host status (assigned
+// vs still needed — recomputed per event, never a fixed program-type
+// icon), then the name itself, always bold. Linked to its tab ONLY while
+// a host is still needed — the link itself (blue, underlined) is a
+// second copy of the same "needs a host" signal, not decoration, so it
+// must disappear the moment someone hosts. `text` may be a raw tab name
+// (/check) or a full "{tab} — {session}" programLine (/weekly); either
+// way it's escaped here, once, right before formatting — callers must
+// pass the RAW value, never pre-escaped.
 function formatProgramNameHtml(text, url, hasHost) {
+  const marker = hasHost ? '✅' : '📛';
   const escaped = escapeHtml(text);
-  if (hasHost || !url) return `<b>${escaped}</b>`;
-  return `<b><a href="${url}">${escaped}</a></b>`;
+  const bold = hasHost || !url ? `<b>${escaped}</b>` : `<b><a href="${url}">${escaped}</a></b>`;
+  return `${marker} ${bold}`;
 }
 
 function ruIsOneForm(n) {
@@ -703,19 +699,19 @@ function enMissingHeader(n) {
 
 function checkEventBlockEn(e) {
   return [
-    `${programEmoji(e.tabName)} ${formatProgramNameHtml(e.tabName, e.tabUrl, e.hasHost)}`,
+    formatProgramNameHtml(e.tabName, e.tabUrl, e.hasHost),
     `🕒 Arizona: ${formatMonthDayEn(e.date)}, ${formatRange12h(e.azStartMin, e.azEndMin)}`,
     `🕒 Moscow: ${formatMonthDayEn(mskDate(e))}, ${formatRange12h(e.mskStartMin, e.mskEndMin)}`,
-    '➖👤 Host: needed',
+    '👤 Host: needed',
   ].join('\n');
 }
 
 function checkEventBlockRu(e) {
   return [
-    `${programEmoji(e.tabName)} ${formatProgramNameHtml(e.tabName, e.tabUrl, e.hasHost)}`,
+    formatProgramNameHtml(e.tabName, e.tabUrl, e.hasHost),
     `🕒 Аризона: ${formatMonthDayRu(e.date)}, ${formatRange24h(e.azStartMin, e.azEndMin)}`,
     `🕒 Москва: ${formatMonthDayRu(mskDate(e))}, ${formatRange24h(e.mskStartMin, e.mskEndMin)}`,
-    '➖👤 Хост: нужен',
+    '👤 Хост: нужен',
   ].join('\n');
 }
 
@@ -824,22 +820,22 @@ function buildCheckMessage(events, range, tags, failedTabs = [], now = new Date(
 function weeklyHostLineEn(e) {
   if (e.hasHost) {
     const co = e.coHost ? `, Co-Host: ${escapeHtml(e.coHost)}` : '';
-    return `✅👤 Host: ${escapeHtml(e.host)}${co}`;
+    return `👤 Host: ${escapeHtml(e.host)}${co}`;
   }
-  return '➖👤 Host: volunteer needed 🙏';
+  return '👤 Host: volunteer needed 🙏';
 }
 
 function weeklyHostLineRu(e) {
   if (e.hasHost) {
     const co = e.coHost ? `, Ко-хост: ${escapeHtml(e.coHost)}` : '';
-    return `✅👤 Хост: ${escapeHtml(e.host)}${co}`;
+    return `👤 Хост: ${escapeHtml(e.host)}${co}`;
   }
-  return '➖👤 Хост: нужен волонтёр 🙏';
+  return '👤 Хост: нужен волонтёр 🙏';
 }
 
 function weeklyEventBlockEn(e) {
   return [
-    `${programEmoji(e.tabName)} ${formatProgramNameHtml(programLine(e.tabName, e.title), e.tabUrl, e.hasHost)}`,
+    formatProgramNameHtml(programLine(e.tabName, e.title), e.tabUrl, e.hasHost),
     `🕒 Arizona: ${formatMonthDayEn(e.date)}, ${formatRange12h(e.azStartMin, e.azEndMin)}`,
     `🕒 Moscow: ${formatMonthDayEn(mskDate(e))}, ${formatRange24h(e.mskStartMin, e.mskEndMin)}`,
     weeklyHostLineEn(e),
@@ -848,7 +844,7 @@ function weeklyEventBlockEn(e) {
 
 function weeklyEventBlockRu(e) {
   return [
-    `${programEmoji(e.tabName)} ${formatProgramNameHtml(programLine(e.tabName, e.title), e.tabUrl, e.hasHost)}`,
+    formatProgramNameHtml(programLine(e.tabName, e.title), e.tabUrl, e.hasHost),
     `🕒 Аризона: ${formatMonthDayRu(e.date)}, ${formatRange24h(e.azStartMin, e.azEndMin)}`,
     `🕒 Москва: ${formatMonthDayRu(mskDate(e))}, ${formatRange24h(e.mskStartMin, e.mskEndMin)}`,
     weeklyHostLineRu(e),
