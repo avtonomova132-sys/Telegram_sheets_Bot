@@ -97,6 +97,7 @@ const {
   buildDnevnikSummary,
   buildMissedListMessage,
   buildDayReport,
+  buildDayReportShort,
   buildPrincipleDetail,
   buildUnansweredKeyboard,
   SELECT_CALLBACK_PREFIX: DNEVNIK_SELECT_PREFIX,
@@ -453,6 +454,17 @@ bot.onText(/^\/дневник_день(?:@\S+)?$/, async (msg) => {
   const unanswered = entries.filter((e) => !e.answeredAt);
   const reply_markup = buildUnansweredKeyboard(unanswered);
   await sendDnevnikMessage(chatId, buildDayReport(today, entries), reply_markup ? { reply_markup } : undefined);
+});
+
+// Краткая версия того же отчёта — специально для пересылки партнёру по
+// практике: у плюса только посвящение, у минуса только сожаление, без
+// текста/радости/опоры/антидота/решения. Полная версия (/дневник_день)
+// остаётся для собственной подробной рефлексии.
+bot.onText(/^\/дневник_кратко(?:@\S+)?$/, async (msg) => {
+  const chatId = msg.chat.id;
+  const today = baliDateString();
+  const entries = getDnevnikDay(today);
+  await sendDnevnikMessage(chatId, buildDayReportShort(today, entries));
 });
 
 // Отправляет слот, если наступило его время по Бали и он ещё не отправлялся
