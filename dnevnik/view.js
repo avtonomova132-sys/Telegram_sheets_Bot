@@ -46,20 +46,12 @@ function buildOneMoment(moment, index, total, isPlus) {
   );
 }
 
-// Одна карточка принципа со ВСЕМИ ситуациями, которые под ним записаны —
-// может быть несколько плюсов и/или несколько минусов за один принцип,
-// ничего не сжимается в один. entry/result — объект с полями pluses[],
-// minuses[] (см. dnevnik/store.js). Elena: обе стороны (➕/➖) должны быть
-// видны ВСЕГДА, даже если по одной из них сегодня ничего не было — тогда
-// прямо пишем "не наблюдался", чтобы было видно, что про обе подумали.
-function buildPrincipleResult(principle, entryLike) {
+// Достаёт pluses/minuses из записи, с фолбэком на старый плоский формат
+// (до перехода на массивы) — общая логика для полной и краткой карточки.
+function extractMoments(entryLike) {
   let pluses = entryLike.pluses || [];
   let minuses = entryLike.minuses || [];
 
-  // Совместимость со старыми записями — до перехода на массивы был один
-  // type + плоские поля (text/radost/posvyashenie или opora/sozhalenie/
-  // antidot/reshenie). Сами данные никуда не делись из файла, просто в
-  // другом формате — превращаем их в массив из одного элемента для показа.
   if (pluses.length === 0 && minuses.length === 0 && entryLike.type) {
     if (entryLike.type === 'plus') {
       pluses = [{ text: entryLike.text, radost: entryLike.radost, posvyashenie: entryLike.posvyashenie }];
@@ -68,11 +60,49 @@ function buildPrincipleResult(principle, entryLike) {
     }
   }
 
+  return { pluses, minuses };
+}
+
+// Одна карточка принципа со ВСЕМИ ситуациями, которые под ним записаны —
+// может быть несколько плюсов и/или несколько минусов за один принцип,
+// ничего не сжимается в один. entry/result — объект с полями pluses[],
+// minuses[] (см. dnevnik/store.js). Elena: обе стороны (➕/➖) должны быть
+// видны ВСЕГДА, даже если по одной из них сегодня ничего не было — тогда
+// прямо пишем "не наблюдался", чтобы было видно, что про обе подумали.
+function buildPrincipleResult(principle, entryLike) {
+  const { pluses, minuses } = extractMoments(entryLike);
+
   const header = `📿 Принцип №${principle.number} (${principle.category}): ${principle.title}`;
   const plusBlocks = pluses.length > 0 ? pluses.map((m, i) => buildOneMoment(m, i, pluses.length, true)) : ['➕ Плюс: не наблюдался'];
   const minusBlocks = minuses.length > 0 ? minuses.map((m, i) => buildOneMoment(m, i, minuses.length, false)) : ['➖ Минус: не наблюдался'];
   const momentBlocks = [...plusBlocks, ...minusBlocks];
   return `${header}\n\n${momentBlocks.join('\n\n')}`;
+}
+
+// Краткая версия — только суть: у плюса радость + посвящение (что
+// прочувствовала и чему посвятила семя), у минуса сожаление (что именно
+// посеяла и почему вредно). Без text/опоры/антидота/решения — для
+// пересылки партнёру по практике, чтобы можно было реально прочитать за
+// минуту, а не разворачивать телефон текстом на весь день. Полная версия
+// (buildPrincipleResult/buildDayReport) остаётся для собственной, подробной
+// рефлексии.
+function buildPrincipleResultShort(principle, entryLike) {
+  const { pluses, minuses } = extractMoments(entryLike);
+  const header = `№${principle.number} (${principle.category}): ${principle.title}`;
+
+  const plusLines =
+    pluses.length > 0
+      ? pluses.map((m, i) => {
+          const num = pluses.length > 1 ? ` ${i + 1}` : '';
+          return `😊${num} ${safe(m.radost)}\n🙏${num} ${safe(m.posvyashenie)}`;
+        })
+      : ['➕ не наблюдался'];
+  const minusLines =
+    minuses.length > 0
+      ? minuses.map((m, i) => `😔${minuses.length > 1 ? ` ${i + 1}` : ''} ${safe(m.sozhalenie)}`)
+      : ['➖ не наблюдался'];
+
+  return `${header}\n${[...plusLines, ...minusLines].join('\n')}`;
 }
 
 function buildSlotMessage(principle, slotIndex) {
@@ -190,6 +220,26 @@ function buildDayReport(dateBali, entries) {
   return `📿 Шестиразовый дневник — ${dateBali}\n\n${blocks.join('\n\n〜〜〜\n\n')}`;
 }
 
+// Краткая версия дневного отчёта — для пересылки партнёру по практике, не
+// для себя. Одна строка на принцип-заголовок + одна строка на каждый плюс
+// (только посвящение) и минус (только сожаление). Неотвеченные — коротко,
+// без полного списка примеров (тот уместен только в живом уведомлении).
+function buildDayReportShort(dateBali, entries) {
+  if (entries.length === 0) {
+    return `📿 Шестиразовый дневник (кратко) — ${dateBali}\n\nПока сегодня записей нет.`;
+  }
+
+  const blocks = entries.map((entry) => {
+    const principle = getPrinciple(entry.principleNumber);
+    if (!entry.answeredAt) {
+      return `⏳ №${entry.principleNumber} (${principle.category}): ${principle.title} — ещё не отвечено`;
+    }
+    return buildPrincipleResultShort(principle, entry);
+  });
+
+  return `📿 Шестиразовый дневник (кратко) — ${dateBali}\n\n${blocks.join('\n\n')}`;
+}
+
 module.exports = {
   buildSlotMessage,
   buildPrincipleResult,
@@ -197,6 +247,7 @@ module.exports = {
   buildDnevnikSummary,
   buildMissedListMessage,
   buildDayReport,
+  buildDayReportShort,
   buildPrincipleDetail,
   buildUnansweredKeyboard,
   SELECT_CALLBACK_PREFIX,
