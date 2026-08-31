@@ -1186,6 +1186,41 @@ function buildTimeChangeHostNotice(e, prevPseudo) {
   return [timeChangeHostNoticeEn(e, prevPseudo), timeChangeHostNoticeRu(e, prevPseudo)].join('\n\n');
 }
 
+// Group-facing thank-you when a previously-empty Host cell got filled in
+// (someone signed themselves up directly in the sheet) — same
+// EN-then-RU, escape-everything convention as the rest of this file.
+// formatCommunityTag(e.host) reuses the exact same "@ if missing" rule
+// already applied to community-tags.json entries, since a sheet's Host
+// cell is exactly as likely to be a bare display name as a real
+// username.
+function thankYouHostEn(e) {
+  const tag = escapeHtml(formatCommunityTag(e.host));
+  const what = escapeHtml(programLine(e.tabName, e.title));
+  return `🙏 ${tag}, thank you so much for stepping up to host ${what} (${formatMonthDayEn(e.date)})! This is such precious, positive karma — you're helping the whole community access the teachings. Deeply grateful for your service 💛`;
+}
+
+function thankYouHostRu(e) {
+  const tag = escapeHtml(formatCommunityTag(e.host));
+  const what = escapeHtml(programLine(e.tabName, e.title));
+  return `🙏 ${tag}, огромное спасибо, что взяли на себя хостинг «${what}» (${formatMonthDayRu(e.date)})! Это очень ценные, добрые семена — вы помогаете всей общине получить доступ к учениям. Благодарны за ваше служение от всего сердца 💛`;
+}
+
+function buildThankYouHostMessage(e) {
+  return [thankYouHostEn(e), thankYouHostRu(e)].join('\n\n');
+}
+
+// Separate "everything's covered" celebration — only fires alongside a
+// thank-you (see runDailyHostDiffCheck), never on its own, and never
+// merged into the same text: Elena asked for two distinct pastable
+// messages, not one combined one.
+function buildAllCoveredMessage(range) {
+  const rangeEn = formatWeekRangeEn(range.start, range.end);
+  const rangeRu = formatWeekRangeRu(range.start, range.end);
+  const en = `🎉 Hooray! All broadcasts for ${rangeEn} are now fully covered with hosts! Thank you, everyone, for your generous service 💛🙏`;
+  const ru = `🎉 Ура! Все эфиры на неделю ${rangeRu} теперь полностью закрыты хостами! Благодарим всех за щедрое служение 💛🙏`;
+  return [en, ru].join('\n\n');
+}
+
 // Daily background diff-check (see index.js for the 9:00-Bali schedule) —
 // only looks at the tabs in daily-check-tabs.json, only the current (Bali)
 // week, and only ever DMs Elena when something actually changed since the
@@ -1234,6 +1269,7 @@ async function runDailyHostDiffCheck(now = new Date(), { updateLastRunDate = fal
   }
 
   const hostRemoved = [];
+  const hostFilled = [];
   const newEvents = [];
   const timeChanged = [];
   for (const [key, e] of currentByKey) {
@@ -1241,6 +1277,8 @@ async function runDailyHostDiffCheck(now = new Date(), { updateLastRunDate = fal
     if (prev) {
       if (prev.hasHost && !e.hasHost) {
         hostRemoved.push({ event: e, previousHost: prev.host });
+      } else if (!prev.hasHost && e.hasHost) {
+        hostFilled.push(e);
       }
       continue;
     }
@@ -1291,18 +1329,24 @@ async function runDailyHostDiffCheck(now = new Date(), { updateLastRunDate = fal
   }
 
   // "Silence if nothing changed" applies ONLY when there's neither a host
-  // removal, nor a new event, nor a reschedule, AND every tab actually
-  // loaded — as soon as any one of the three shows up, Elena gets a message
-  // no matter what, even if e.g. a new event already has a host assigned
-  // (in that case it's purely informational: the 🆕 line below, nothing
-  // more). Do not add an `e.hasHost` check here. Partial data is the fourth
-  // reason to break silence: silence normally means "confirmed no
-  // changes", and staying quiet over a tab that simply failed to load would
-  // mean the same silence, which she'd read the same way, even though
-  // nothing was actually confirmed that day.
+  // removal, nor a fill-in, nor a new event, nor a reschedule, AND every
+  // tab actually loaded — as soon as any one of these shows up, Elena gets
+  // a message no matter what, even if e.g. a new event already has a host
+  // assigned (in that case it's purely informational: the 🆕 line below,
+  // nothing more). Do not add an `e.hasHost` check here. Partial data is
+  // the fifth reason to break silence: silence normally means "confirmed
+  // no changes", and staying quiet over a tab that simply failed to load
+  // would mean the same silence, which she'd read the same way, even
+  // though nothing was actually confirmed that day.
   const hasPartialData = failedTabs.length > 0;
-  if (hostRemoved.length === 0 && newEvents.length === 0 && timeChanged.length === 0 && !hasPartialData) {
-    return { text: null, hostRemoved: 0, newEvents: 0, timeChanged: 0, failedTabs };
+  if (
+    hostRemoved.length === 0 &&
+    hostFilled.length === 0 &&
+    newEvents.length === 0 &&
+    timeChanged.length === 0 &&
+    !hasPartialData
+  ) {
+    return { text: null, hostRemoved: 0, hostFilled: 0, newEvents: 0, timeChanged: 0, failedTabs };
   }
 
   const lines = [];
@@ -1313,6 +1357,12 @@ async function runDailyHostDiffCheck(now = new Date(), { updateLastRunDate = fal
     lines.push(
       `⚠️ Хост убрал себя с эфира: ${escapeHtml(programLine(e.tabName, e.title))}, ${diffStampRu(e)}. Был назначен: ${escapeHtml(previousHost)}. Сейчас хост не назначен.`
     );
+  }
+  // Someone signed themselves up directly in the sheet — a personal
+  // thank-you per filled slot (never merged with the "all covered"
+  // celebration below, even when both fire on the same run).
+  for (const e of hostFilled) {
+    lines.push(buildThankYouHostMessage(e));
   }
   for (const e of newEvents) {
     const hostLabel = e.hasHost ? escapeHtml(e.host) : 'не назначен';
@@ -1332,6 +1382,12 @@ async function runDailyHostDiffCheck(now = new Date(), { updateLastRunDate = fal
     }
   }
 
+  // Same "still lacks a host and hasn't already started" set used both to
+  // decide whether to append the /check-style recap below AND whether
+  // everything is now covered (the two conditions are exact opposites of
+  // each other, computed once so they can't drift apart).
+  const stillOpen = allEvents.filter((e) => !e.hasHost && !isPastAzStart(e, now));
+
   // A brand-new or rescheduled event with no host must additionally get
   // Elena the ready-to-paste group announcement — same /check format (EN
   // then RU, "host needed" / "нужен волонтёр"). Gating on "does ANY event
@@ -1343,14 +1399,25 @@ async function runDailyHostDiffCheck(now = new Date(), { updateLastRunDate = fal
   // not just the one session — the past-start exclusion keeps a slot that
   // already happened from both triggering this block pointlessly and (via
   // buildCheckMessage's own identical filter) showing up inside it.
-  if (allEvents.some((e) => !e.hasHost && !isPastAzStart(e, now))) {
+  if (stillOpen.length > 0) {
     const tags = loadCommunityTags();
     lines.push(buildCheckMessage(allEvents, range, tags, [], now));
+  }
+
+  // The separate "all covered" celebration — ONLY when a fill-in just
+  // happened (hostFilled.length > 0) AND that fill-in was the last open
+  // slot this week. Gating on hostFilled, not just "stillOpen is empty",
+  // is deliberate: a week that was ALREADY fully covered before today's
+  // run must not re-trigger this every single day just because nothing
+  // changed — only the actual transition to "now covered" does.
+  if (hostFilled.length > 0 && stillOpen.length === 0) {
+    lines.push(buildAllCoveredMessage(range));
   }
 
   return {
     text: lines.join('\n\n'),
     hostRemoved: hostRemoved.length,
+    hostFilled: hostFilled.length,
     newEvents: newEvents.length,
     timeChanged: timeChanged.length,
     failedTabs,
