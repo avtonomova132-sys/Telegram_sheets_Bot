@@ -101,6 +101,12 @@ const {
   buildUnansweredKeyboard,
   SELECT_CALLBACK_PREFIX: DNEVNIK_SELECT_PREFIX,
 } = require('./dnevnik/view');
+const {
+  buildRootMenu,
+  buildSectionMessage,
+  SECTION_PREFIX: MENU_SECTION_PREFIX,
+  ROOT_CALLBACK: MENU_ROOT_CALLBACK,
+} = require('./menu');
 
 // Раньше необработанный отказ промиса (например Telegram отклоняет
 // sendMessage с "message is too long") валил весь процесс — Node превращает
@@ -151,12 +157,47 @@ const openai = openaiKey ? new OpenAI({ apiKey: openaiKey, maxRetries: 0, timeou
 
 console.log('Бот запущен и слушает сообщения...');
 
-bot.onText(/\/start/, (msg) => {
+bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
-  bot.sendMessage(
+  await bot.sendMessage(
     chatId,
     'Привет! 🙏 Я твой бот-помощник.\n\nЯ умею отвечать на сообщения, напоминать о делах (просто напиши "напомни ... в 15:00 ...") и собирать отчёты по расписанию (/weekly, /check).'
   );
+  const { text, reply_markup } = buildRootMenu();
+  await bot.sendMessage(chatId, text, { reply_markup });
+});
+
+// Главное меню — чистая справка поверх существующих команд, ничего не
+// меняет и не требует захода в раздел: все команды по-прежнему работают
+// напрямую. См. menu.js за структурой разделов.
+bot.onText(/^\/menu(?:@\S+)?$/, async (msg) => {
+  const { text, reply_markup } = buildRootMenu();
+  await bot.sendMessage(msg.chat.id, text, { reply_markup });
+});
+
+bot.on('callback_query', async (query) => {
+  const data = query.data || '';
+  if (data !== MENU_ROOT_CALLBACK && !data.startsWith(MENU_SECTION_PREFIX)) return;
+
+  const view =
+    data === MENU_ROOT_CALLBACK ? buildRootMenu() : buildSectionMessage(data.slice(MENU_SECTION_PREFIX.length));
+
+  if (!view) {
+    await bot.answerCallbackQuery(query.id, { text: 'Раздел не найден' });
+    return;
+  }
+
+  try {
+    await bot.editMessageText(view.text, {
+      chat_id: query.message.chat.id,
+      message_id: query.message.message_id,
+      reply_markup: view.reply_markup,
+    });
+    await bot.answerCallbackQuery(query.id);
+  } catch (err) {
+    console.error('[menu] ошибка навигации:', err.message);
+    await bot.answerCallbackQuery(query.id, { text: 'Ошибка' });
+  }
 });
 
 // Временная диагностическая команда — узнать chat_id текущего чата (например,
