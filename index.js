@@ -8,7 +8,6 @@ const {
   generateWeeklyAnnounceReport,
   generateCheckReport,
   runDailyHostDiffCheck,
-  getHostDiffLastRunDate,
   getWeeklyAnnounceLastSentDate,
   markWeeklyAnnounceSent,
   chunkMessage,
@@ -725,10 +724,10 @@ async function runDiffCheck(chatId, { updateLastRunDate = false, announceNoChang
 // чтобы можно было свериться с реальным результатом прямо сейчас. С
 // updateLastRunDate: false — а report.js теперь (см. runDailyHostDiffCheck)
 // пропускает запись снимка целиком при этом флаге, не только lastRunDate —
-// поэтому чисто читает и сравнивает, не трогая сохранённую вчерашнюю
-// базу для сравнения. Раньше запись снимка была безусловной, и ручной вызов
-// здесь мог тихо стереть реальное "вчера", из-за чего следующий плановый
-// тик в 9:00 сравнивал уже подменённую базу и ничего не находил.
+// поэтому чисто читает и сравнивает, не трогая сохранённый снимок для
+// сравнения. Раньше запись снимка была безусловной, и ручной вызов здесь
+// мог тихо стереть реальную предыдущую базу, из-за чего следующий плановый
+// периодический тик сравнивал уже подменённую базу и ничего не находил.
 bot.onText(/^\/автопроверка(?:@\S+)?$/, async (msg) => {
   try {
     await runDiffCheck(msg.chat.id, { updateLastRunDate: false, announceNoChange: true });
@@ -738,23 +737,32 @@ bot.onText(/^\/автопроверка(?:@\S+)?$/, async (msg) => {
   }
 });
 
-// Тот же "проверяем каждые 5 минут, сработало ли время" паттерн, что и у
-// ежедневного изречения — устойчив к пропущенному ровно-в-9:00 тику
-// (например, из-за рестарта контейнера).
-async function checkAndRunDailyHostDiff() {
-  const today = baliDateString();
-  if (getHostDiffLastRunDate() === today) return; // сегодня уже проверяли
-  if (baliHour() < 9) return; // ещё не наступило 9:00 по Бали
+// Было: once-per-day поллинг ("проверяем каждые 5 минут, наступило ли уже
+// 9:00 по Бали и проверяли ли мы уже сегодня"). Теперь честный периодический
+// cron на интервале HOST_DIFF_CHECK_INTERVAL_MINUTES (по умолчанию 15) —
+// сравнение снимков в runDailyHostDiffCheck (report.js) не изменилось,
+// просто вызывается чаще, чтобы реакция на изменение в таблице занимала
+// ~интервал, а не сутки. Никакой "уже проверяли сегодня" гейт больше не
+// нужен — сам интервал cron'а и есть частота; "тихий режим" (ничего не
+// присылать при отсутствии изменений) — по-прежнему внутри runDiffCheck/
+// runDailyHostDiffCheck, тут не тронут.
+//
+// Значение должно делить 60 нацело (5, 10, 15, 20, 30...), чтобы шаг
+// `*/N` в cron давал ровные интервалы весь час — если делить не будет,
+// на границе часа шаг просто "подрежется" (напр. */17 → :00,:17,:34,:51,
+// потом сразу :00 следующего часа, разрыв 9 минут вместо 17).
+const HOST_DIFF_CHECK_INTERVAL_MINUTES = Number(process.env.HOST_DIFF_CHECK_INTERVAL_MINUTES) || 15;
 
+async function runPeriodicHostDiffCheck() {
   try {
     await runDiffCheck(myChatId, { updateLastRunDate: true, announceNoChange: false });
   } catch (err) {
-    console.error('[host-diff] ошибка ежедневной проверки:', err.message);
+    console.error('[host-diff] ошибка периодической проверки:', err.message);
   }
 }
 
 if (myChatId) {
-  cron.schedule('*/5 * * * *', checkAndRunDailyHostDiff);
+  cron.schedule(`*/${HOST_DIFF_CHECK_INTERVAL_MINUTES} * * * *`, runPeriodicHostDiffCheck);
 }
 
 // ===== Изречения =====
