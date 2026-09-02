@@ -1463,4 +1463,25 @@ module.exports = {
   generateWeeklyAnnounceReport,
   generateCheckReport,
   chunkMessage,
+  // Pure formatting/date helpers only — no host-tracking business logic —
+  // reused by assistance.js so the separate Assistance-tracking feature
+  // renders in the same visual language (dates, HTML escaping, the
+  // bold+conditional-link program name treatment) without depending on
+  // anything host-specific.
+  deriveMsk,
+  mskDate,
+  formatMonthDayEn,
+  formatMonthDayRu,
+  formatWeekRangeEn,
+  formatWeekRangeRu,
+  formatRange12h,
+  formatRange24h,
+  escapeHtml,
+  isPastAzStart,
+  formatProgramNameHtml,
+  csvUrl,
+  fetchWithTimeout,
+  normalize,
+  sessionLabel,
+  programLine,
 };

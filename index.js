@@ -12,6 +12,7 @@ const {
   markWeeklyAnnounceSent,
   chunkMessage,
 } = require('./report');
+const { generateAssistanceReport } = require('./assistance');
 const { generateVerseImageBuffer } = require('./verse/generateVerseImage');
 const {
   getVerseCount,
@@ -734,6 +735,28 @@ bot.onText(/^\/автопроверка(?:@\S+)?$/, async (msg) => {
   } catch (err) {
     console.error('[host-diff] ошибка ручного запуска:', err.message);
     await bot.sendMessage(msg.chat.id, `Не получилось выполнить проверку 😔 ${err.message}`);
+  }
+});
+
+// ===== Ассистенты по языкам (ACI | V Houses) =====
+// Полностью отдельная, параллельная система от host-проверки выше — своя
+// логика в assistance.js, специально НЕ переиспользует ничего
+// host-специфичного (только чисто форматирующие утилиты report.js, для
+// единого визуального стиля). Ручная команда, без периодического крона —
+// если понадобится авто-уведомление по аналогии с фоновой diff-проверкой
+// хостов, это отдельный следующий шаг.
+bot.onText(/^\/ассистенты(?:@\S+)?$/, async (msg) => {
+  const chatId = msg.chat.id;
+  try {
+    await bot.sendMessage(chatId, 'Собираю проверку ассистентов по языкам (ACI | V Houses)... 📝 Секунду.');
+    const { text } = await generateAssistanceReport();
+    for (const chunk of chunkMessage(text)) {
+      await bot.sendMessage(chatId, chunk, { parse_mode: 'HTML' });
+    }
+  } catch (err) {
+    console.error('[assistance] ошибка формирования отчёта:', err.message);
+    console.error(err.stack);
+    await bot.sendMessage(chatId, `Не получилось собрать отчёт по ассистентам 😔 ${err.message}`);
   }
 });
 
