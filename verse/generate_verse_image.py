@@ -21,16 +21,15 @@
 
 Чёрный фон вокруг листа — прозрачный (плавное затухание к рваным краям).
 
-Результат: RGBA PNG в исходном размере листа. Отправляется в Telegram через
-send_photo — прозрачность при этом теряется (Telegram сжимает фото в JPEG,
-углы станут белыми), это осознанный выбор: photo, в отличие от document и
-sticker, открывается на весь экран с приближением текста и не обрамляется
-рамкой файла.
+Результат: RGBA PNG. Способ отправки в Telegram (send_photo / send_document /
+send_sticker) этот файл не определяет и не затрагивает — он только рисует
+картинку. Логика отправки остаётся в index.js как есть, без изменений.
 """
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import numpy as np
 import json
 import os
+import sys
 
 TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "template_palm_leaf.png")
 VERSES_PATH = os.path.join(os.path.dirname(__file__), "verses.json")
@@ -50,16 +49,16 @@ INK_SOFT = (82, 56, 32, 255)
 INK_FAINT = (82, 56, 32, 140)
 
 SAFE_LEFT, SAFE_RIGHT = 90, 935
-SAFE_TOP = 480                 # подложка никогда не заходит выше — не перекрывает Будду
+SAFE_TOP = 140                 # подложка теперь высокая — Будда становится лёгким силуэтом под ней
 MAX_PANEL_BOTTOM = 1480        # подложка никогда не заходит ниже — не вылезает за лист
-TITLE_Y = 500
+TITLE_Y = 300
 
-MAX_FONT_SIZE = 44             # стартовый (обычный) размер текста изречения
-MIN_FONT_SIZE = 30             # подстраховка для очень длинных изречений — меньше уже некрасиво
+MAX_FONT_SIZE = 52             # текст крупнее — освободилось много места
+MIN_FONT_SIZE = 36             # подстраховка для очень длинных изречений
 
-SERIES_CENTER_X = 565
+SERIES_CENTER_X = 512
 SERIES_LINE1_Y = 175
-SERIES_LINE2_Y = 250
+SERIES_LINE2_Y = 218
 
 
 def _wrap(text, font, max_width, draw):
@@ -130,20 +129,6 @@ def generate_verse_image(verse_number: int) -> Image.Image:
     img = Image.merge("RGBA", (r, g, b, a_img))
     draw = ImageDraw.Draw(img)
 
-    # --- подпись серии на естественном фоне, рядом с Буддой ---
-    f_series_bold = ImageFont.truetype(F_SERIES_BOLD, 46)
-    f_series_italic = ImageFont.truetype(F_SERIES_ITALIC, 26)
-    f_series_bold_small = ImageFont.truetype(F_SERIES_BOLD, 38)
-    _draw_tracked(draw, (SERIES_CENTER_X, SERIES_LINE1_Y), "MAITREYA'S", f_series_bold, INK, tracking=5, anchor_center=True)
-    part1 = "teachings for "
-    part2 = "ASANGA"
-    w1 = draw.textlength(part1, font=f_series_italic)
-    w2 = sum(draw.textlength(ch, font=f_series_bold_small) for ch in part2) + 3 * (len(part2) - 1)
-    total_w = w1 + w2
-    start_x = SERIES_CENTER_X - total_w / 2
-    draw.text((start_x, SERIES_LINE2_Y), part1, font=f_series_italic, fill=INK, anchor="la")
-    _draw_tracked(draw, (start_x + w1, SERIES_LINE2_Y - 4), part2, f_series_bold_small, INK, tracking=3, anchor_center=False)
-
     # --- считаем, сколько места нужно тексту, и подбираем размер подложки ---
     content_left = SAFE_LEFT + 15
     content_right = SAFE_RIGHT - 15
@@ -194,6 +179,20 @@ def generate_verse_image(verse_number: int) -> Image.Image:
     img = Image.alpha_composite(img, panel)
     draw = ImageDraw.Draw(img)
 
+    # --- подпись серии теперь рисуется поверх подложки, у самого верха ---
+    f_series_bold = ImageFont.truetype(F_SERIES_BOLD, 34)
+    f_series_italic = ImageFont.truetype(F_SERIES_ITALIC, 22)
+    f_series_bold_small = ImageFont.truetype(F_SERIES_BOLD, 28)
+    _draw_tracked(draw, (SERIES_CENTER_X, SERIES_LINE1_Y), "MAITREYA'S", f_series_bold, INK, tracking=4, anchor_center=True)
+    part1 = "teachings for "
+    part2 = "ASANGA"
+    w1 = draw.textlength(part1, font=f_series_italic)
+    w2 = sum(draw.textlength(ch, font=f_series_bold_small) for ch in part2) + 3 * (len(part2) - 1)
+    total_w = w1 + w2
+    start_x = SERIES_CENTER_X - total_w / 2
+    draw.text((start_x, SERIES_LINE2_Y), part1, font=f_series_italic, fill=INK, anchor="la")
+    _draw_tracked(draw, (start_x + w1, SERIES_LINE2_Y - 4), part2, f_series_bold_small, INK, tracking=2, anchor_center=False)
+
     f_title = ImageFont.truetype(F_TITLE, 38)
     f_eyebrow = ImageFont.truetype(F_EYEBROW, 22)
     f_src = ImageFont.truetype(F_SRC, 20)
@@ -228,8 +227,6 @@ def generate_verse_image(verse_number: int) -> Image.Image:
 
 
 if __name__ == "__main__":
-    import sys
-
     verse_number = int(sys.argv[1]) if len(sys.argv) > 1 else 1
     out_path = sys.argv[2] if len(sys.argv) > 2 else "test_output.png"
 
