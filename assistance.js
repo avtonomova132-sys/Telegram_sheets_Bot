@@ -8,8 +8,10 @@
 // диф-уведомления) сюда не попадает и это не трогает.
 //
 // Касается ТОЛЬКО вкладки ACI | V Houses — у остальных вкладок нет
-// структуры "11-12 языков × Interpreter/Assistance/REC&BK" на каждое
-// событие.
+// структуры "12 языков × Interpreter/Assistance/REC&BK" на каждое событие.
+// Из этих 12 отслеживаются (ALLOWED_LANGUAGES ниже) только 6 — RUS, CHN,
+// SPA, UKR, VIE, ROM; остальные (GER, ITA, TUR, BUL, IDN Central, JPN)
+// сознательно исключены по просьбе Elena.
 
 const {
   loadConfig,
@@ -36,6 +38,14 @@ const {
 } = require('./report');
 
 const V_HOUSES_GID = '1153396063';
+
+// Elena: только эти 6 языков нужно отслеживать по Assistance — ITA, TUR,
+// BUL, IDN Central, JPN (и GER, который в исходном списке 11 не значился,
+// но структурно детектился) больше не проверяются вообще, ни в /ассистенты,
+// ни в будущих уведомлениях на этой же основе. "CH" включён рядом с "CHN" —
+// на этой вкладке один из (уже прошедших) сегментов подписывает китайский
+// именно так, а не "CHN"; обе формы означают один язык.
+const ALLOWED_LANGUAGES = new Set(['RUS', 'CHN', 'CH', 'SPA', 'UKR', 'VIE', 'ROM']);
 
 function getVHousesTab() {
   const config = loadConfig();
@@ -92,7 +102,7 @@ function findAssistanceColumns(rows, headerRowIndex) {
       }
       return { col, language };
     })
-    .filter((entry) => entry.language);
+    .filter((entry) => entry.language && ALLOWED_LANGUAGES.has(entry.language.toUpperCase()));
 }
 
 function parseAssistanceEvents(rows, tabName) {
