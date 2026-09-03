@@ -83,36 +83,50 @@ function escapeMarkdown(text) {
 function formatRecordBlock(record) {
   const dateStr = formatDateRu(record.dateISO);
   const timeStr = record.timeMSK ? `${record.timeMSK} МСК` : 'время уточняется';
-  const teacher = escapeMarkdown(record.teacher) || 'учитель не указан';
   const zanyatie = escapeMarkdown(record.zanyatie);
-  const zoom = record.zoomLink || 'ссылка появится позже, следи за группой';
-  const group = record.groupLink || '—';
+  // zoomLink/groupLink идут через Anthropic API как свободный текст, а не
+  // только вручную вбитые ссылки — например Zoom часто кладёт в ?pwd=
+  // base64url-значение, у которого в алфавите есть "_" и "-", и непарный "_"
+  // в URL так же ломает парсинг легаси-Markdown, как и в любом другом поле.
+  const zoom = record.zoomLink ? escapeMarkdown(record.zoomLink) : 'ссылка появится позже, следи за группой';
+  const zoomCode = escapeMarkdown(record.zoomCode);
+  const group = record.groupLink ? escapeMarkdown(record.groupLink) : '—';
 
-  const lines = [`📅 ${dateStr}, ${timeStr} — ${teacher}`];
+  const lines = [`📅 ${dateStr}, ${timeStr}`];
   if (zanyatie) lines.push(`   ${zanyatie}`);
   lines.push(`   🔗 ${zoom}`);
+  if (zoomCode) lines.push(`   Код: ${zoomCode}`);
   lines.push(`   👥 ${group}`);
   return lines.join('\n');
 }
 
-function formatCourseSection(kurs, records) {
-  const header = `📖 *Курс ${escapeMarkdown(kurs)} — ближайшие передачи:*`;
-  return `${header}\n\n${records.map(formatRecordBlock).join('\n\n')}`;
+// "медитация" — отдельная категория (не привязана к курсу 1-6), заголовок
+// для неё формулируется иначе, чем "Курс {N}".
+function sectionTitle(kursKey) {
+  if (String(kursKey).trim() === 'медитация') return '🧘 *Медитации — ближайшие:*';
+  return `📖 *Курс ${escapeMarkdown(kursKey)} — ближайшие передачи:*`;
 }
 
-// kursArg — строка курса из аргумента команды, или null/пусто для сводки по всем курсам.
-function formatPeredachiReply(all, kursArg) {
+// Заголовок для /ближайший — тот же принцип, но в единственном числе.
+function sectionTitleSingle(kursKey) {
+  if (String(kursKey).trim() === 'медитация') return '🧘 *Ближайшая медитация:*';
+  return `📖 *Курс ${escapeMarkdown(kursKey)} — ближайшая передача:*`;
+}
+
+function formatSection(title, records) {
+  return `${title}\n\n${records.map(formatRecordBlock).join('\n\n')}`;
+}
+
+function upcomingSorted(all) {
   const now = getNowMsk();
-  const upcoming = sortRecords(all.filter((r) => isUpcoming(r, now)));
+  return sortRecords(all.filter((r) => isUpcoming(r, now)));
+}
 
-  if (kursArg) {
-    const filtered = upcoming.filter((r) => recordMatchesKurs(r, kursArg));
-    if (filtered.length === 0) {
-      return `По курсу ${kursArg} пока нет данных о передачах. Появится информация — сразу будет здесь.`;
-    }
-    return formatCourseSection(kursArg, filtered);
-  }
-
+// /курсы — сводка по всем группам (курсы 1-6 и "медитация" отдельно), все
+// актуальные записи на группу — объединение полного вывода /курс1...курс6
+// и /медитации подряд, без сокращения.
+function formatKursOverview(all) {
+  const upcoming = upcomingSorted(all);
   if (upcoming.length === 0) {
     return 'Пока нет данных о предстоящих передачах. Появится информация — сразу будет здесь.';
   }
@@ -133,7 +147,75 @@ function formatPeredachiReply(all, kursArg) {
     return na - nb;
   });
 
-  return sortedKeys.map((key) => formatCourseSection(key, groups.get(key).slice(0, 3))).join('\n\n\n');
+  return sortedKeys.map((key) => formatSection(sectionTitle(key), groups.get(key))).join('\n\n\n');
+}
+
+// /курс1.../курс6 — все ближайшие передачи конкретного курса, включая
+// вхождение в postfix экспресс-курсов (например "1-5").
+function formatKursDetail(all, kursNumber) {
+  const upcoming = upcomingSorted(all);
+  const filtered = upcoming.filter((r) => recordMatchesKurs(r, kursNumber));
+  if (filtered.length === 0) {
+    return `По курсу ${kursNumber} пока нет данных о передачах. Появится информация — сразу будет здесь.`;
+  }
+  return formatSection(sectionTitle(String(kursNumber)), filtered);
+}
+
+// /медитации — записи с kurs === "медитация" (самостоятельные медитации,
+// не встроенные в занятие курса).
+function formatMeditations(all) {
+  const upcoming = upcomingSorted(all).filter((r) => String(r.kurs || '').trim() === 'медитация');
+  if (upcoming.length === 0) {
+    return 'Пока нет данных о ближайших медитациях. Появится информация — сразу будет здесь.';
+  }
+  return formatSection(sectionTitle('медитация'), upcoming);
+}
+
+// /ближайший <курс> — не список, а ровно одна, самая ближайшая по времени
+// запись по курсу (recordMatchesKurs понимает и "медитация", и постфиксы
+// экспресс-курсов вроде "1-5" — та же логика, что у /курс1...курс6).
+function formatNearest(all, kursArg) {
+  const upcoming = upcomingSorted(all);
+  const filtered = upcoming.filter((r) => recordMatchesKurs(r, kursArg));
+  if (filtered.length === 0) {
+    return `По курсу ${kursArg} пока нет предстоящих передач.`;
+  }
+  return formatSection(sectionTitleSingle(kursArg), [filtered[0]]);
+}
+
+// /дата <ДД.ММ> — все записи (курсы и медитации вместе) на конкретную
+// dateISO, отсортированные по времени. В отличие от /курс1...курс6 (где
+// курс понятен из общего заголовка), список смешанный — поэтому у каждой
+// карточки свой ярлык "Курс N" / "Медитация". Если запрошенная дата —
+// сегодня (по МСК), уже прошедшие по времени записи скрываются (та же
+// логика, что isUpcoming уже применяет везде); для будущей даты фильтрации
+// по времени суток нет — resolveDateArg в index.js в принципе не может
+// вернуть дату в прошлом, так что "сегодня" — единственный случай, где
+// внутри одного дня есть что фильтровать.
+function formatByDate(all, dateISO) {
+  const displayDate = formatDateRu(dateISO);
+  const now = getNowMsk();
+  const isToday = dateISO === now.dateISO;
+
+  let records = all.filter((r) => String(r.dateISO || '').trim() === dateISO);
+  if (isToday) {
+    records = records.filter((r) => isUpcoming(r, now));
+  }
+  records = sortRecords(records);
+
+  if (records.length === 0) {
+    return `На ${displayDate} передач не найдено.`;
+  }
+
+  const blocks = records.map((r) => {
+    const isMeditation = String(r.kurs || '').trim() === 'медитация';
+    const label = isMeditation
+      ? 'Медитация'
+      : `Курс ${escapeMarkdown(r.kurs)}${r.postfix ? ` (${escapeMarkdown(r.postfix)})` : ''}`;
+    return `*${label}*\n${formatRecordBlock(r)}`;
+  });
+
+  return `📅 *Передачи на ${displayDate}:*\n\n${blocks.join('\n\n')}`;
 }
 
 module.exports = {
@@ -143,5 +225,9 @@ module.exports = {
   isUpcoming,
   sortRecords,
   formatDateRu,
-  formatPeredachiReply,
+  formatKursOverview,
+  formatKursDetail,
+  formatMeditations,
+  formatNearest,
+  formatByDate,
 };
