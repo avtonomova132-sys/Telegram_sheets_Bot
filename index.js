@@ -26,6 +26,8 @@ const {
   baliHour,
 } = require('./verse/progress');
 const { extractPeredachi } = require('./peredachi/extract');
+const { isEnabled: isTranslateEnabled, enable: enableTranslate, disable: disableTranslate } = require('./translate/store');
+const { translateMessage } = require('./translate/translate');
 const { addRecords, readAll: readPeredachi, saveAll: savePeredachi } = require('./peredachi/store');
 const {
   formatKursOverview,
@@ -157,6 +159,13 @@ const bot = new TelegramBot(token, { polling: true });
 const openai = openaiKey ? new OpenAI({ apiKey: openaiKey, maxRetries: 0, timeout: 60000 }) : null;
 
 console.log('Бот запущен и слушает сообщения...');
+
+let botId = null;
+bot.getMe().then((me) => {
+  botId = me.id;
+}).catch((err) => {
+  console.error('Не удалось получить информацию о боте:', err.message);
+});
 
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
@@ -2152,6 +2161,48 @@ bot.on('document', async (msg) => {
   }
 
   await processArticlesDocument(chatId, msg.document);
+});
+
+// ===== Авто-перевод в группах =====
+bot.onText(/^\/translate_on(?:@\S+)?$/, async (msg) => {
+  const chatId = msg.chat.id;
+
+  if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
+    await bot.sendMessage(chatId, 'Авто-перевод можно включить только в групповом чате.');
+    return;
+  }
+
+  enableTranslate(chatId);
+  await bot.sendMessage(
+    chatId,
+    '✅ Авто-перевод включён для этой группы. Каждое новое текстовое сообщение (ru↔en) будет переводиться.\n\nВажно: у бота в @BotFather должен быть отключён Privacy Mode (Group Privacy → Disabled), иначе он не увидит сообщения без команд.'
+  );
+});
+
+bot.onText(/^\/translate_off(?:@\S+)?$/, async (msg) => {
+  const chatId = msg.chat.id;
+  disableTranslate(chatId);
+  await bot.sendMessage(chatId, '🛑 Авто-перевод выключен для этой группы.');
+});
+
+bot.on('message', async (msg) => {
+  const chatId = msg.chat.id;
+  const text = msg.text;
+
+  if (!text || text.startsWith('/')) return;
+  if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') return;
+  if (msg.from?.is_bot) return;
+  if (botId && msg.from?.id === botId) return;
+  if (!isTranslateEnabled(chatId)) return;
+
+  try {
+    const translated = await translateMessage(text);
+    if (translated) {
+      await bot.sendMessage(chatId, translated, { reply_to_message_id: msg.message_id });
+    }
+  } catch (err) {
+    console.error('[translate] ошибка перевода:', err.message);
+  }
 });
 
 bot.on('polling_error', (err) => {
