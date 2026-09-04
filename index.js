@@ -27,8 +27,14 @@ const {
 } = require('./verse/progress');
 const { extractPeredachi } = require('./peredachi/extract');
 const { isEnabled: isTranslateEnabled, enable: enableTranslate, disable: disableTranslate } = require('./translate/store');
-const { translateMessage } = require('./translate/translate');
-const { TRANSLATE_FULL_PREFIX, TRANSLATED_LABEL, buildTranslatePrompt } = require('./translate/view');
+const { detectLanguage, translateToDefaultTarget, translateReply } = require('./translate/translate');
+const { isTrivialMessage } = require('./translate/trivial');
+const {
+  TRANSLATE_FULL_PREFIX,
+  TRANSLATE_REPLY_PREFIX,
+  TRANSLATED_LABEL,
+  buildTranslatePrompt,
+} = require('./translate/view');
 const { addRecords, readAll: readPeredachi, saveAll: savePeredachi } = require('./peredachi/store');
 const {
   formatKursOverview,
@@ -609,6 +615,14 @@ bot.on('voice', async (msg) => {
     const buffer = Buffer.from(arrayBuffer);
 
     const transcription = await transcribeVoice(buffer);
+
+    // Голосовой ответ собеседнику после "💬 Ответить" в группе — та же логика,
+    // что и для текста (handleTranslateReplyText), просто на транскрипте.
+    // Актуально только в группах, поэтому дневник (личный чат) не задет.
+    if (msg.chat.type === 'group' || msg.chat.type === 'supergroup') {
+      const handledAsTranslateReply = await handleTranslateReplyText(chatId, msg.from?.id, msg.message_id, transcription.text);
+      if (handledAsTranslateReply) return;
+    }
 
     // Голосовой ответ на дневник перехватывается той же функцией, что и
     // текстовый — сначала живой слот (окно 30 минут), затем, если живого
@@ -2176,7 +2190,7 @@ bot.onText(/^\/translate_on(?:@\S+)?$/, async (msg) => {
   enableTranslate(chatId);
   await bot.sendMessage(
     chatId,
-    '✅ Перевод включён для этой группы. Под каждым новым текстовым сообщением (ru↔en) появится кнопка "🔄 Перевести" — нажми, чтобы получить перевод.\n\nВажно: у бота в @BotFather должен быть отключён Privacy Mode (Group Privacy → Disabled), иначе он не увидит сообщения без команд.'
+    '✅ Перевод включён для этой группы. Под каждым новым нетривиальным сообщением (en/es/ru) появятся кнопки "🔄 Translate / Traducir / Перевести" и "💬 Reply / Responder / Ответить".\n\nВажно: у бота в @BotFather должен быть отключён Privacy Mode (Group Privacy → Disabled), иначе он не увидит сообщения без команд.'
   );
 });
 
@@ -2186,10 +2200,60 @@ bot.onText(/^\/translate_off(?:@\S+)?$/, async (msg) => {
   await bot.sendMessage(chatId, '🛑 Перевод выключен для этой группы.');
 });
 
-// Собеседник пишет в whitelisted-группе — под его сообщением появляется
-// кнопка "🔄 Перевести", а не автоматический перевод (см. buildTranslatePrompt
-// в translate/view.js). Elena/организаторов (isTrustedUser) и сообщения от
-// ботов пропускаем — переводить нужно только реплики собеседника.
+// chatId:userId -> { originalMessageId, originalText, targetLang } — кто из
+// участников нажал "💬 Ответить" и на чьё сообщение (и на каком языке)
+// отвечает. Как и dnevnikSelectedEntryId выше — чисто UI-состояние текущего
+// шага, не персистится на диск, переживать рестарт контейнера не обязательно.
+const pendingTranslateReply = new Map();
+
+function pendingReplyKey(chatId, userId) {
+  return `${chatId}:${userId}`;
+}
+
+// Следующий текст/голос от того же пользователя в этом чате после нажатия
+// "💬 Ответить" — переводится на язык собеседника и уходит reply'ем на его
+// исходное сообщение. Если по ответу непонятно, что имелось в виду — вместо
+// пересылки бот переспрашивает (reply на сам этот ответ) на языке отвечающего
+// и оставляет ожидание активным, чтобы можно было попробовать ещё раз.
+// Возвращает true, если текст обработан как ответ собеседнику (в любом из
+// двух исходов) — тогда bot.on('message')/bot.on('voice') не должны идти
+// дальше по обычной цепочке (кнопка перевода на этот текст не нужна).
+async function handleTranslateReplyText(chatId, userId, incomingMessageId, text) {
+  if (!userId) return false;
+  const key = pendingReplyKey(chatId, userId);
+  const pending = pendingTranslateReply.get(key);
+  if (!pending) return false;
+
+  try {
+    const result = await translateReply(text, {
+      originalText: pending.originalText,
+      targetLang: pending.targetLang,
+    });
+
+    if (result.clear && result.translation) {
+      pendingTranslateReply.delete(key);
+      await bot.sendMessage(chatId, result.translation, { reply_to_message_id: pending.originalMessageId });
+    } else {
+      const question = result.clarifyingQuestion || 'Не могу понять ответ — сформулируй, пожалуйста, иначе.';
+      await bot.sendMessage(chatId, question, { reply_to_message_id: incomingMessageId });
+      // pending намеренно не трогаем — тот же пользователь может ответить ещё раз тем же способом
+    }
+  } catch (err) {
+    console.error('[translate] ошибка обработки ответа собеседнику:', err.message);
+    await bot.sendMessage(chatId, 'Не получилось перевести ответ 😔 Попробуй ещё раз.', {
+      reply_to_message_id: incomingMessageId,
+    });
+  }
+
+  return true;
+}
+
+// Собеседник пишет в whitelisted-группе — под его сообщением появляются
+// кнопки "🔄 Перевести" и "💬 Ответить" (см. buildTranslatePrompt в
+// translate/view.js), а не автоматический перевод. Тривиальные реплики
+// (isTrivialMessage — приветствия/"ок"/эмодзи-реакции) и сообщения от
+// Elena/организаторов (isTrustedUser) и ботов пропускаем — кнопки нужны
+// только под содержательными репликами собеседника.
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
@@ -2198,8 +2262,15 @@ bot.on('message', async (msg) => {
   if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') return;
   if (msg.from?.is_bot) return;
   if (botId && msg.from?.id === botId) return;
-  if (isTrustedUser(msg.from?.id)) return;
   if (!isTranslateEnabled(chatId)) return;
+
+  // Проверяем ДО фильтра isTrustedUser — отвечает собеседнику обычно как раз
+  // Elena/организатор, и её сообщение в этот момент должно уйти в перевод
+  // ответа, а не быть молча пропущено как "свой" пользователь.
+  if (await handleTranslateReplyText(chatId, msg.from?.id, msg.message_id, text)) return;
+
+  if (isTrustedUser(msg.from?.id)) return;
+  if (isTrivialMessage(text)) return;
 
   const { text: promptText, reply_markup } = buildTranslatePrompt(msg.message_id);
   try {
@@ -2211,10 +2282,11 @@ bot.on('message', async (msg) => {
 
 // Нажатие "🔄 Перевести" — переводит именно то сообщение, под которым была
 // кнопка (query.message.reply_to_message, Telegram сам прикладывает его к
-// callback_query), и заменяет кнопку на "✅ Переведено", чтобы не жать
-// повторно. Каждое сообщение получает свою кнопку и свой callback_data
-// (messageId в TRANSLATE_FULL_PREFIX), поэтому при нескольких сообщениях
-// подряд переводить можно выборочно, независимо друг от друга.
+// callback_query), на домашний язык Elena (или обратно, если сообщение уже на
+// нём — см. translateToDefaultTarget), и заменяет кнопки на
+// "✅ Translated / Traducido / Переведено", чтобы не жать повторно. У каждого
+// сообщения свой callback_data (messageId в TRANSLATE_FULL_PREFIX), поэтому
+// при нескольких сообщениях подряд переводить можно выборочно.
 bot.on('callback_query', async (query) => {
   const data = query.data || '';
   if (!data.startsWith(TRANSLATE_FULL_PREFIX)) return;
@@ -2229,8 +2301,8 @@ bot.on('callback_query', async (query) => {
   }
 
   try {
-    const translated = await translateMessage(original.text);
-    await bot.sendMessage(chatId, translated, { reply_to_message_id: original.message_id });
+    const { translation } = await translateToDefaultTarget(original.text);
+    await bot.sendMessage(chatId, translation, { reply_to_message_id: original.message_id });
     await bot.editMessageText(TRANSLATED_LABEL, {
       chat_id: chatId,
       message_id: query.message.message_id,
@@ -2240,6 +2312,37 @@ bot.on('callback_query', async (query) => {
   } catch (err) {
     console.error('[translate] ошибка перевода по кнопке:', err.message);
     await bot.answerCallbackQuery(query.id, { text: 'Ошибка перевода' });
+  }
+});
+
+// Нажатие "💬 Ответить" — переводит бота в режим ожидания: запоминает язык
+// собеседника (detectLanguage) и исходный текст, ничего пока не отправляя.
+// Кнопки под сообщением намеренно остаются (в отличие от "🔄 Перевести") —
+// на то же сообщение может ответить и другой участник, независимо.
+bot.on('callback_query', async (query) => {
+  const data = query.data || '';
+  if (!data.startsWith(TRANSLATE_REPLY_PREFIX)) return;
+
+  const chatId = query.message.chat.id;
+  const messageId = Number(data.slice(TRANSLATE_REPLY_PREFIX.length));
+  const original = query.message.reply_to_message;
+
+  if (!original || original.message_id !== messageId || !original.text) {
+    await bot.answerCallbackQuery(query.id, { text: 'Не нашёл исходное сообщение' });
+    return;
+  }
+
+  try {
+    const targetLang = await detectLanguage(original.text);
+    pendingTranslateReply.set(pendingReplyKey(chatId, query.from.id), {
+      originalMessageId: original.message_id,
+      originalText: original.text,
+      targetLang,
+    });
+    await bot.answerCallbackQuery(query.id, { text: '✍️ Write your reply / Escribe tu respuesta / Напиши ответ' });
+  } catch (err) {
+    console.error('[translate] ошибка запуска режима ответа:', err.message);
+    await bot.answerCallbackQuery(query.id, { text: 'Ошибка' });
   }
 });
 
