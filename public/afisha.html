@@ -8,8 +8,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root{
-    --bg: #fdf7ec;
-    --surface: #ffffff;
+    --bg: #f6eee0;
+    --surface: #fffdf8;
     --ink: #2b1e12;
     --ink-soft: #6b4f30;
     --gold: #e2a52d;
@@ -19,39 +19,61 @@
     --maroon: #c1442a;
     --maroon-deep: #8f2d18;
     --sage: #45785a;
+    --lavender: #a090be;
+    --lavender-deep: #6e5690;
+    --lavender-soft: #ddd3ea;
     --muted: #a08a5f;
     --line: rgba(60,40,15,0.12);
   }
   *{box-sizing:border-box; margin:0; padding:0;}
   body{
-    /* Перламутровый фон: тёплая слоновая кость в основе + несколько мягких
-       золотистых/жемчужных бликов разного размера и положения, чтобы фон
-       слегка "переливался", а не был плоским пятном. Карточки поверх — все
-       непрозрачные (var(--surface)), поэтому контраст не теряется. */
-    background-color: #fdf9f0;
+    /* Тёплый айвори с мягким золотым сиянием — база под гранёные фасетки,
+       искры и силуэт гор ниже (см. .bg-decor). */
+    background-color: #f6eee0;
     background-image:
-      radial-gradient(42% 32% at 12% 8%, rgba(255,255,255,0.85) 0%, transparent 70%),
-      radial-gradient(38% 30% at 88% 12%, rgba(226,165,45,0.13) 0%, transparent 70%),
-      radial-gradient(46% 38% at 25% 92%, rgba(240,144,15,0.08) 0%, transparent 70%),
-      radial-gradient(34% 28% at 92% 88%, rgba(255,255,255,0.7) 0%, transparent 70%),
-      radial-gradient(30% 24% at 55% 45%, rgba(226,165,45,0.05) 0%, transparent 70%),
-      linear-gradient(160deg, #fdf9f0 0%, #f8ecd4 100%);
+      radial-gradient(48% 36% at 18% 6%, rgba(255,253,246,0.8) 0%, transparent 70%),
+      radial-gradient(40% 32% at 82% 10%, rgba(226,165,45,0.10) 0%, transparent 70%),
+      linear-gradient(165deg, #f8f0e3 0%, #f2e6d0 100%);
     background-attachment: fixed;
     position: relative;
     font-family: 'Inter', sans-serif;
     color: var(--ink);
     min-height: 100vh;
   }
-  /* Едва заметное зерно/"пыльца" поверх фона — процедурный SVG-шум,
-     без сетевого запроса, почти не влияет на вес и производительность. */
-  body::before{
-    content: "";
+
+  /* ===== Декоративный фон: гранёные кристаллические фасетки по углам,
+     редкие золотые искры и приглушённый силуэт гор внизу. Всё на чистом
+     CSS/SVG (никаких растровых картинок) — вес не растёт, на мобильном
+     не тормозит. Фиксировано к вьюпорту и не перехватывает клики. ===== */
+  .bg-decor{
     position: fixed;
     inset: 0;
+    overflow: hidden;
     pointer-events: none;
-    opacity: 0.035;
-    mix-blend-mode: multiply;
-    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    z-index: -1;
+  }
+  .bg-crystal{
+    position: absolute;
+    width: 260px;
+    height: 260px;
+  }
+  .bg-crystal.tl{ top: -20px; left: -20px; }
+  .bg-crystal.tr{ top: -20px; right: -20px; transform: scaleX(-1); }
+  .bg-sparkle{
+    position: absolute;
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: #f6d786;
+    box-shadow: 0 0 7px 2px rgba(226,165,45,0.55);
+  }
+  .bg-mountains{
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    width: 100%;
+    height: 22vh;
+    min-height: 110px;
+    max-height: 220px;
   }
 
   /* ===== Шапка ===== */
@@ -277,7 +299,19 @@
     cursor: pointer;
     transition: all .15s;
   }
+  /* Формат — свой акцентный цвет на каждую вкладку, а не один на все:
+     онлайн золотой, офлайн лавандовый, записи терракотовые. */
   .format-pill.active{
+    background: var(--gold);
+    border-color: var(--gold);
+    color: #3d2400;
+  }
+  .format-pill.active[data-format="offline"]{
+    background: var(--lavender);
+    border-color: var(--lavender);
+    color: #fff;
+  }
+  .format-pill.active[data-format="records"]{
     background: var(--maroon);
     border-color: var(--maroon);
     color: #fff;
@@ -395,14 +429,14 @@
     border-radius: 14px;
     overflow: hidden;
     border: 1px solid var(--line);
-    box-shadow: 0 2px 12px rgba(60,40,15,0.07);
+    box-shadow: 0 4px 16px rgba(60,40,15,0.11);
     display: flex;
     flex-direction: column;
     transition: transform .15s, box-shadow .15s;
   }
   .event-card:hover{
     transform: translateY(-2px);
-    box-shadow: 0 10px 26px rgba(60,40,15,0.14);
+    box-shadow: 0 12px 30px rgba(60,40,15,0.18);
   }
   .event-photo{
     position: relative;
@@ -447,7 +481,7 @@
   }
   .badge.program{ background: #3a2c1c; color: #fff; }
   .badge.format-online{ background: var(--gold); color: #3d2400; }
-  .badge.format-offline{ background: var(--sage); color: #fff; }
+  .badge.format-offline{ background: var(--lavender); color: #fff; }
   .badge.format-records{ background: var(--maroon); color: #fff; }
   .event-title{
     font-family: 'Cormorant Garamond', serif;
@@ -514,6 +548,41 @@
 </style>
 </head>
 <body>
+
+<div class="bg-decor" aria-hidden="true">
+  <svg class="bg-crystal tl" viewBox="0 0 260 260" preserveAspectRatio="none">
+    <polygon points="0,0 260,0 80,120" fill="#e2a52d" opacity="0.10"/>
+    <polygon points="0,0 80,120 0,260" fill="#f7dfa0" opacity="0.09"/>
+    <polygon points="0,0 260,0 170,80 80,120" fill="#ffffff" opacity="0.15"/>
+    <polygon points="80,120 170,80 230,160 120,200" fill="#b3720a" opacity="0.05"/>
+  </svg>
+  <svg class="bg-crystal tr" viewBox="0 0 260 260" preserveAspectRatio="none">
+    <polygon points="0,0 260,0 80,120" fill="#e2a52d" opacity="0.10"/>
+    <polygon points="0,0 80,120 0,260" fill="#f7dfa0" opacity="0.09"/>
+    <polygon points="0,0 260,0 170,80 80,120" fill="#ffffff" opacity="0.15"/>
+    <polygon points="80,120 170,80 230,160 120,200" fill="#b3720a" opacity="0.05"/>
+  </svg>
+
+  <span class="bg-sparkle" style="top:8%; left:22%;"></span>
+  <span class="bg-sparkle" style="top:14%; left:64%;"></span>
+  <span class="bg-sparkle" style="top:19%; left:44%; width:2px; height:2px;"></span>
+  <span class="bg-sparkle" style="top:27%; left:8%;"></span>
+  <span class="bg-sparkle" style="top:33%; left:92%; width:2px; height:2px;"></span>
+  <span class="bg-sparkle" style="top:41%; left:35%;"></span>
+  <span class="bg-sparkle" style="top:48%; left:77%;"></span>
+  <span class="bg-sparkle" style="top:57%; left:15%; width:2px; height:2px;"></span>
+  <span class="bg-sparkle" style="top:63%; left:53%;"></span>
+  <span class="bg-sparkle" style="top:71%; left:87%; width:2px; height:2px;"></span>
+  <span class="bg-sparkle" style="top:79%; left:28%;"></span>
+  <span class="bg-sparkle" style="top:86%; left:68%;"></span>
+
+  <svg class="bg-mountains" viewBox="0 0 1440 220" preserveAspectRatio="none">
+    <polygon points="0,220 0,140 140,70 260,120 400,50 540,110 680,30 820,100 960,55 1100,130 1240,65 1440,105 1440,220"
+      fill="#b8aec4" opacity="0.22"/>
+    <polygon points="0,220 0,175 180,120 360,160 560,100 760,150 980,95 1200,155 1440,120 1440,220"
+      fill="#c4b8ce" opacity="0.20"/>
+  </svg>
+</div>
 
 <header class="topbar">
   <div class="topbar-brand">
