@@ -28,6 +28,7 @@ const {
 const { extractPeredachi } = require('./peredachi/extract');
 const { isEnabled: isTranslateEnabled, enable: enableTranslate, disable: disableTranslate } = require('./translate/store');
 const { translateMessage } = require('./translate/translate');
+const { TRANSLATE_FULL_PREFIX, TRANSLATED_LABEL, buildTranslatePrompt } = require('./translate/view');
 const { addRecords, readAll: readPeredachi, saveAll: savePeredachi } = require('./peredachi/store');
 const {
   formatKursOverview,
@@ -2163,28 +2164,32 @@ bot.on('document', async (msg) => {
   await processArticlesDocument(chatId, msg.document);
 });
 
-// ===== Авто-перевод в группах =====
+// ===== Перевод в группах (по кнопке) =====
 bot.onText(/^\/translate_on(?:@\S+)?$/, async (msg) => {
   const chatId = msg.chat.id;
 
   if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
-    await bot.sendMessage(chatId, 'Авто-перевод можно включить только в групповом чате.');
+    await bot.sendMessage(chatId, 'Перевод можно включить только в групповом чате.');
     return;
   }
 
   enableTranslate(chatId);
   await bot.sendMessage(
     chatId,
-    '✅ Авто-перевод включён для этой группы. Каждое новое текстовое сообщение (ru↔en) будет переводиться.\n\nВажно: у бота в @BotFather должен быть отключён Privacy Mode (Group Privacy → Disabled), иначе он не увидит сообщения без команд.'
+    '✅ Перевод включён для этой группы. Под каждым новым текстовым сообщением (ru↔en) появится кнопка "🔄 Перевести" — нажми, чтобы получить перевод.\n\nВажно: у бота в @BotFather должен быть отключён Privacy Mode (Group Privacy → Disabled), иначе он не увидит сообщения без команд.'
   );
 });
 
 bot.onText(/^\/translate_off(?:@\S+)?$/, async (msg) => {
   const chatId = msg.chat.id;
   disableTranslate(chatId);
-  await bot.sendMessage(chatId, '🛑 Авто-перевод выключен для этой группы.');
+  await bot.sendMessage(chatId, '🛑 Перевод выключен для этой группы.');
 });
 
+// Собеседник пишет в whitelisted-группе — под его сообщением появляется
+// кнопка "🔄 Перевести", а не автоматический перевод (см. buildTranslatePrompt
+// в translate/view.js). Elena/организаторов (isTrustedUser) и сообщения от
+// ботов пропускаем — переводить нужно только реплики собеседника.
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
@@ -2193,15 +2198,48 @@ bot.on('message', async (msg) => {
   if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') return;
   if (msg.from?.is_bot) return;
   if (botId && msg.from?.id === botId) return;
+  if (isTrustedUser(msg.from?.id)) return;
   if (!isTranslateEnabled(chatId)) return;
 
+  const { text: promptText, reply_markup } = buildTranslatePrompt(msg.message_id);
   try {
-    const translated = await translateMessage(text);
-    if (translated) {
-      await bot.sendMessage(chatId, translated, { reply_to_message_id: msg.message_id });
-    }
+    await bot.sendMessage(chatId, promptText, { reply_to_message_id: msg.message_id, reply_markup });
   } catch (err) {
-    console.error('[translate] ошибка перевода:', err.message);
+    console.error('[translate] ошибка отправки кнопки перевода:', err.message);
+  }
+});
+
+// Нажатие "🔄 Перевести" — переводит именно то сообщение, под которым была
+// кнопка (query.message.reply_to_message, Telegram сам прикладывает его к
+// callback_query), и заменяет кнопку на "✅ Переведено", чтобы не жать
+// повторно. Каждое сообщение получает свою кнопку и свой callback_data
+// (messageId в TRANSLATE_FULL_PREFIX), поэтому при нескольких сообщениях
+// подряд переводить можно выборочно, независимо друг от друга.
+bot.on('callback_query', async (query) => {
+  const data = query.data || '';
+  if (!data.startsWith(TRANSLATE_FULL_PREFIX)) return;
+
+  const chatId = query.message.chat.id;
+  const messageId = Number(data.slice(TRANSLATE_FULL_PREFIX.length));
+  const original = query.message.reply_to_message;
+
+  if (!original || original.message_id !== messageId || !original.text) {
+    await bot.answerCallbackQuery(query.id, { text: 'Не нашёл исходное сообщение' });
+    return;
+  }
+
+  try {
+    const translated = await translateMessage(original.text);
+    await bot.sendMessage(chatId, translated, { reply_to_message_id: original.message_id });
+    await bot.editMessageText(TRANSLATED_LABEL, {
+      chat_id: chatId,
+      message_id: query.message.message_id,
+      reply_markup: { inline_keyboard: [] },
+    });
+    await bot.answerCallbackQuery(query.id);
+  } catch (err) {
+    console.error('[translate] ошибка перевода по кнопке:', err.message);
+    await bot.answerCallbackQuery(query.id, { text: 'Ошибка перевода' });
   }
 });
 
