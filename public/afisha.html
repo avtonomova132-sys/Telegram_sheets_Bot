@@ -24,10 +24,34 @@
   }
   *{box-sizing:border-box; margin:0; padding:0;}
   body{
-    background: var(--bg);
+    /* Перламутровый фон: тёплая слоновая кость в основе + несколько мягких
+       золотистых/жемчужных бликов разного размера и положения, чтобы фон
+       слегка "переливался", а не был плоским пятном. Карточки поверх — все
+       непрозрачные (var(--surface)), поэтому контраст не теряется. */
+    background-color: #fdf9f0;
+    background-image:
+      radial-gradient(42% 32% at 12% 8%, rgba(255,255,255,0.85) 0%, transparent 70%),
+      radial-gradient(38% 30% at 88% 12%, rgba(226,165,45,0.13) 0%, transparent 70%),
+      radial-gradient(46% 38% at 25% 92%, rgba(240,144,15,0.08) 0%, transparent 70%),
+      radial-gradient(34% 28% at 92% 88%, rgba(255,255,255,0.7) 0%, transparent 70%),
+      radial-gradient(30% 24% at 55% 45%, rgba(226,165,45,0.05) 0%, transparent 70%),
+      linear-gradient(160deg, #fdf9f0 0%, #f8ecd4 100%);
+    background-attachment: fixed;
+    position: relative;
     font-family: 'Inter', sans-serif;
     color: var(--ink);
     min-height: 100vh;
+  }
+  /* Едва заметное зерно/"пыльца" поверх фона — процедурный SVG-шум,
+     без сетевого запроса, почти не влияет на вес и производительность. */
+  body::before{
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.035;
+    mix-blend-mode: multiply;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
   }
 
   /* ===== Шапка ===== */
@@ -166,8 +190,9 @@
     display: flex;
     flex-direction: column;
     align-items: center;
+    flex: 0 0 auto;
     min-width: 44px;
-    padding: 4px 3px 6px;
+    padding: 4px 8px 6px;
     border-radius: 10px;
     cursor: pointer;
     user-select: none;
