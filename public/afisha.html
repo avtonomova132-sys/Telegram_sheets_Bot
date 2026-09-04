@@ -8,22 +8,15 @@
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root{
-    --bg: #f6eee0;
-    --surface: #fffdf8;
-    --ink: #2b1e12;
-    --ink-soft: #6b4f30;
-    --gold: #e2a52d;
-    --gold-deep: #b3720a;
-    --gold-soft: #f7dfa0;
-    --saffron: #f0900f;
-    --maroon: #c1442a;
-    --maroon-deep: #8f2d18;
-    --sage: #45785a;
-    --lavender: #a090be;
-    --lavender-deep: #6e5690;
-    --lavender-soft: #ddd3ea;
-    --muted: #a08a5f;
-    --line: rgba(60,40,15,0.12);
+    --bg: #f5f6f8;
+    --surface: #f2f3f6;
+    --ink: #1f2230;
+    --ink-soft: #565b6b;
+    --accent: #8b93a8;
+    --accent-deep: #6b7290;
+    --accent-soft: #e4e6ee;
+    --muted: #8b8f9c;
+    --line: rgba(30,34,48,0.10);
   }
   *{box-sizing:border-box; margin:0; padding:0;}
   body{
@@ -40,15 +33,9 @@
     align-items:center;
     gap: 18px;
     padding: 14px 24px;
-    background: var(--surface);
+    background: #ffffff;
+    border-bottom: 1px solid var(--line);
     flex-wrap: wrap;
-  }
-  .topbar::after{
-    content: "";
-    position: absolute;
-    left: 0; right: 0; bottom: -3px;
-    height: 3px;
-    background: linear-gradient(90deg, var(--gold), var(--saffron), var(--maroon));
   }
   .topbar-brand{
     display:flex;
@@ -57,7 +44,7 @@
   }
   .topbar-brand .logo-icon{
     font-size: 22px;
-    color: var(--gold-deep);
+    color: var(--accent-deep);
     line-height:1;
   }
   .brand-title{
@@ -92,7 +79,7 @@
     outline: none;
   }
   .topbar-search input::placeholder{ color: var(--muted); }
-  .topbar-search input:focus{ border-color: var(--gold); }
+  .topbar-search input:focus{ border-color: var(--accent); }
   .lang-toggle{
     display: inline-flex;
     border: 1px solid var(--line);
@@ -112,7 +99,7 @@
     transition: all 0.2s;
   }
   .lang-toggle button.active{
-    background: var(--gold);
+    background: var(--accent);
     color: #fff;
   }
 
@@ -122,7 +109,7 @@
     gap: 24px;
     overflow-x: auto;
     padding: 14px 24px;
-    background: var(--surface);
+    background: #ffffff;
     border-bottom: 1px solid var(--line);
     scrollbar-width: none;
   }
@@ -140,8 +127,8 @@
   }
   .program-tab:hover{ color: var(--ink); }
   .program-tab.active{
-    color: var(--maroon);
-    border-bottom-color: var(--maroon);
+    color: var(--accent-deep);
+    border-bottom-color: var(--accent-deep);
   }
 
   /* ===== Секция афиши / лента дат ===== */
@@ -177,8 +164,8 @@
     user-select: none;
     transition: background .15s;
   }
-  .date-cell:hover{ background: rgba(200,162,77,0.10); }
-  .date-cell.selected{ background: var(--maroon); }
+  .date-cell:hover{ background: rgba(139,147,168,0.14); }
+  .date-cell.selected{ background: var(--accent); }
   .date-cell.selected .date-num,
   .date-cell.selected .date-wd,
   .date-cell.selected .date-month{ color: #fff; }
@@ -186,7 +173,7 @@
     font-size: 9.5px;
     letter-spacing: 0.05em;
     font-weight: 700;
-    color: var(--gold-deep);
+    color: var(--accent-deep);
     min-height: 12px;
     margin-bottom: 3px;
     white-space: nowrap;
@@ -203,8 +190,8 @@
     margin-top: 2px;
   }
   .date-cell.weekend .date-num,
-  .date-cell.weekend .date-wd{ color: var(--maroon); }
-  .date-cell.today{ box-shadow: inset 0 0 0 1.5px var(--gold); }
+  .date-cell.weekend .date-wd{ color: var(--accent-deep); }
+  .date-cell.today{ box-shadow: inset 0 0 0 1.5px var(--accent); }
   .date-scroll-arrow{
     position: absolute;
     right: 18px;
@@ -242,7 +229,7 @@
     color: var(--ink);
     cursor: pointer;
   }
-  .all-filters-btn:hover{ border-color: var(--gold); }
+  .all-filters-btn:hover{ border-color: var(--accent); }
   .format-pills{ display:flex; gap: 8px; flex-wrap: wrap; }
   .format-pill{
     font-family: 'Inter';
@@ -256,21 +243,9 @@
     cursor: pointer;
     transition: all .15s;
   }
-  /* Формат — свой акцентный цвет на каждую вкладку, а не один на все:
-     онлайн золотой, офлайн лавандовый, записи терракотовые. */
   .format-pill.active{
-    background: var(--gold);
-    border-color: var(--gold);
-    color: #3d2400;
-  }
-  .format-pill.active[data-format="offline"]{
-    background: var(--lavender);
-    border-color: var(--lavender);
-    color: #fff;
-  }
-  .format-pill.active[data-format="records"]{
-    background: var(--maroon);
-    border-color: var(--maroon);
+    background: var(--accent);
+    border-color: var(--accent);
     color: #fff;
   }
 
@@ -302,8 +277,8 @@
     border-radius: 12px;
     background: var(--surface);
     border: 1px solid var(--line);
-    border-left: 4px solid var(--gold);
-    box-shadow: 0 2px 12px rgba(42,38,32,0.05);
+    border-left: 4px solid var(--accent);
+    box-shadow: 0 2px 12px rgba(30,34,48,0.06);
     margin-left: 24px;
     margin-right: 24px;
   }
@@ -311,7 +286,7 @@
     font-size: 11px;
     letter-spacing: 0.16em;
     text-transform: uppercase;
-    color: var(--gold-deep);
+    color: var(--accent-deep);
     font-weight: 700;
     margin-bottom: 10px;
     display: flex;
@@ -334,7 +309,7 @@
   .about-card .houses-list{ list-style: none; margin: 8px 0 12px; padding: 0; }
   .about-card .houses-list li{
     padding: 5px 0 5px 16px;
-    border-left: 2px solid var(--gold);
+    border-left: 2px solid var(--accent);
     margin-bottom: 4px;
     color: var(--ink);
     font-weight: 500;
@@ -364,18 +339,18 @@
     border-radius: 50%;
     border: 1px solid var(--line);
     background: var(--surface);
-    color: var(--maroon);
+    color: var(--accent-deep);
     font-size: 18px;
     font-weight: 700;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    box-shadow: 0 4px 14px rgba(60,40,15,0.14);
+    box-shadow: 0 4px 14px rgba(30,34,48,0.12);
     z-index: 2;
     transition: background .15s, color .15s;
   }
-  .carousel-arrow:hover{ background: var(--gold); color: #fff; border-color: var(--gold); }
+  .carousel-arrow:hover{ background: var(--accent); color: #fff; border-color: var(--accent); }
   .carousel-arrow.prev{ left: 4px; }
   .carousel-arrow.next{ right: 4px; }
   .event-card{
@@ -386,14 +361,14 @@
     border-radius: 14px;
     overflow: hidden;
     border: 1px solid var(--line);
-    box-shadow: 0 4px 16px rgba(60,40,15,0.11);
+    box-shadow: 0 4px 16px rgba(30,34,48,0.09);
     display: flex;
     flex-direction: column;
     transition: transform .15s, box-shadow .15s;
   }
   .event-card:hover{
     transform: translateY(-2px);
-    box-shadow: 0 12px 30px rgba(60,40,15,0.18);
+    box-shadow: 0 12px 30px rgba(30,34,48,0.15);
   }
   .event-photo{
     position: relative;
@@ -436,10 +411,10 @@
     padding: 3px 8px;
     border-radius: 5px;
   }
-  .badge.program{ background: #3a2c1c; color: #fff; }
-  .badge.format-online{ background: var(--gold); color: #3d2400; }
-  .badge.format-offline{ background: var(--lavender); color: #fff; }
-  .badge.format-records{ background: var(--maroon); color: #fff; }
+  .badge.program{ background: var(--ink); color: #fff; }
+  .badge.format-online,
+  .badge.format-offline,
+  .badge.format-records{ background: var(--accent); color: #fff; }
   .event-title{
     font-family: 'Cormorant Garamond', serif;
     font-weight: 600;
@@ -449,7 +424,7 @@
   }
   .event-meta{
     font-size: 12.5px;
-    color: #5a4832;
+    color: var(--ink-soft);
     display: flex;
     flex-direction: column;
     gap: 3px;
@@ -464,13 +439,13 @@
     font-size: 13px;
     font-weight: 700;
     color: #fff;
-    background: var(--maroon);
+    background: var(--accent);
     padding: 8px 14px;
     border-radius: 999px;
     text-decoration: none;
     transition: background .15s;
   }
-  .event-link:hover{ background: var(--maroon-deep); }
+  .event-link:hover{ background: var(--accent-deep); }
 
   .empty-note{
     flex: 1 1 100%;
