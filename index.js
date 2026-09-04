@@ -786,10 +786,14 @@ bot.onText(/^\/ассистенты(?:@\S+)?$/, async (msg) => {
 
 // Было: once-per-day поллинг ("проверяем каждые 5 минут, наступило ли уже
 // 9:00 по Бали и проверяли ли мы уже сегодня"). Теперь честный периодический
-// cron на интервале HOST_DIFF_CHECK_INTERVAL_MINUTES (по умолчанию 15) —
+// cron на интервале HOST_DIFF_CHECK_INTERVAL_MINUTES (по умолчанию 30 —
+// Elena выбрала это вместо 15, вдвое меньше нагрузки на Google Sheets API,
+// благодарности/уведомления всё равно приходят в течение получаса) —
 // сравнение снимков в runDailyHostDiffCheck (report.js) не изменилось,
 // просто вызывается чаще, чтобы реакция на изменение в таблице занимала
-// ~интервал, а не сутки. Никакой "уже проверяли сегодня" гейт больше не
+// ~интервал, а не сутки. Ретраи с backoff под 409/aborted уже жили в
+// fetchTabEventsResilient (report.js) до этой фичи и не менялись — общие
+// для /check, /weekly и этой diff-проверки. Никакой "уже проверяли сегодня" гейт больше не
 // нужен — сам интервал cron'а и есть частота; "тихий режим" (ничего не
 // присылать при отсутствии изменений) — по-прежнему внутри runDiffCheck/
 // runDailyHostDiffCheck, тут не тронут.
@@ -798,7 +802,7 @@ bot.onText(/^\/ассистенты(?:@\S+)?$/, async (msg) => {
 // `*/N` в cron давал ровные интервалы весь час — если делить не будет,
 // на границе часа шаг просто "подрежется" (напр. */17 → :00,:17,:34,:51,
 // потом сразу :00 следующего часа, разрыв 9 минут вместо 17).
-const HOST_DIFF_CHECK_INTERVAL_MINUTES = Number(process.env.HOST_DIFF_CHECK_INTERVAL_MINUTES) || 15;
+const HOST_DIFF_CHECK_INTERVAL_MINUTES = Number(process.env.HOST_DIFF_CHECK_INTERVAL_MINUTES) || 30;
 
 async function runPeriodicHostDiffCheck() {
   try {
