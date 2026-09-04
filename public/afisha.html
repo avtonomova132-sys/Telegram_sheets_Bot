@@ -8,18 +8,19 @@
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root{
-    --bg: #fdfbf6;
+    --bg: #fdf7ec;
     --surface: #ffffff;
-    --ink: #2a2620;
-    --ink-soft: #5c5644;
-    --gold: #c8a24d;
-    --gold-deep: #93711f;
-    --gold-soft: #e9cf8f;
-    --maroon: #7a3226;
-    --maroon-deep: #5c2018;
-    --sage: #5c7a63;
-    --muted: #948a6f;
-    --line: rgba(42,38,32,0.08);
+    --ink: #2b1e12;
+    --ink-soft: #6b4f30;
+    --gold: #e2a52d;
+    --gold-deep: #b3720a;
+    --gold-soft: #f7dfa0;
+    --saffron: #f0900f;
+    --maroon: #c1442a;
+    --maroon-deep: #8f2d18;
+    --sage: #45785a;
+    --muted: #a08a5f;
+    --line: rgba(60,40,15,0.12);
   }
   *{box-sizing:border-box; margin:0; padding:0;}
   body{
@@ -31,13 +32,20 @@
 
   /* ===== Шапка ===== */
   .topbar{
+    position: relative;
     display:flex;
     align-items:center;
     gap: 18px;
     padding: 14px 24px;
     background: var(--surface);
-    border-bottom: 1px solid var(--line);
     flex-wrap: wrap;
+  }
+  .topbar::after{
+    content: "";
+    position: absolute;
+    left: 0; right: 0; bottom: -3px;
+    height: 3px;
+    background: linear-gradient(90deg, var(--gold), var(--saffron), var(--maroon));
   }
   .topbar-brand{
     display:flex;
@@ -316,44 +324,91 @@
     font-weight: 500;
   }
 
-  /* ===== Карточки событий ===== */
+  /* ===== Карточки событий — горизонтальная карусель ===== */
   .cards-wrap{
+    position: relative;
     max-width: 1200px;
     margin: 0 auto;
     padding: 10px 24px 48px;
   }
-  .cards-grid{
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-    gap: 20px;
+  .cards-carousel{
+    display: flex;
+    gap: 18px;
+    overflow-x: auto;
+    scroll-behavior: smooth;
+    scroll-snap-type: x proximity;
+    padding: 4px 2px 12px;
+    scrollbar-width: thin;
   }
+  .carousel-arrow{
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 38px; height: 38px;
+    border-radius: 50%;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--maroon);
+    font-size: 18px;
+    font-weight: 700;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 14px rgba(60,40,15,0.14);
+    z-index: 2;
+    transition: background .15s, color .15s;
+  }
+  .carousel-arrow:hover{ background: var(--gold); color: #fff; border-color: var(--gold); }
+  .carousel-arrow.prev{ left: 4px; }
+  .carousel-arrow.next{ right: 4px; }
   .event-card{
+    flex: 0 0 auto;
+    width: 280px;
+    scroll-snap-align: start;
     background: var(--surface);
     border-radius: 14px;
     overflow: hidden;
     border: 1px solid var(--line);
-    box-shadow: 0 2px 12px rgba(42,38,32,0.05);
+    box-shadow: 0 2px 12px rgba(60,40,15,0.07);
     display: flex;
     flex-direction: column;
     transition: transform .15s, box-shadow .15s;
   }
   .event-card:hover{
     transform: translateY(-2px);
-    box-shadow: 0 10px 26px rgba(42,38,32,0.10);
+    box-shadow: 0 10px 26px rgba(60,40,15,0.14);
   }
   .event-photo{
-    height: 112px;
+    position: relative;
+    height: 190px;
+    overflow: hidden;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 32px;
+  }
+  .event-photo-icon{
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 34px;
     color: rgba(255,255,255,0.9);
   }
+  .event-photo img{
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
   .event-body{
-    padding: 14px 16px 16px;
+    padding: 12px 16px 16px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 7px;
     flex: 1;
   }
   .badge-row{ display:flex; gap: 6px; flex-wrap: wrap; }
@@ -365,20 +420,20 @@
     padding: 3px 8px;
     border-radius: 5px;
   }
-  .badge.program{ background: rgba(92,122,99,0.12); color: var(--sage); }
-  .badge.format-online{ background: rgba(200,162,77,0.18); color: #8a6d1f; }
-  .badge.format-offline{ background: rgba(92,122,99,0.15); color: var(--sage); }
-  .badge.format-records{ background: rgba(122,50,38,0.1); color: var(--maroon); }
+  .badge.program{ background: #3a2c1c; color: #fff; }
+  .badge.format-online{ background: var(--gold); color: #3d2400; }
+  .badge.format-offline{ background: var(--sage); color: #fff; }
+  .badge.format-records{ background: var(--maroon); color: #fff; }
   .event-title{
     font-family: 'Cormorant Garamond', serif;
     font-weight: 600;
-    font-size: 19px;
+    font-size: 18px;
     line-height: 1.3;
     color: var(--ink);
   }
   .event-meta{
     font-size: 12.5px;
-    color: #5a5548;
+    color: #5a4832;
     display: flex;
     flex-direction: column;
     gap: 3px;
@@ -402,6 +457,7 @@
   .event-link:hover{ background: var(--maroon-deep); }
 
   .empty-note{
+    flex: 1 1 100%;
     text-align:center;
     color: var(--muted);
     font-family: 'Cormorant Garamond', serif;
@@ -428,6 +484,7 @@
     .program-header{ padding: 6px 16px 0; }
     .about-card{ margin-left: 16px; margin-right: 16px; }
     .cards-wrap{ padding: 10px 16px 40px; }
+    .carousel-arrow{ display: none; }
   }
 </style>
 </head>
@@ -471,7 +528,9 @@
 <div id="about-wrap"></div>
 
 <div class="cards-wrap">
-  <main id="cards"></main>
+  <button class="carousel-arrow prev" id="cards-prev" aria-label="Назад">‹</button>
+  <main class="cards-carousel" id="cards"></main>
+  <button class="carousel-arrow next" id="cards-next" aria-label="Вперёд">›</button>
 </div>
 
 <footer data-i18n="footer">Черновик · WVP 2026 · данные будут дополняться</footer>
@@ -561,6 +620,28 @@ const PROGRAM_VISUAL = {
   peachtree: { gradient: "linear-gradient(135deg, #f0c48a, #c9793f)" }
 };
 const PLACEHOLDER_ICON = "☸";
+
+// Тематические заглушки-фото (статуя, свеча/подношения, горы, медитация,
+// манускрипт) — назначаются по кругу событиям без своего "image". Как
+// только у события появится реальное фото (поле image в /api/events),
+// заглушка сама уступит место — см. assignPlaceholderImage.
+const IMAGE_PLACEHOLDERS = [
+  "https://upload.wikimedia.org/wikipedia/commons/thumb/5/57/Great_Buddha_Statue%2C_Bodh_Gaya.jpg/960px-Great_Buddha_Statue%2C_Bodh_Gaya.jpg",
+  "https://upload.wikimedia.org/wikipedia/commons/thumb/1/18/Shrine_offerings_candles_and_incense.jpg/960px-Shrine_offerings_candles_and_incense.jpg",
+  "https://upload.wikimedia.org/wikipedia/commons/thumb/5/5d/Sunrise_over_Mountains.jpg/960px-Sunrise_over_Mountains.jpg",
+  "https://upload.wikimedia.org/wikipedia/commons/thumb/8/8d/Buddha_meditating.jpg/960px-Buddha_meditating.jpg",
+  "https://upload.wikimedia.org/wikipedia/commons/thumb/1/17/Palm_Leaf_Manuscript_in_Odia_and_Lekhani.jpg/960px-Palm_Leaf_Manuscript_in_Odia_and_Lekhani.jpg"
+];
+let placeholderCounter = 0;
+// Назначает заглушку РОВНО ОДИН раз на событие (кэшируется в e.image) —
+// иначе при каждом render() (смена фильтра/языка) картинки бы "мигали"
+// другими заглушками вместо того, чтобы оставаться стабильными.
+function assignPlaceholderImage(e){
+  if(!e.image){
+    e.image = IMAGE_PLACEHOLDERS[placeholderCounter % IMAGE_PLACEHOLDERS.length];
+    placeholderCounter++;
+  }
+}
 
 const placeholderAbout = {
   ru: "Здесь будет краткое описание программы — добавим позже",
@@ -928,7 +1009,7 @@ function render(){
     container.innerHTML = `<div class="empty-note">${getEmptyMessage()}</div>`;
     return;
   }
-  container.innerHTML = `<div class="cards-grid">${filtered.map(e=>{
+  container.innerHTML = filtered.map(e=>{
     const title = currentLang === "ru" ? e.title_ru : e.title_en;
     const az = currentLang === "ru" ? e.az_ru : e.az_en;
     const msk = currentLang === "ru" ? e.msk_ru : e.msk_en;
@@ -939,7 +1020,10 @@ function render(){
       : "";
     return `
       <div class="event-card">
-        <div class="event-photo" style="background:${visual.gradient}">${PLACEHOLDER_ICON}</div>
+        <div class="event-photo" style="background:${visual.gradient}">
+          <span class="event-photo-icon">${PLACEHOLDER_ICON}</span>
+          <img src="${e.image}" alt="" loading="lazy" onerror="this.style.display='none'">
+        </div>
         <div class="event-body">
           <div class="badge-row">
             ${programBadge}
@@ -957,7 +1041,7 @@ function render(){
         </div>
       </div>
     `;
-  }).join("")}</div>`;
+  }).join("");
 }
 
 // Соответствие названий программ, которые хранит /api/events (см. events/
@@ -1001,7 +1085,8 @@ function mapApiEvent(e){
     who: e.teacher || "—",
     city: e.city || "",
     lang: e.lang || "",
-    link: e.link || "#"
+    link: e.link || "#",
+    image: e.image || ""
   };
 }
 
@@ -1015,6 +1100,7 @@ async function loadApiEvents(){
     const data = await res.json();
     if(Array.isArray(data) && data.length > 0){
       const mapped = data.map(mapApiEvent).filter(Boolean);
+      mapped.forEach(assignPlaceholderImage);
       events.push(...mapped);
     }
   } catch (err) {
@@ -1026,6 +1112,15 @@ async function loadApiEvents(){
     render();
   }
 }
+
+events.forEach(assignPlaceholderImage);
+
+document.getElementById("cards-prev").addEventListener("click", () => {
+  document.getElementById("cards").scrollBy({ left: -300, behavior: "smooth" });
+});
+document.getElementById("cards-next").addEventListener("click", () => {
+  document.getElementById("cards").scrollBy({ left: 300, behavior: "smooth" });
+});
 
 renderProgramTabs();
 renderProgramHeader();
