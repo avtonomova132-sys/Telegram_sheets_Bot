@@ -802,23 +802,34 @@ bot.onText(/^\/ассистенты(?:@\S+)?$/, async (msg) => {
 
 // Было: once-per-day поллинг ("проверяем каждые 5 минут, наступило ли уже
 // 9:00 по Бали и проверяли ли мы уже сегодня"). Теперь честный периодический
-// cron на интервале HOST_DIFF_CHECK_INTERVAL_MINUTES (по умолчанию 30 —
-// Elena выбрала это вместо 15, вдвое меньше нагрузки на Google Sheets API,
-// благодарности/уведомления всё равно приходят в течение получаса) —
-// сравнение снимков в runDailyHostDiffCheck (report.js) не изменилось,
-// просто вызывается чаще, чтобы реакция на изменение в таблице занимала
-// ~интервал, а не сутки. Ретраи с backoff под 409/aborted уже жили в
+// cron на интервале HOST_DIFF_CHECK_INTERVAL_MINUTES (по умолчанию 180 —
+// Elena сознательно выбрала раз в 3 часа вместо более частых 15/30/60:
+// скорость уведомлений не критична для волонтёрского проекта, а втрое реже
+// запросов к Google Sheets API — ощутимая разница в нагрузке) — сравнение
+// снимков в runDailyHostDiffCheck (report.js) не изменилось, просто
+// вызывается реже. Ретраи с backoff под 409/aborted уже жили в
 // fetchTabEventsResilient (report.js) до этой фичи и не менялись — общие
-// для /check, /weekly и этой diff-проверки. Никакой "уже проверяли сегодня" гейт больше не
-// нужен — сам интервал cron'а и есть частота; "тихий режим" (ничего не
-// присылать при отсутствии изменений) — по-прежнему внутри runDiffCheck/
-// runDailyHostDiffCheck, тут не тронут.
-//
-// Значение должно делить 60 нацело (5, 10, 15, 20, 30...), чтобы шаг
-// `*/N` в cron давал ровные интервалы весь час — если делить не будет,
-// на границе часа шаг просто "подрежется" (напр. */17 → :00,:17,:34,:51,
-// потом сразу :00 следующего часа, разрыв 9 минут вместо 17).
-const HOST_DIFF_CHECK_INTERVAL_MINUTES = Number(process.env.HOST_DIFF_CHECK_INTERVAL_MINUTES) || 30;
+// для /check, /weekly и этой diff-проверки. Никакой "уже проверяли сегодня"
+// гейт больше не нужен — сам интервал cron'а и есть частота; "тихий режим"
+// (ничего не присылать при отсутствии изменений) — по-прежнему внутри
+// runDiffCheck/runDailyHostDiffCheck, тут не тронут.
+const HOST_DIFF_CHECK_INTERVAL_MINUTES = Number(process.env.HOST_DIFF_CHECK_INTERVAL_MINUTES) || 180;
+
+// Cron'овское поле минут — это 0-59, так что `*/N` там корректно работает
+// только пока N < 60 (и делит 60 нацело, иначе шаг "подрежется" на границе
+// часа). 180 (или любое кратное 60) в это поле не помещается вообще — сам
+// node-cron/cron-parser такой шаг просто схлопнет к единственному
+// совпадению "минута 0", и `*/180 * * * *` тихо стало бы означать "каждый
+// час", а не "раз в 3 часа" — молча в 3 раза чаще, чем реально попросили.
+// Поэтому кратные 60 переводим в поле часов (`0 */N часов * * *`), а не
+// кратные — оставляем как раньше в поле минут.
+function buildIntervalCronExpression(minutes) {
+  if (minutes % 60 === 0) {
+    const hours = minutes / 60;
+    return `0 */${hours} * * *`;
+  }
+  return `*/${minutes} * * * *`;
+}
 
 async function runPeriodicHostDiffCheck() {
   try {
@@ -829,7 +840,7 @@ async function runPeriodicHostDiffCheck() {
 }
 
 if (myChatId) {
-  cron.schedule(`*/${HOST_DIFF_CHECK_INTERVAL_MINUTES} * * * *`, runPeriodicHostDiffCheck);
+  cron.schedule(buildIntervalCronExpression(HOST_DIFF_CHECK_INTERVAL_MINUTES), runPeriodicHostDiffCheck);
 }
 
 // ===== Изречения =====
