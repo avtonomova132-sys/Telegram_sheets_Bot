@@ -26,7 +26,12 @@ const {
   baliHour,
 } = require('./verse/progress');
 const { extractPeredachi } = require('./peredachi/extract');
-const { isEnabled: isTranslateEnabled, enable: enableTranslate, disable: disableTranslate } = require('./translate/store');
+const {
+  isEnabled: isTranslateEnabled,
+  enable: enableTranslate,
+  disable: disableTranslate,
+  readAll: getTranslateEnabledChats,
+} = require('./translate/store');
 const { detectLanguage, translateToDefaultTarget, translateReply } = require('./translate/translate');
 const { isTrivialMessage } = require('./translate/trivial');
 const {
@@ -166,6 +171,17 @@ const bot = new TelegramBot(token, { polling: true });
 const openai = openaiKey ? new OpenAI({ apiKey: openaiKey, maxRetries: 0, timeout: 60000 }) : null;
 
 console.log('Бот запущен и слушает сообщения...');
+
+// Подтверждение в логах, что список групп с включённым переводом (см.
+// translate/store.js) действительно пережил рестарт/передеплой — читается
+// с /data (Railway Volume), не из памяти процесса, поэтому валиден сразу
+// после старта, ничего отдельно "прогревать" не нужно.
+const translateEnabledChats = getTranslateEnabledChats();
+console.log(
+  translateEnabledChats.length > 0
+    ? `[translate] перевод включён в группах: ${translateEnabledChats.join(', ')}`
+    : '[translate] перевод пока не включён ни в одной группе (/translate_on)'
+);
 
 let botId = null;
 bot.getMe().then((me) => {
@@ -2191,7 +2207,14 @@ bot.onText(/^\/translate_on(?:@\S+)?$/, async (msg) => {
     return;
   }
 
-  enableTranslate(chatId);
+  try {
+    enableTranslate(chatId);
+  } catch (err) {
+    console.error('[translate] не удалось сохранить включение перевода на диск:', err.message);
+    await bot.sendMessage(chatId, `Не получилось сохранить настройку 😔 ${err.message}\nПроверь, подключён ли volume.`);
+    return;
+  }
+
   await bot.sendMessage(
     chatId,
     '✅ Перевод включён для этой группы. Под каждым новым нетривиальным сообщением (en/es/ru) появятся кнопки "🔄 Translate / Traducir / Перевести" и "💬 Reply / Responder / Ответить".\n\nВажно: у бота в @BotFather должен быть отключён Privacy Mode (Group Privacy → Disabled), иначе он не увидит сообщения без команд.'
@@ -2200,7 +2223,15 @@ bot.onText(/^\/translate_on(?:@\S+)?$/, async (msg) => {
 
 bot.onText(/^\/translate_off(?:@\S+)?$/, async (msg) => {
   const chatId = msg.chat.id;
-  disableTranslate(chatId);
+
+  try {
+    disableTranslate(chatId);
+  } catch (err) {
+    console.error('[translate] не удалось сохранить выключение перевода на диск:', err.message);
+    await bot.sendMessage(chatId, `Не получилось сохранить настройку 😔 ${err.message}\nПроверь, подключён ли volume.`);
+    return;
+  }
+
   await bot.sendMessage(chatId, '🛑 Перевод выключен для этой группы.');
 });
 

@@ -47,4 +47,4 @@ function disable(chatId) {
   }
 }
 
-module.exports = { isEnabled, enable, disable };
+module.exports = { isEnabled, enable, disable, readAll };
