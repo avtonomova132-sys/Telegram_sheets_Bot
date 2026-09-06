@@ -341,6 +341,25 @@ function isPastAzStart(e, now) {
   return azStartInstant(e) <= now.getTime();
 }
 
+// Programs excluded from ALL host-tracking, matched by a substring of the
+// event's own title — NOT by e.tabName/programLabel. Some multi-program tabs
+// (this one included: "DCC & GBOCS", gid 104338179, shares a sheet with
+// several unrelated programs one after another) only get a fresh
+// programLabel in findHeaderSegments when a segment repeats its own
+// standalone title row; a segment that doesn't carry the PREVIOUS segment's
+// label forward instead. Matching on tabName here would risk silently
+// excluding a different, unrelated program that happens to have inherited
+// the same stale label, instead of just this one. Every real session row
+// for an excluded program reliably contains this marker in its own title
+// cell (e.g. "#41 Pramana - The Emptiness of Colors with Adam Andrade &
+// Juan Jasso (Sep 04, 2026)"), so this is the one signal that's actually
+// tied to the program itself regardless of any segment-labeling quirk.
+const EXCLUDED_PROGRAM_TITLE_MARKERS = ['Pramana - The Emptiness of Colors with Adam Andrade & Juan Jasso'];
+
+function isExcludedProgramEvent(title) {
+  return EXCLUDED_PROGRAM_TITLE_MARKERS.some((marker) => title.includes(marker));
+}
+
 function parseTabEvents(tabName, rows) {
   const segments = findHeaderSegments(rows, tabName);
   const events = [];
@@ -372,6 +391,7 @@ function parseTabEvents(tabName, rows) {
         date = lastKnownDate;
       }
       if (!date || azStartMin === null || azEndMin === null) continue;
+      if (isExcludedProgramEvent(title)) continue;
 
       const coHost = seg.coHostCol !== -1 ? normalize(row[seg.coHostCol]) : '';
 
