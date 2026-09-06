@@ -2294,12 +2294,11 @@ async function handleTranslateReplyText(chatId, userId, incomingMessageId, text)
   return true;
 }
 
-// Собеседник пишет в whitelisted-группе — под его сообщением появляются
-// кнопки "🔄 Перевести" и "💬 Ответить" (см. buildTranslatePrompt в
-// translate/view.js), а не автоматический перевод. Тривиальные реплики
-// (isTrivialMessage — приветствия/"ок"/эмодзи-реакции) и сообщения от
-// Elena/организаторов (isTrustedUser) и ботов пропускаем — кнопки нужны
-// только под содержательными репликами собеседника.
+// Любой участник whitelisted-группы (включая Elena — кнопки больше не
+// исключение только для собеседника) — под его сообщением появляются кнопки
+// "🔄 Перевести" и "💬 Ответить" (см. buildTranslatePrompt в translate/view.js),
+// а не автоматический перевод. Пропускаем только сообщения самого бота и
+// тривиальные реплики (isTrivialMessage — приветствия/"ок"/эмодзи-реакции).
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
@@ -2310,12 +2309,10 @@ bot.on('message', async (msg) => {
   if (botId && msg.from?.id === botId) return;
   if (!isTranslateEnabled(chatId)) return;
 
-  // Проверяем ДО фильтра isTrustedUser — отвечает собеседнику обычно как раз
-  // Elena/организатор, и её сообщение в этот момент должно уйти в перевод
-  // ответа, а не быть молча пропущено как "свой" пользователь.
+  // Проверяем до постановки кнопок — сообщение может быть чьим-то ответом
+  // собеседнику после нажатия "💬 Ответить" (см. handleTranslateReplyText).
   if (await handleTranslateReplyText(chatId, msg.from?.id, msg.message_id, text)) return;
 
-  if (isTrustedUser(msg.from?.id)) return;
   if (isTrivialMessage(text)) return;
 
   const { text: promptText, reply_markup } = buildTranslatePrompt(msg.message_id);
