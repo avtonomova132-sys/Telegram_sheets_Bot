@@ -133,18 +133,31 @@ function looksLikeProgramTitle(text) {
 // their header block monthly also reprint the SAME "ZOOM LINK'S:" every
 // month — so a stray name dozens of rows before an unrelated month's
 // reprint would coincidentally satisfy "nearby". What genuinely
-// distinguishes a new program's title is that the very next non-blank
-// row after it (skipping only blank rows — month dividers like "January
-// 2026" don't count as blank, so a title followed by one of those before
-// reaching the actual link correctly fails this) IS "ZOOM LINK'S:";
-// nothing else legitimately sits between a real title and its own link.
+// distinguishes a new program's title is that its own link is only a FEW
+// non-blank rows away (blank rows skipped for free) — originally tightened
+// to "the very next non-blank row, no exceptions", which broke on a real
+// title ("Six Flavors of Emptiness (Mahamudra) with Sarahni Stumpf**" on
+// the ACI | V Houses tab) followed by a one-line note ("no need host from
+// WVP, only REC and INT") before its own "ZOOM LINK'S:" row — the note is
+// legitimate preamble, not a sign this isn't a real title, but the
+// zero-tolerance check silently fell back to the tab's raw configured name
+// for that title and everything under it. A small bounded tolerance
+// (MAX_NON_BLANK_BEFORE_LINK non-blank rows, not just blank ones) survives
+// that case while staying far short of the ~50-row gap between one
+// segment's zoom link and the next month's reprint that the strict
+// version was built to guard against.
+const MAX_NON_BLANK_BEFORE_LINK = 3;
+
 function hasNearbyZoomLink(rows, fromIndex, window = 15) {
   const end = Math.min(rows.length, fromIndex + window);
+  let nonBlankSeen = 0;
   for (let r = fromIndex; r < end; r++) {
     const row = rows[r];
     const isBlank = !row.some((cell) => normalize(cell).length > 0);
     if (isBlank) continue;
-    return row.some((cell) => /zoom link/i.test(normalize(cell)));
+    if (row.some((cell) => /zoom link/i.test(normalize(cell)))) return true;
+    nonBlankSeen++;
+    if (nonBlankSeen >= MAX_NON_BLANK_BEFORE_LINK) return false;
   }
   return false;
 }
