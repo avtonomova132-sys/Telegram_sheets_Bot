@@ -491,12 +491,16 @@ bot.onText(/^\/дневник_день(?:@\S+)?$/, async (msg) => {
 // Краткая версия того же отчёта — специально для пересылки партнёру по
 // практике: у плюса только посвящение, у минуса только сожаление, без
 // текста/радости/опоры/антидота/решения. Полная версия (/дневник_день)
-// остаётся для собственной подробной рефлексии.
+// остаётся для собственной подробной рефлексии. Кнопки под неотвеченными —
+// чтобы сразу увидеть, каких принципов не хватает, и дописать их, не
+// переключаясь на /дневник_день, перед тем как отправлять отчёт партнёру.
 bot.onText(/^\/дневник_кратко(?:@\S+)?$/, async (msg) => {
   const chatId = msg.chat.id;
   const today = baliDateString();
   const entries = getDnevnikDay(today);
-  await sendDnevnikMessage(chatId, buildDayReportShort(today, entries));
+  const unanswered = entries.filter((e) => !e.answeredAt);
+  const reply_markup = buildUnansweredKeyboard(unanswered);
+  await sendDnevnikMessage(chatId, buildDayReportShort(today, entries), reply_markup ? { reply_markup } : undefined);
 });
 
 // Отправляет слот, если наступило его время по Бали и он ещё не отправлялся
