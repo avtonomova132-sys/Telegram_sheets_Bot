@@ -127,6 +127,7 @@ const {
   buildSectionMessage,
   SECTION_PREFIX: MENU_SECTION_PREFIX,
   ROOT_CALLBACK: MENU_ROOT_CALLBACK,
+  RUN_PREFIX: MENU_RUN_PREFIX,
 } = require('./menu');
 
 // Раньше необработанный отказ промиса (например Telegram отклоняет
@@ -235,6 +236,65 @@ bot.on('callback_query', async (query) => {
     await bot.answerCallbackQuery(query.id);
   } catch (err) {
     console.error('[menu] ошибка навигации:', err.message);
+    await bot.answerCallbackQuery(query.id, { text: 'Ошибка' });
+  }
+});
+
+// Кнопки под разделами /menu (см. menu.js: RUN_PREFIX) — каждая просто
+// вызывает ту же функцию, что и голая команда без аргументов, никакой
+// отдельной логики здесь нет. Ссылки на exec*/handleReportCommand/
+// runDiffCheck ниже безопасны, несмотря на то что определены дальше по
+// файлу — это function-объявления, они поднимаются (hoisting) целиком, с
+// телом, до выполнения первой строки модуля.
+const MENU_RUN_HANDLERS = {
+  new: execNew,
+  dnevnik: execDnevnikSummary,
+  dnevnik_princip: (chatId) => execDnevnikPrincip(chatId, null),
+  dnevnik_day: execDnevnikDay,
+  verse: execVerse,
+  progress: execProgress,
+  check: (chatId) => handleReportCommand(chatId, 'проверку по текущей неделе', generateCheckReport),
+  weekly: (chatId) => handleReportCommand(chatId, 'полный обзор недели', generateWeeklyReport),
+  next_week: (chatId) => handleReportCommand(chatId, 'расписание на следующую неделю', generateWeeklyAnnounceReport),
+  autocheck: (chatId) => runDiffCheck(chatId, { updateLastRunDate: false, announceNoChange: true }),
+  kursy: execKursy,
+  kurs1: (chatId) => execKursDetail(chatId, '1'),
+  kurs2: (chatId) => execKursDetail(chatId, '2'),
+  kurs3: (chatId) => execKursDetail(chatId, '3'),
+  kurs4: (chatId) => execKursDetail(chatId, '4'),
+  kurs5: (chatId) => execKursDetail(chatId, '5'),
+  kurs6: (chatId) => execKursDetail(chatId, '6'),
+  meditacii: execMeditacii,
+  dubli: execDubli,
+  razdelit: execRazdelit,
+  ustarevshie: execUstarevshie,
+  gruppy: (chatId) => execGruppy(chatId, ''),
+  obnovitssylki: execObnovitSsylki,
+  bezgruppy: execBezgruppy,
+  gabarity: execGabarity,
+  z: execZ,
+  pro: execPro,
+  zadacha: execZadachaUsage,
+  zadachi: execZadachi,
+};
+
+bot.on('callback_query', async (query) => {
+  const data = query.data || '';
+  if (!data.startsWith(MENU_RUN_PREFIX)) return;
+
+  const chatId = query.message?.chat.id;
+  const handler = MENU_RUN_HANDLERS[data.slice(MENU_RUN_PREFIX.length)];
+
+  if (!chatId || !handler) {
+    await bot.answerCallbackQuery(query.id, { text: 'Команда не найдена' });
+    return;
+  }
+
+  try {
+    await handler(chatId);
+    await bot.answerCallbackQuery(query.id);
+  } catch (err) {
+    console.error('[menu] ошибка выполнения команды из кнопки:', err.message);
     await bot.answerCallbackQuery(query.id, { text: 'Ошибка' });
   }
 });
@@ -454,10 +514,11 @@ async function handleDnevnikPendingText(chatId, rawText) {
 // /verse). Создаёт настоящую "живую" запись с обычным 30-минутным окном —
 // можно по-настоящему ответить и получить полноценный разбор, не дожидаясь
 // реального времени слота.
-bot.onText(/^\/дневник_принцип(?:@\S+)?(?:\s+(\d{1,2}))?$/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const requested = match[1] ? Number(match[1]) : null;
-  const principleNumber = requested && requested >= 1 && requested <= 10 ? requested : getNextPrincipleNumber();
+// requestedNumber — null для голого вызова (кнопка/команда без номера) —
+// тогда берётся следующий по ротации, как и раньше.
+async function execDnevnikPrincip(chatId, requestedNumber) {
+  const principleNumber =
+    requestedNumber && requestedNumber >= 1 && requestedNumber <= 10 ? requestedNumber : getNextPrincipleNumber();
   const principle = getPrinciple(principleNumber);
 
   // test-<timestamp> как slotIndex — не пересекается с реальными 1..6,
@@ -470,14 +531,21 @@ bot.onText(/^\/дневник_принцип(?:@\S+)?(?:\s+(\d{1,2}))?$/, async 
   });
 
   await sendDnevnikMessage(chatId, buildSlotMessage(principle, '?'));
+}
+
+bot.onText(/^\/дневник_принцип(?:@\S+)?(?:\s+(\d{1,2}))?$/, (msg, match) => {
+  execDnevnikPrincip(msg.chat.id, match[1] ? Number(match[1]) : null);
 });
 
 // Последние записи + сколько ещё живых, не отвеченных.
-bot.onText(/^\/дневник(?:@\S+)?$/, async (msg) => {
-  const chatId = msg.chat.id;
+async function execDnevnikSummary(chatId) {
   const recent = getRecentDnevnik(10);
   const pending = countPending();
   await sendDnevnikMessage(chatId, buildDnevnikSummary(recent, pending));
+}
+
+bot.onText(/^\/дневник(?:@\S+)?$/, (msg) => {
+  execDnevnikSummary(msg.chat.id);
 });
 
 // Отчёт за сегодня одним текстом — удобно копировать и отправлять партнёру
@@ -485,13 +553,16 @@ bot.onText(/^\/дневник(?:@\S+)?$/, async (msg) => {
 // /дневник_принцип с номером) сюда не попадают — только настоящие слоты дня.
 // Под неотвеченными — кнопки: нажатие однозначно связывает следующий ответ
 // с конкретным принципом, надёжнее, чем угадывание текста.
-bot.onText(/^\/дневник_день(?:@\S+)?$/, async (msg) => {
-  const chatId = msg.chat.id;
+async function execDnevnikDay(chatId) {
   const today = baliDateString();
   const entries = getDnevnikDay(today);
   const unanswered = entries.filter((e) => !e.answeredAt);
   const reply_markup = buildUnansweredKeyboard(unanswered);
   await sendDnevnikMessage(chatId, buildDayReport(today, entries), reply_markup ? { reply_markup } : undefined);
+}
+
+bot.onText(/^\/дневник_день(?:@\S+)?$/, (msg) => {
+  execDnevnikDay(msg.chat.id);
 });
 
 // Краткая версия того же отчёта — специально для пересылки партнёру по
@@ -959,8 +1030,7 @@ async function sendVerseImage(chatId, verseNumber) {
 
 // Ручная проверка вне расписания — присылает текущее следующее изречение,
 // прогресс при этом не сдвигает (сдвигает только ежедневная авто-отправка).
-bot.onText(/\/verse\b/, async (msg) => {
-  const chatId = msg.chat.id;
+async function execVerse(chatId) {
   const next = getNextVerseNumber();
 
   if (next === null) {
@@ -975,12 +1045,15 @@ bot.onText(/\/verse\b/, async (msg) => {
     console.error('Ошибка генерации изречения:', err.message);
     await bot.sendMessage(chatId, `Не получилось сгенерировать изречение 😔 ${err.message}`);
   }
+}
+
+bot.onText(/\/verse\b/, (msg) => {
+  execVerse(msg.chat.id);
 });
 
 // Показывает текущий прогресс — быстрая проверка "растёт ли счётчик", не
 // дожидаясь следующего утра, чтобы поймать регресс сразу, а не через дни.
-bot.onText(/^\/прогресс(?:@\S+)?$/, async (msg) => {
-  const chatId = msg.chat.id;
+async function execProgress(chatId) {
   const lastSent = getLastSent();
   const lastSentDate = getLastSentDate() || '— (ещё не отправляли по расписанию)';
   const next = getNextVerseNumber();
@@ -989,6 +1062,10 @@ bot.onText(/^\/прогресс(?:@\S+)?$/, async (msg) => {
     chatId,
     `📊 Прогресс изречений\nПоследнее отправленное: №${lastSent}\nДата последней авто-отправки (Бали): ${lastSentDate}\nСледующее к отправке: ${nextLabel}`
   );
+}
+
+bot.onText(/^\/прогресс(?:@\S+)?$/, (msg) => {
+  execProgress(msg.chat.id);
 });
 
 // Ежедневная отправка следующего изречения. Вместо точного выстрела cron'ом
@@ -1060,8 +1137,7 @@ if (myChatId || broadcastGroupIds.size > 0) {
 // остальной код. Данные — /data/proekty.json на volume, ключ дня — дата по
 // Бали (та же baliDateString, что использует /verse), сбрасывается сам
 // собой каждый новый день.
-bot.onText(/^\/pro(?:@\S+)?$/, async (msg) => {
-  const chatId = msg.chat.id;
+async function execPro(chatId) {
   if (!isTrustedUser(chatId)) return;
 
   const dateKey = baliDateString();
@@ -1069,6 +1145,10 @@ bot.onText(/^\/pro(?:@\S+)?$/, async (msg) => {
   const { text, reply_markup } = buildProMessage(day);
 
   await bot.sendMessage(chatId, text, { reply_markup });
+}
+
+bot.onText(/^\/pro(?:@\S+)?$/, (msg) => {
+  execPro(msg.chat.id);
 });
 
 // ===== Задачи и встречи по проектам в свободной форме (/задача, /задачи) =====
@@ -1077,8 +1157,7 @@ bot.onText(/^\/pro(?:@\S+)?$/, async (msg) => {
 // команды. Список проектов — тот же, что в proekty/items.js (секция "Мои
 // проекты"), см. zadachi/items-parser.js. Данные — /data/zadachi.json на
 // volume, дата/время — в МСК (как и в /добавить).
-bot.onText(/^\/задача(?:@\S+)?$/, async (msg) => {
-  const chatId = msg.chat.id;
+async function execZadachaUsage(chatId) {
   if (!isTrustedUser(chatId)) return;
 
   const projectsList = ZAD_PROJECTS.map((p) => `• ${p.label}`).join('\n');
@@ -1095,14 +1174,21 @@ bot.onText(/^\/задача(?:@\S+)?$/, async (msg) => {
       `${projectsList}\n\n` +
       'Посмотреть список задач — /задачи'
   );
+}
+
+bot.onText(/^\/задача(?:@\S+)?$/, (msg) => {
+  execZadachaUsage(msg.chat.id);
 });
 
-bot.onText(/^\/задачи(?:@\S+)?$/, async (msg) => {
-  const chatId = msg.chat.id;
+async function execZadachi(chatId) {
   if (!isTrustedUser(chatId)) return;
 
   const { text, reply_markup } = buildTasksListMessage(getOpenTasks());
   await bot.sendMessage(chatId, text, { reply_markup });
+}
+
+bot.onText(/^\/задачи(?:@\S+)?$/, (msg) => {
+  execZadachi(msg.chat.id);
 });
 
 // Возвращает true, только если сообщение реально обработано здесь (задача
@@ -1357,9 +1443,7 @@ bot.on('message', async (msg) => {
   }
 });
 
-bot.onText(/^\/курсы(?:@\S+)?$/, async (msg) => {
-  const chatId = msg.chat.id;
-
+async function execKursy(chatId) {
   try {
     const all = readPeredachi();
     // /курсы больше не сокращает список (см. историю), поэтому с реальным
@@ -1376,12 +1460,13 @@ bot.onText(/^\/курсы(?:@\S+)?$/, async (msg) => {
     console.error(err.stack);
     await bot.sendMessage(chatId, 'Не получилось получить список передач 😔');
   }
+}
+
+bot.onText(/^\/курсы(?:@\S+)?$/, (msg) => {
+  execKursy(msg.chat.id);
 });
 
-bot.onText(/^\/курс([1-6])(?:@\S+)?$/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const kursNumber = match[1];
-
+async function execKursDetail(chatId, kursNumber) {
   try {
     const all = readPeredachi();
     for (const chunk of chunkMessage(formatKursDetail(all, kursNumber))) {
@@ -1392,11 +1477,13 @@ bot.onText(/^\/курс([1-6])(?:@\S+)?$/, async (msg, match) => {
     console.error(err.stack);
     await bot.sendMessage(chatId, 'Не получилось получить список передач 😔');
   }
+}
+
+bot.onText(/^\/курс([1-6])(?:@\S+)?$/, (msg, match) => {
+  execKursDetail(msg.chat.id, match[1]);
 });
 
-bot.onText(/^\/медитаци[яи](?:@\S+)?$/, async (msg) => {
-  const chatId = msg.chat.id;
-
+async function execMeditacii(chatId) {
   try {
     const all = readPeredachi();
     for (const chunk of chunkMessage(formatMeditations(all))) {
@@ -1407,6 +1494,10 @@ bot.onText(/^\/медитаци[яи](?:@\S+)?$/, async (msg) => {
     console.error(err.stack);
     await bot.sendMessage(chatId, 'Не получилось получить список медитаций 😔');
   }
+}
+
+bot.onText(/^\/медитаци[яи](?:@\S+)?$/, (msg) => {
+  execMeditacii(msg.chat.id);
 });
 
 // /ближайший <курс> — не список (как /курс1...курс6), а ровно одна, самая
@@ -1501,9 +1592,7 @@ bot.onText(/^\/дата(?:@\S+)?(?:\s+(\S+))?$/, async (msg, match) => {
 // схлопываются автоматически в более полную версию; там, где записи
 // конфликтуют — например, разные zoomLink — ничего не удаляется, обе версии
 // просто показываются, чтобы решение принял человек.
-bot.onText(/^\/дубли(?:@\S+)?$/, async (msg) => {
-  const chatId = msg.chat.id;
-
+async function execDubli(chatId) {
   if (!isTrustedUser(chatId)) {
     await bot.sendMessage(chatId, 'Эта команда доступна только организаторам.');
     return;
@@ -1567,6 +1656,10 @@ bot.onText(/^\/дубли(?:@\S+)?$/, async (msg) => {
     console.error('[peredachi] ошибка поиска дублей:', err.message);
     await bot.sendMessage(chatId, 'Не получилось проверить дубли 😔');
   }
+}
+
+bot.onText(/^\/дубли(?:@\S+)?$/, (msg) => {
+  execDubli(msg.chat.id);
 });
 
 // Разовая/повторная проверка volume на записи, сохранённые ещё до того, как
@@ -1574,9 +1667,7 @@ bot.onText(/^\/дубли(?:@\S+)?$/, async (msg) => {
 // такие комбинированные zanyatie, уверенно делимые — разбивает на две записи
 // (сохраняя дату/время/ссылки) и удаляет исходную; неуверенно делимые —
 // оставляет как есть и показывает текстом, чтобы разобрать вручную.
-bot.onText(/^\/разделить(?:@\S+)?$/, async (msg) => {
-  const chatId = msg.chat.id;
-
+async function execRazdelit(chatId) {
   if (!isTrustedUser(chatId)) {
     await bot.sendMessage(chatId, 'Эта команда доступна только организаторам.');
     return;
@@ -1624,21 +1715,21 @@ bot.onText(/^\/разделить(?:@\S+)?$/, async (msg) => {
     console.error('[peredachi] ошибка разделения комбинированных записей:', err.message);
     await bot.sendMessage(chatId, 'Не получилось выполнить разделение 😔');
   }
+}
+
+bot.onText(/^\/разделить(?:@\S+)?$/, (msg) => {
+  execRazdelit(msg.chat.id);
 });
 
 // Таблица соответствий "internal group id → пригласительная ссылка" — нужна,
 // чтобы /добавить мог автоматически подменять внутренние ссылки
 // (https://t.me/c/<id>/<номер>, не открываются у тех, кто не в группе) на
 // рабочие пригласительные. Без аргументов — показывает весь список.
-bot.onText(/^\/группы(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) => {
-  const chatId = msg.chat.id;
-
+async function execGruppy(chatId, argText) {
   if (!isTrustedUser(chatId)) {
     await bot.sendMessage(chatId, 'Эта команда доступна только организаторам.');
     return;
   }
-
-  const argText = match[1] ? match[1].trim() : '';
 
   try {
     if (!argText) {
@@ -1669,15 +1760,17 @@ bot.onText(/^\/группы(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) => {
     console.error('[group-links] ошибка сохранения соответствия:', err.message);
     await bot.sendMessage(chatId, 'Не получилось сохранить соответствие 😔');
   }
+}
+
+bot.onText(/^\/группы(?:@\S+)?(?:\s+([\s\S]+))?$/, (msg, match) => {
+  execGruppy(msg.chat.id, match[1] ? match[1].trim() : '');
 });
 
 // Разовая/повторная проверка volume на записи с внутренней ссылкой
 // (https://t.me/c/<id>/<номер>), для которой к этому моменту уже появилось
 // соответствие в /data/group-links.json — например, добавили его через
 // /группы уже после того, как эти записи были сохранены.
-bot.onText(/^\/обновитьссылки(?:@\S+)?$/, async (msg) => {
-  const chatId = msg.chat.id;
-
+async function execObnovitSsylki(chatId) {
   if (!isTrustedUser(chatId)) {
     await bot.sendMessage(chatId, 'Эта команда доступна только организаторам.');
     return;
@@ -1709,6 +1802,10 @@ bot.onText(/^\/обновитьссылки(?:@\S+)?$/, async (msg) => {
     console.error('[peredachi] ошибка обновления ссылок:', err.message);
     await bot.sendMessage(chatId, 'Не получилось обновить ссылки 😔');
   }
+}
+
+bot.onText(/^\/обновитьссылки(?:@\S+)?$/, (msg) => {
+  execObnovitSsylki(msg.chat.id);
 });
 
 // ДД.ММ.ГГГГ или ГГГГ-ММ-ДД -> ГГГГ-ММ-ДД (как в dateISO), иначе null.
@@ -1803,9 +1900,7 @@ bot.onText(/^\/удалить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) =>
 // такой группы автоматически оставляет запись с самым поздним addedAt и
 // удаляет более старые версии. Если groupLink разный — не группируются
 // (независимые потоки), см. peredachi/stale.js.
-bot.onText(/^\/устаревшие(?:@\S+)?$/, async (msg) => {
-  const chatId = msg.chat.id;
-
+async function execUstarevshie(chatId) {
   if (!isTrustedUser(chatId)) {
     await bot.sendMessage(chatId, 'Эта команда доступна только организаторам.');
     return;
@@ -1842,15 +1937,17 @@ bot.onText(/^\/устаревшие(?:@\S+)?$/, async (msg) => {
     console.error(err.stack);
     await bot.sendMessage(chatId, 'Не получилось почистить устаревшие записи 😔');
   }
+}
+
+bot.onText(/^\/устаревшие(?:@\S+)?$/, (msg) => {
+  execUstarevshie(msg.chat.id);
 });
 
 // Разовая очистка volume от записей, где есть zoomLink, но groupLink пустой —
 // для них нет способа связаться с учителем при проблемах, а исходный чат
 // восстановить неоткуда. Удаляет сразу (не список для ручного разбора, как
 // /дубли/устаревшие) — этот случай однозначен, альтернативы нет.
-bot.onText(/^\/безгруппы(?:@\S+)?$/, async (msg) => {
-  const chatId = msg.chat.id;
-
+async function execBezgruppy(chatId) {
   if (!isTrustedUser(chatId)) {
     await bot.sendMessage(chatId, 'Эта команда доступна только организаторам.');
     return;
@@ -1881,6 +1978,10 @@ bot.onText(/^\/безгруппы(?:@\S+)?$/, async (msg) => {
     console.error(err.stack);
     await bot.sendMessage(chatId, 'Не получилось почистить записи без ссылки на чат 😔');
   }
+}
+
+bot.onText(/^\/безгруппы(?:@\S+)?$/, (msg) => {
+  execBezgruppy(msg.chat.id);
 });
 
 // ===== Новое событие в афише (/new) =====
@@ -1890,13 +1991,16 @@ bot.onText(/^\/безгруппы(?:@\S+)?$/, async (msg) => {
 // или 'confirming' (показана карточка с кнопками Да/Отменить).
 const eventSessions = new Map();
 
-bot.onText(/^\/new(?:@\S+)?$/, async (msg) => {
-  const chatId = msg.chat.id;
+async function execNew(chatId) {
   eventSessions.set(chatId, { history: [], parsed: null, stage: 'collecting' });
   await bot.sendMessage(
     chatId,
     'Добавляем новое событие в афишу 🙏\n\nОпиши его одним сообщением — программа, формат (онлайн/офлайн/запись), кто ведёт, дата и время.\n\nНапример:\n«Пять домов, офлайн, Мария и Питер Мертал, 26 августа в 15:00 по Москве»\n\nЧтобы отменить в любой момент — напиши «отмена».'
   );
+}
+
+bot.onText(/^\/new(?:@\S+)?$/, (msg) => {
+  execNew(msg.chat.id);
 });
 
 async function handleEventDescription(chatId, text) {
@@ -2175,13 +2279,17 @@ async function handleGabarityClarification(chatId, text) {
   return true;
 }
 
-bot.onText(/^\/габариты(?:@\S+)?$/, async (msg) => {
+async function execGabarity(chatId) {
   await bot.sendMessage(
-    msg.chat.id,
+    chatId,
     'Помогаю поправить габариты товара для Ozon 📦\n\n' +
       '1) Если ещё не загружала список артикулов — пришли его командой /z (.csv или .xlsx, колонки Артикул, SKU, Название).\n\n' +
       '2) Дальше просто присылай фото товара: этикетка с артикулом и линейка (см), и по желанию — фото весов (кг). Можно одним фото, если видно всё сразу, можно несколькими подряд (у тебя есть ~2 минуты между фото) — я сам соберу данные и пришлю готовый текст для техподдержки Ozon.'
   );
+}
+
+bot.onText(/^\/габариты(?:@\S+)?$/, (msg) => {
+  execGabarity(msg.chat.id);
 });
 
 bot.on('photo', async (msg) => {
@@ -2282,13 +2390,16 @@ async function processArticlesDocument(chatId, document) {
 // bot.onText матчится только против msg.text — у сообщения с документом
 // текста нет (только caption, если он есть), поэтому вариант "команда
 // подписью к файлу" целиком обрабатывается ниже в bot.on('document', ...).
-bot.onText(/^\/z(?:@\S+)?$/, async (msg) => {
-  const chatId = msg.chat.id;
+async function execZ(chatId) {
   pendingArticlesUpload.set(chatId, Date.now());
   await bot.sendMessage(
     chatId,
     'Пришли файл со списком артикулов (.csv или .xlsx) — колонки Артикул, SKU, Название. Новый файл заменит предыдущий.'
   );
+}
+
+bot.onText(/^\/z(?:@\S+)?$/, (msg) => {
+  execZ(msg.chat.id);
 });
 
 bot.on('document', async (msg) => {
