@@ -13,11 +13,15 @@ const { loadConfig, csvUrl, fetchWithTimeout, parseCsv, normalize, escapeHtml } 
 const PROGRAMS_TAB_GID = '873833331';
 const STATE_PATH = process.env.PROGRAMS_WATCH_STATE_PATH || '/data/programs_watch_state.json';
 
+// No `rows` key in the fallback (on purpose) — it's how checkForNewPrograms
+// tells "never run before, seed silently" apart from "ran before and the
+// tab genuinely had zero rows that time". Every real write below always
+// includes `rows`, even an empty object, so this only ever fires once.
 function readState() {
   try {
     return JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
   } catch {
-    return { lastRunDate: null, rows: {} };
+    return { lastRunDate: null };
   }
 }
 
@@ -139,13 +143,18 @@ function buildProgramUpdateMessage(program, spreadsheetId) {
 // известной строке этой фичей не отслеживается (не просили).
 async function checkForNewPrograms() {
   const { spreadsheetId, programs } = await fetchProgramRows();
-  const prevRows = readState().rows || {};
+  const state = readState();
+  // First run ever (no `rows` on record yet) — every existing row would
+  // otherwise look "new" and fire off one message per program already in
+  // the sheet (56+ of them). Seed the baseline silently instead; only a
+  // row that appears AFTER this point is a genuine update.
+  const isFirstRun = state.rows === undefined;
+  const prevRows = state.rows || {};
 
-  const newPrograms = programs.filter((p) => !prevRows[p.sheetRow]);
+  const newPrograms = isFirstRun ? [] : programs.filter((p) => !prevRows[p.sheetRow]);
 
   const nextRows = {};
   for (const p of programs) nextRows[p.sheetRow] = { name: p.name, dates: p.dates };
-  const state = readState();
   writeState({ ...state, rows: nextRows });
 
   return newPrograms.map((p) => buildProgramUpdateMessage(p, spreadsheetId));
