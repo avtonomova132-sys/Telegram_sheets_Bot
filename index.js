@@ -13,6 +13,11 @@ const {
   chunkMessage,
 } = require('./report');
 const { generateAssistanceReport } = require('./assistance');
+const {
+  checkForNewPrograms,
+  getProgramsWatchLastRunDate,
+  markProgramsWatchChecked,
+} = require('./programsWatch');
 const { generateVerseImageBuffer } = require('./verse/generateVerseImage');
 const {
   getVerseCount,
@@ -814,6 +819,58 @@ bot.onText(/^\/ассистенты(?:@\S+)?$/, async (msg) => {
     await bot.sendMessage(chatId, `Не получилось собрать отчёт по ассистентам 😔 ${err.message}`);
   }
 });
+
+// ===== Мониторинг вкладки "2026 Programs" =====
+// Полностью отдельная, самостоятельная фича — своя логика в
+// programsWatch.js, специально не пересекается с host-tracking выше
+// (MONITORED_TABS/tabs-config.json/daily-check-tabs.json не трогает,
+// переиспользует из report.js только чисто генерические утилиты, как и
+// assistance.js). Раз в сутки сверяет вкладку "2026 Programs" (мастер-
+// список программ, ведёт Настя) со вчерашним снимком на Volume — если
+// появились новые строки (новые программы), шлёт по одному сообщению на
+// каждую; если нет — тишина, тот же принцип, что у остальных фоновых
+// проверок. Тот же catch-up паттерн (poll раз в 5 минут — "уже наступил
+// ли нужный час и проверяли ли мы уже сегодня"), что у воскресной
+// авторассылки /weekly и ежедневного изречения, а не точный cron на
+// минуту — единичный пропущенный тик не значит пропуск всего дня.
+const PROGRAMS_WATCH_HOUR = Number(process.env.PROGRAMS_WATCH_HOUR) || 9;
+
+async function runProgramsWatchCheck(chatId, { announceNoChange = false } = {}) {
+  const messages = await checkForNewPrograms();
+  if (messages.length > 0) {
+    for (const msg of messages) {
+      await bot.sendMessage(chatId, msg, { parse_mode: 'HTML' });
+    }
+  } else if (announceNoChange) {
+    await bot.sendMessage(chatId, 'Новых программ с прошлой проверки не найдено — тишина 🤫');
+  }
+}
+
+// Ручной запуск для проверки формата прямо сейчас — всегда отвечает, даже
+// "новых нет", как /автопроверка у host-diff.
+bot.onText(/^\/новые_программы(?:@\S+)?$/, async (msg) => {
+  try {
+    await runProgramsWatchCheck(msg.chat.id, { announceNoChange: true });
+  } catch (err) {
+    console.error('[programs-watch] ошибка ручного запуска:', err.message);
+    await bot.sendMessage(msg.chat.id, `Не получилось проверить вкладку 2026 Programs 😔 ${err.message}`);
+  }
+});
+
+async function checkAndRunProgramsWatch() {
+  if (!myChatId) return;
+  if (baliHour() < PROGRAMS_WATCH_HOUR) return;
+  const today = baliDateString();
+  if (getProgramsWatchLastRunDate() === today) return;
+  try {
+    await runProgramsWatchCheck(myChatId, { announceNoChange: false });
+    markProgramsWatchChecked(today);
+  } catch (err) {
+    console.error('[programs-watch] ошибка суточной проверки:', err.message);
+  }
+}
+
+cron.schedule('*/5 * * * *', checkAndRunProgramsWatch);
 
 // Было: once-per-day поллинг ("проверяем каждые 5 минут, наступило ли уже
 // 9:00 по Бали и проверяли ли мы уже сегодня"). Теперь честный периодический
