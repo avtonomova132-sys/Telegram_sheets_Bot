@@ -123,6 +123,37 @@ function looksLikeProgramTitle(text) {
   return true;
 }
 
+// Elena: some programs carry a standing note (in the same preamble spot as a
+// title, or occasionally right in a session's own title/note cell) saying a
+// WVP host isn't needed for these sessions at all — e.g. "no need host from
+// WVP, only REC and INT". Matched loosely by meaning, not one fixed wording,
+// since different tabs phrase this differently. Two jobs: (1) a row that
+// matches this is a NOTE, never a program title — without this exclusion a
+// note long enough to pass looksLikeProgramTitle (this one is) could itself
+// get mistaken for a new program's title and clobber programLabel with the
+// note text; (2) findHeaderSegments below also uses it to remember the
+// note's own text and attach it to every event under that program (see
+// hostNotRequiredNote), so those sessions stop being treated as needing a
+// host anywhere instead of inventing a separate "co-host"-style concept.
+const NO_HOST_NEEDED_PATTERNS = [
+  /no\s+need\s+(?:for\s+)?(?:a\s+)?host/i,
+  /no\s+host\s+(?:needed|required)/i,
+  /host\s+(?:is\s+)?not\s+(?:needed|required)/i,
+  /without\s+(?:a\s+)?host/i,
+];
+
+function looksLikeNoHostNeededNote(text) {
+  return NO_HOST_NEEDED_PATTERNS.some((re) => re.test(text));
+}
+
+function findNoHostNeededNote(row) {
+  for (const cell of row) {
+    const v = normalize(cell);
+    if (v && looksLikeNoHostNeededNote(v)) return v;
+  }
+  return null;
+}
+
 // A length/pattern check alone isn't enough: rows that hold just one
 // language track's "Recorder & BK" name (e.g. "My Lan @MyLan0608", "Rocio
 // Diaz @LaChioDiaz") also end up as the sole non-empty cell whenever every
@@ -180,10 +211,17 @@ function cleanProgramLabel(text) {
 // keep the exact same layout in every monthly block.
 //
 // Segments also carry a `programLabel`: the configured tab name until (if
-// ever) a second, genuinely different program title is detected further
-// down the same sheet — from that point on, segments use the newly detected
-// title instead, so multi-program tabs stop mislabeling every event under
-// whichever program happened to be configured for that gid.
+// ever) a genuinely different program title is detected further down the
+// same sheet — from that point on, segments use the newly detected title
+// instead, so multi-program tabs stop mislabeling every event under
+// whichever program happened to be configured for that gid. This applies
+// from the very FIRST detected title too, not just a second one — a tab
+// whose real first program was inserted after tabs-config.json was written
+// (as happened on ACI | V Houses: "Six Flavors of Emptiness... with Sarahni
+// Stumpf" got added above what used to be the top of the sheet) otherwise
+// keeps showing the stale configured name for every event under that first
+// title, which is exactly the bare-tab-name bug this whole mechanism exists
+// to prevent.
 // Every program tab we've checked ends its real schedule with an archive
 // table — "Materials" / "YT Links" / "Playlist" followed by "Class 1", "Class
 // 2", ... rows of past-recording links — reusing the exact same columns as
@@ -199,8 +237,9 @@ function isMaterialsBoundaryRow(row) {
 function findHeaderSegments(rows, fallbackLabel) {
   const headerRowIndices = [];
   const labelAtHeaderRow = [];
+  const noHostNoteAtHeaderRow = [];
   let currentLabel = fallbackLabel;
-  let firstTitleSeen = null;
+  let currentNoHostNote = null;
 
   for (let r = 0; r < rows.length; r++) {
     const row = rows[r];
@@ -215,14 +254,23 @@ function findHeaderSegments(rows, fallbackLabel) {
     // it, materials-boundary exclusion for event ROWS is handled entirely
     // separately below (per-segment endRowIndex clamping).
     const titleText = singleNonEmptyCellText(row);
-    if (titleText && looksLikeProgramTitle(titleText) && hasNearbyZoomLink(rows, r + 1)) {
+    if (
+      titleText &&
+      looksLikeProgramTitle(titleText) &&
+      !looksLikeNoHostNeededNote(titleText) &&
+      hasNearbyZoomLink(rows, r + 1)
+    ) {
       const cleaned = cleanProgramLabel(titleText);
-      if (firstTitleSeen === null) {
-        firstTitleSeen = cleaned;
-      } else if (cleaned !== firstTitleSeen) {
+      if (cleaned !== currentLabel) {
         currentLabel = cleaned;
+        // A new program starts fresh — a "no host needed" note from
+        // whatever program came before it doesn't carry over.
+        currentNoHostNote = null;
       }
     }
+
+    const note = findNoHostNeededNote(row);
+    if (note) currentNoHostNote = note;
 
     let localHostCol = -1;
     for (let c = 0; c < row.length; c++) {
@@ -235,6 +283,7 @@ function findHeaderSegments(rows, fallbackLabel) {
 
     headerRowIndices.push(r);
     labelAtHeaderRow.push(currentLabel);
+    noHostNoteAtHeaderRow.push(currentNoHostNote);
   }
   if (headerRowIndices.length === 0) return [];
 
@@ -271,6 +320,7 @@ function findHeaderSegments(rows, fallbackLabel) {
       azEndCol: resolvedAzCol + 2,
       mskCol: mskCol === -1 ? 5 : mskCol,
       programLabel: labelAtHeaderRow[i],
+      hostNotRequiredNote: noHostNoteAtHeaderRow[i],
     };
   });
 }
@@ -383,7 +433,7 @@ function parseTabEvents(tabName, rows) {
     for (let r = seg.headerRowIndex + 1; r < seg.endRowIndex; r++) {
       const row = rows[r];
       const title = normalize(row[seg.titleCol]);
-      const host = normalize(row[seg.hostCol]);
+      const rawHost = normalize(row[seg.hostCol]);
       const azStartMin = parseTimeToMinutes(row[seg.azCol]);
       const azEndMin = parseTimeToMinutes(row[seg.azEndCol]);
 
@@ -408,6 +458,12 @@ function parseTabEvents(tabName, rows) {
 
       const coHost = seg.coHostCol !== -1 ? normalize(row[seg.coHostCol]) : '';
 
+      // A segment-level "no host needed" note (see findNoHostNeededNote)
+      // only fills in for a row that's genuinely blank — if someone signed
+      // up as host anyway despite the note, that real name wins.
+      const host = rawHost.length > 0 ? rawHost : seg.hostNotRequiredNote || '';
+      const hasHost = rawHost.length > 0 || Boolean(seg.hostNotRequiredNote);
+
       const mskStart = deriveMsk(azStartMin);
       const mskEnd = azEndMin !== null ? deriveMsk(azEndMin) : { min: null, dayOffset: mskStart.dayOffset };
 
@@ -416,7 +472,7 @@ function parseTabEvents(tabName, rows) {
         title,
         host,
         coHost,
-        hasHost: host.length > 0,
+        hasHost,
         date,
         azStartMin,
         azEndMin,
