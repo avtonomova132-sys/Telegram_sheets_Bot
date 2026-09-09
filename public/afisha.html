@@ -10,13 +10,14 @@
   :root{
     --bg: #f5f6f8;
     --surface: #f2f3f6;
-    --ink: #1f2230;
-    --ink-soft: #565b6b;
-    --accent: #8b93a8;
-    --accent-deep: #6b7290;
-    --accent-soft: #e4e6ee;
+    --ink: #1b2a4a;
+    --ink-soft: #52596b;
+    --accent: #c9a44c;
+    --accent-light: #e8c878;
+    --accent-deep: #a97f2e;
+    --accent-soft: #f6ecd2;
     --muted: #8b8f9c;
-    --line: rgba(30,34,48,0.10);
+    --line: rgba(27,42,74,0.12);
   }
   *{box-sizing:border-box; margin:0; padding:0;}
   body{
@@ -24,6 +25,35 @@
     font-family: 'Inter', sans-serif;
     color: var(--ink);
     min-height: 100vh;
+    position: relative;
+  }
+
+  /* ===== Декоративный фон: гранёные контуры (не заливка — тонкие
+     полупрозрачные линии, как рёбра гранёного кристалла) в углах экрана
+     и редкие золотые искры. Фон при этом остаётся белым — эти слои лишь
+     лёгкий акцент поверх, не плотная картинка. Фиксировано к вьюпорту,
+     не перехватывает клики. ===== */
+  .bg-decor{
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+    z-index: -1;
+  }
+  .bg-facet{
+    position: absolute;
+    width: 320px;
+    height: 320px;
+  }
+  .bg-facet.tl{ top: -30px; left: -30px; }
+  .bg-facet.tr{ top: -30px; right: -30px; transform: scaleX(-1); }
+  .bg-sparkle{
+    position: absolute;
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: var(--accent-light);
+    box-shadow: 0 0 7px 2px rgba(201,164,76,0.5);
   }
 
   /* ===== Шапка ===== */
@@ -42,10 +72,10 @@
     align-items:center;
     gap: 10px;
   }
-  .topbar-brand .logo-icon{
-    font-size: 22px;
-    color: var(--accent-deep);
-    line-height:1;
+  .topbar-brand .lotus-icon{
+    width: 26px;
+    height: 26px;
+    flex-shrink: 0;
   }
   .brand-title{
     font-family: 'Cormorant Garamond', serif;
@@ -99,8 +129,8 @@
     transition: all 0.2s;
   }
   .lang-toggle button.active{
-    background: var(--accent);
-    color: #fff;
+    background: linear-gradient(135deg, var(--accent-light), var(--accent));
+    color: var(--ink);
   }
 
   /* ===== Ряд программ ===== */
@@ -133,11 +163,21 @@
 
   /* ===== Секция афиши / лента дат ===== */
   .section-title{
+    position: relative;
     font-family: 'Cormorant Garamond', serif;
     font-weight: 600;
     font-size: 22px;
     color: var(--ink);
-    padding: 22px 24px 4px;
+    padding: 22px 24px 14px;
+  }
+  .section-title::after{
+    content: "";
+    position: absolute;
+    left: 24px;
+    bottom: 0;
+    width: 46px;
+    height: 2px;
+    background: linear-gradient(90deg, var(--accent), transparent);
   }
   .date-ribbon-wrap{
     position: relative;
@@ -164,11 +204,11 @@
     user-select: none;
     transition: background .15s;
   }
-  .date-cell:hover{ background: rgba(139,147,168,0.14); }
-  .date-cell.selected{ background: var(--accent); }
+  .date-cell:hover{ background: rgba(201,164,76,0.14); }
+  .date-cell.selected{ background: linear-gradient(135deg, var(--accent-light), var(--accent)); }
   .date-cell.selected .date-num,
   .date-cell.selected .date-wd,
-  .date-cell.selected .date-month{ color: #fff; }
+  .date-cell.selected .date-month{ color: var(--ink); }
   .date-month{
     font-size: 9.5px;
     letter-spacing: 0.05em;
@@ -244,9 +284,9 @@
     transition: all .15s;
   }
   .format-pill.active{
-    background: var(--accent);
+    background: linear-gradient(135deg, var(--accent-light), var(--accent));
     border-color: var(--accent);
-    color: #fff;
+    color: var(--ink);
   }
 
   /* ===== Заголовок программы + "О программе" ===== */
@@ -257,10 +297,23 @@
     text-align: center;
   }
   .program-header h2{
+    position: relative;
+    display: inline-block;
     font-family: 'Cormorant Garamond', serif;
     font-weight: 600;
     font-size: 24px;
     color: var(--ink);
+    padding-bottom: 10px;
+  }
+  .program-header h2::after{
+    content: "";
+    position: absolute;
+    left: 50%;
+    bottom: 0;
+    transform: translateX(-50%);
+    width: 56px;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
   }
   .program-header .program-subtitle{
     font-family: 'Cormorant Garamond', serif;
@@ -271,6 +324,7 @@
   }
 
   .about-card{
+    position: relative;
     max-width: 720px;
     margin: 16px auto 0;
     padding: 20px 22px;
@@ -281,19 +335,40 @@
     box-shadow: 0 2px 12px rgba(30,34,48,0.06);
     margin-left: 24px;
     margin-right: 24px;
+    overflow: hidden;
   }
+  .about-card .facet{
+    position: absolute;
+    width: 90px;
+    height: 90px;
+    pointer-events: none;
+    opacity: 0.7;
+  }
+  .about-card .facet.tl{ top: -14px; left: -14px; }
+  .about-card .facet.tr{ top: -14px; right: -14px; transform: scaleX(-1); }
   .about-card .about-label{
+    position: relative;
     font-size: 11px;
     letter-spacing: 0.16em;
     text-transform: uppercase;
     color: var(--accent-deep);
     font-weight: 700;
-    margin-bottom: 10px;
+    margin-bottom: 14px;
+    padding-bottom: 10px;
     display: flex;
     align-items: center;
     gap: 6px;
   }
   .about-card .about-label::before{ content: "✦"; font-size: 12px; }
+  .about-card .about-label::after{
+    content: "";
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    width: 44px;
+    height: 2px;
+    background: linear-gradient(90deg, var(--accent), transparent);
+  }
   .about-card .about-body{
     font-size: 14px;
     line-height: 1.6;
@@ -350,7 +425,7 @@
     z-index: 2;
     transition: background .15s, color .15s;
   }
-  .carousel-arrow:hover{ background: var(--accent); color: #fff; border-color: var(--accent); }
+  .carousel-arrow:hover{ background: linear-gradient(135deg, var(--accent-light), var(--accent)); color: var(--ink); border-color: var(--accent); }
   .carousel-arrow.prev{ left: 4px; }
   .carousel-arrow.next{ right: 4px; }
   .event-card{
@@ -408,13 +483,12 @@
     font-weight: 700;
     letter-spacing: 0.03em;
     text-transform: uppercase;
-    padding: 3px 8px;
-    border-radius: 5px;
+    padding: 4px 12px;
+    border-radius: 999px;
+    background: linear-gradient(135deg, var(--accent-light) 0%, var(--accent) 100%);
+    color: var(--ink);
+    box-shadow: 0 1px 3px rgba(27,42,74,0.18);
   }
-  .badge.program{ background: var(--ink); color: #fff; }
-  .badge.format-online,
-  .badge.format-offline,
-  .badge.format-records{ background: var(--accent); color: #fff; }
   .event-title{
     font-family: 'Cormorant Garamond', serif;
     font-weight: 600;
@@ -438,14 +512,15 @@
     text-align: center;
     font-size: 13px;
     font-weight: 700;
-    color: #fff;
-    background: var(--accent);
+    color: var(--ink);
+    background: linear-gradient(135deg, var(--accent-light) 0%, var(--accent) 100%);
     padding: 8px 14px;
     border-radius: 999px;
     text-decoration: none;
-    transition: background .15s;
+    box-shadow: 0 2px 6px rgba(27,42,74,0.18);
+    transition: filter .15s;
   }
-  .event-link:hover{ background: var(--accent-deep); }
+  .event-link:hover{ filter: brightness(0.94); }
 
   .empty-note{
     flex: 1 1 100%;
@@ -481,9 +556,48 @@
 </head>
 <body>
 
+<div class="bg-decor" aria-hidden="true">
+  <svg class="bg-facet tl" viewBox="0 0 320 320" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <polygon points="0,0 320,0 90,140" stroke="#c9a44c" stroke-width="1" opacity="0.12"/>
+    <polygon points="0,0 100,200 0,320" stroke="#c9a44c" stroke-width="1" opacity="0.10"/>
+    <polygon points="0,0 320,0 200,90 90,140" stroke="#ffffff" stroke-width="1.2" opacity="0.55"/>
+    <polygon points="90,140 200,90 260,180 130,230" stroke="#c9a44c" stroke-width="1" opacity="0.09"/>
+    <line x1="90" y1="140" x2="0" y2="320" stroke="#c9a44c" stroke-width="1" opacity="0.08"/>
+  </svg>
+  <svg class="bg-facet tr" viewBox="0 0 320 320" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <polygon points="0,0 320,0 90,140" stroke="#c9a44c" stroke-width="1" opacity="0.12"/>
+    <polygon points="0,0 100,200 0,320" stroke="#c9a44c" stroke-width="1" opacity="0.10"/>
+    <polygon points="0,0 320,0 200,90 90,140" stroke="#ffffff" stroke-width="1.2" opacity="0.55"/>
+    <polygon points="90,140 200,90 260,180 130,230" stroke="#c9a44c" stroke-width="1" opacity="0.09"/>
+    <line x1="90" y1="140" x2="0" y2="320" stroke="#c9a44c" stroke-width="1" opacity="0.08"/>
+  </svg>
+
+  <span class="bg-sparkle" style="top:6%; left:26%;"></span>
+  <span class="bg-sparkle" style="top:11%; left:68%;"></span>
+  <span class="bg-sparkle" style="top:17%; left:48%; width:2px; height:2px;"></span>
+  <span class="bg-sparkle" style="top:24%; left:9%;"></span>
+  <span class="bg-sparkle" style="top:31%; left:91%; width:2px; height:2px;"></span>
+  <span class="bg-sparkle" style="top:39%; left:36%;"></span>
+  <span class="bg-sparkle" style="top:46%; left:78%;"></span>
+  <span class="bg-sparkle" style="top:55%; left:14%; width:2px; height:2px;"></span>
+  <span class="bg-sparkle" style="top:62%; left:54%;"></span>
+  <span class="bg-sparkle" style="top:70%; left:88%; width:2px; height:2px;"></span>
+  <span class="bg-sparkle" style="top:78%; left:29%;"></span>
+  <span class="bg-sparkle" style="top:85%; left:67%;"></span>
+</div>
+
 <header class="topbar">
   <div class="topbar-brand">
-    <span class="logo-icon">✦</span>
+    <svg class="lotus-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <g stroke="#c9a44c" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12,19 C10.8,14.5 10.8,10 12,5.5 C13.2,10 13.2,14.5 12,19 Z" transform="rotate(-40 12 19)"/>
+        <path d="M12,19 C10.8,14.5 10.8,10 12,5.5 C13.2,10 13.2,14.5 12,19 Z" transform="rotate(-20 12 19)"/>
+        <path d="M12,19 C10.8,14.5 10.8,10 12,5.5 C13.2,10 13.2,14.5 12,19 Z"/>
+        <path d="M12,19 C10.8,14.5 10.8,10 12,5.5 C13.2,10 13.2,14.5 12,19 Z" transform="rotate(20 12 19)"/>
+        <path d="M12,19 C10.8,14.5 10.8,10 12,5.5 C13.2,10 13.2,14.5 12,19 Z" transform="rotate(40 12 19)"/>
+        <line x1="5.5" y1="19" x2="18.5" y2="19"/>
+      </g>
+    </svg>
     <div>
       <div class="brand-title" data-i18n="title">Афиша Алмазного пути</div>
       <div class="brand-subtitle" data-i18n="subtitle">Где встретиться с Дхармой</div>
@@ -611,6 +725,20 @@ const PROGRAM_VISUAL = {
   peachtree: { gradient: "linear-gradient(135deg, #f0c48a, #c9793f)" }
 };
 const PLACEHOLDER_ICON = "☸";
+
+// Гранёные контуры (тонкие линии, не заливка) — переиспользуются в
+// плашке "О программе"; те же формы, что и в фоновой .bg-decor, зеркалятся
+// вправо через CSS scaleX(-1) на классе tr.
+const FACET_SVG = `
+  <polygon points="0,0 320,0 90,140" stroke="#c9a44c" stroke-width="1" opacity="0.12"/>
+  <polygon points="0,0 100,200 0,320" stroke="#c9a44c" stroke-width="1" opacity="0.10"/>
+  <polygon points="0,0 320,0 200,90 90,140" stroke="#ffffff" stroke-width="1.2" opacity="0.55"/>
+  <polygon points="90,140 200,90 260,180 130,230" stroke="#c9a44c" stroke-width="1" opacity="0.09"/>
+  <line x1="90" y1="140" x2="0" y2="320" stroke="#c9a44c" stroke-width="1" opacity="0.08"/>
+`;
+function facetSvg(cls){
+  return `<svg class="facet ${cls}" viewBox="0 0 320 320" fill="none" xmlns="http://www.w3.org/2000/svg">${FACET_SVG}</svg>`;
+}
 
 // Тематические заглушки-фото (статуя, свеча/подношения, горы, медитация,
 // манускрипт) — назначаются по кругу событиям без своего "image". Как
@@ -863,6 +991,8 @@ function renderProgramHeader(){
   const isPlaceholder = about === placeholderAbout;
   aboutWrap.innerHTML = `
     <div class="about-card">
+      ${facetSvg("tl")}
+      ${facetSvg("tr")}
       <div class="about-label">${i18n[currentLang].aboutLabel}</div>
       <div class="about-body${isPlaceholder ? " placeholder" : ""}">${about[currentLang]}</div>
     </div>
