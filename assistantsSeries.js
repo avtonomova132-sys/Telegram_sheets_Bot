@@ -112,11 +112,27 @@ function parseSeriesAssistanceEvents(rows, tabName) {
       }
       if (!date || azStartMin === null || azEndMin === null) continue;
 
+      // Elena: each date in this block actually spans TWO physical rows —
+      // the "light" row read above (date/time/host) and a "gray" row
+      // directly below it that can ALSO carry an Assistance name for any
+      // of the 7 languages (found for UKR and CHN on 9 & 16 Sep — the
+      // light row's cell was blank but the assistant was really there,
+      // just recorded one row down). Only treated as THIS event's
+      // continuation when it has no date/time of its own — otherwise
+      // it's simply the next real event row, not a continuation.
+      const nextRow = rows[r + 1];
+      const nextIsContinuation =
+        Boolean(nextRow) &&
+        !parseDateFromText(nextRow[seg.dateCol]) &&
+        parseTimeToMinutes(nextRow[seg.azCol]) === null;
+
       const mskStart = deriveMsk(azStartMin);
       const mskEnd = deriveMsk(azEndMin);
 
       const languages = assistanceCols.map(({ col, language }) => {
-        const assistant = normalize(row[col]);
+        const primary = normalize(row[col]);
+        const secondary = nextIsContinuation ? normalize(nextRow[col]) : '';
+        const assistant = primary || secondary;
         return { language, hasAssistant: assistant.length > 0, assistant };
       });
 
