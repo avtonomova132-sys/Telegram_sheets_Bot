@@ -254,6 +254,21 @@ function findHeaderSegments(rows, fallbackLabel) {
     // it, materials-boundary exclusion for event ROWS is handled entirely
     // separately below (per-segment endRowIndex clamping).
     const titleText = singleNonEmptyCellText(row);
+    // ANY standalone single-cell row marks the start of a new sub-section
+    // — even one too short to become a new programLabel (looksLikeProgramTitle's
+    // length gate) — and should not silently let a "no host needed" note
+    // from whatever came before it leak forward. On ACI | V Houses, "no
+    // need host from WVP, only REC and INT" sits right after the "Six
+    // Flavors of Emptiness..." title (whose own segment turns out to have
+    // no real event rows at all), but "Morning Group" — one row later,
+    // too short to relabel the program — starts a genuinely separate,
+    // real WVP host-tracking block (Elena confirmed directly: Sep 11's
+    // empty Host cell there is a real open slot, not "no host needed").
+    // Without this reset, Morning Group would be the very first segment
+    // header encountered after the note and would silently inherit it.
+    // A note found on THIS SAME row (below) re-sets it immediately after,
+    // so the note's own row is unaffected.
+    if (titleText) currentNoHostNote = null;
     if (
       titleText &&
       looksLikeProgramTitle(titleText) &&
@@ -263,9 +278,6 @@ function findHeaderSegments(rows, fallbackLabel) {
       const cleaned = cleanProgramLabel(titleText);
       if (cleaned !== currentLabel) {
         currentLabel = cleaned;
-        // A new program starts fresh — a "no host needed" note from
-        // whatever program came before it doesn't carry over.
-        currentNoHostNote = null;
       }
     }
 
