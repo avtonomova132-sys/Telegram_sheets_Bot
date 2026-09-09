@@ -13,6 +13,7 @@ const {
   chunkMessage,
 } = require('./report');
 const { generateAssistanceReport } = require('./assistance');
+const { generateSeriesCheckReport } = require('./assistantsSeries');
 const {
   checkForNewPrograms,
   getProgramsWatchLastRunDate,
@@ -815,6 +816,33 @@ bot.onText(/^\/ассистенты(?:@\S+)?$/, async (msg) => {
     }
   } catch (err) {
     console.error('[assistance] ошибка формирования отчёта:', err.message);
+    console.error(err.stack);
+    await bot.sendMessage(chatId, `Не получилось собрать отчёт по ассистентам 😔 ${err.message}`);
+  }
+});
+
+// ===== Ассистенты по языкам, ACI | V Houses SERIES (gid 24119706) =====
+// Полностью отдельная команда от /ассистенты выше — та смотрит на ДРУГУЮ
+// физическую вкладку (gid 1153396063) с другим набором из 6 языков; эта
+// смотрит на вкладку "ACI | V Houses SERIES" (блок "V Houses Weekly
+// Community Meditation Watch Party", еженедельные эфиры по средам) с 7
+// языками (включая GER) — своя логика в assistantsSeries.js. Не путать и
+// не смешивать между собой. Ручная команда, без периодического крона.
+//
+// Кириллический алиас через якорный `^...$`, БЕЗ `\b` на конце — `\b` в JS
+// не считает кириллицу "словом", из-за чего /следующая_неделя когда-то
+// молча переставала матчиться (см. соответствующий фикс) — не повторяем
+// ту же ошибку здесь.
+bot.onText(/^\/(check_assistants|чек_ассистенты)(?:@\S+)?$/, async (msg) => {
+  const chatId = msg.chat.id;
+  try {
+    await bot.sendMessage(chatId, 'Собираю проверку ассистентов по языкам (ACI | V Houses SERIES)... 📝 Секунду.');
+    const { text } = await generateSeriesCheckReport();
+    for (const chunk of chunkMessage(text)) {
+      await bot.sendMessage(chatId, chunk, { parse_mode: 'HTML' });
+    }
+  } catch (err) {
+    console.error('[assistants-series] ошибка формирования отчёта:', err.message);
     console.error(err.stack);
     await bot.sendMessage(chatId, `Не получилось собрать отчёт по ассистентам 😔 ${err.message}`);
   }
