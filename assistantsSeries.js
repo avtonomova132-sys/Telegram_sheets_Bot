@@ -18,6 +18,7 @@
 
 const {
   loadConfig,
+  loadCommunityTags,
   parseCsv,
   findHeaderSegments,
   parseDateFromText,
@@ -153,6 +154,53 @@ function parseSeriesAssistanceEvents(rows, tabName) {
   return events;
 }
 
+// Elena: рядом с именем ассистента — @tag, если он известен. Два
+// источника, в порядке доверия:
+// 1) та же ячейка формата "Имя @хендл" ГДЕ-ТО ЕЩЁ в этой же вкладке —
+//    волонтёры и так иногда подписываются так в других сегментах того же
+//    документа (напр. "My Lan @MyLan0608", "An Le @lethanhan" — оба
+//    реально встречаются на этой вкладке, просто не в нашем блоке).
+// 2) общий список тегов сообщества (community-tags.json, тот же, что и
+//    для тегов хостов в /check) — только если И имя, И фамилия из ячейки
+//    ассистента целиком совпадают со словами внутри тега, не частично —
+//    чтобы не подставить чужой тег по ошибке.
+// Если нигде не нашли — просто имя без тега, как записано в таблице
+// ассистентов (явный fallback, как и просила Elena).
+const NAME_TAG_PATTERN = /^(.+?)\s+(@[A-Za-z0-9_.]+)$/;
+
+function buildNameTagMap(rows) {
+  const map = new Map();
+  for (const row of rows) {
+    for (const cell of row) {
+      const m = normalize(cell).match(NAME_TAG_PATTERN);
+      if (m) {
+        const key = normalize(m[1]).toLowerCase();
+        if (key && !map.has(key)) map.set(key, m[2]);
+      }
+    }
+  }
+  return map;
+}
+
+function findCommunityTag(name, communityTags) {
+  const nameWords = normalize(name).toLowerCase().split(/\s+/).filter(Boolean);
+  if (nameWords.length < 2) return null;
+  for (const tag of communityTags) {
+    const tagWords = tag
+      .replace(/^@/, '')
+      .split(/[_\d]+/)
+      .map((w) => w.toLowerCase())
+      .filter(Boolean);
+    if (nameWords.every((w) => tagWords.includes(w))) return tag;
+  }
+  return null;
+}
+
+function findTagForName(name, nameTagMap, communityTags) {
+  const key = normalize(name).toLowerCase();
+  return nameTagMap.get(key) || findCommunityTag(name, communityTags) || null;
+}
+
 async function fetchSeriesAssistanceEvents() {
   const { spreadsheetId, gid } = getSeriesTab();
   const url = csvUrl(spreadsheetId, gid);
@@ -161,6 +209,15 @@ async function fetchSeriesAssistanceEvents() {
   const text = await res.text();
   const rows = parseCsv(text);
   const events = parseSeriesAssistanceEvents(rows, SERIES_TAB_NAME);
+
+  const nameTagMap = buildNameTagMap(rows);
+  const communityTags = loadCommunityTags();
+  for (const e of events) {
+    for (const lang of e.languages) {
+      lang.tag = lang.hasAssistant ? findTagForName(lang.assistant, nameTagMap, communityTags) : null;
+    }
+  }
+
   const tabUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit?gid=${gid}#gid=${gid}`;
   return events.map((e) => ({ ...e, tabUrl }));
 }
@@ -171,29 +228,39 @@ function inRange(date, start, end) {
 
 function languageLineEn(entry) {
   const lang = escapeHtml(entry.language);
-  return entry.hasAssistant ? `✅ ${lang}: ${escapeHtml(entry.assistant)}` : `‼️ ${lang}: assistant needed`;
+  if (!entry.hasAssistant) return `‼️ ${lang}: assistant needed`;
+  const tagPart = entry.tag ? ` [${escapeHtml(entry.tag)}]` : '';
+  return `✅ ${lang}: ${escapeHtml(entry.assistant)}${tagPart}`;
 }
 
 function languageLineRu(entry) {
   const lang = escapeHtml(entry.language);
-  return entry.hasAssistant ? `✅ ${lang}: ${escapeHtml(entry.assistant)}` : `‼️ ${lang}: нужен ассистент`;
+  if (!entry.hasAssistant) return `‼️ ${lang}: нужен ассистент`;
+  const tagPart = entry.tag ? ` [${escapeHtml(entry.tag)}]` : '';
+  return `✅ ${lang}: ${escapeHtml(entry.assistant)}${tagPart}`;
 }
 
-// Elena: если у СОБЫТИЯ назначены ассистенты по ВСЕМ языкам — вместо
-// построчного списка показываем короткое "Hooray/Ура" для этого события;
-// если чего-то не хватает — обычный построчный список с ✅/‼️ по каждому
-// языку, чтобы было видно, чего именно недостаёт.
+// Elena: ВСЕГДА показывать полный список — имя каждого назначенного
+// ассистента по каждому языку с ✅ (и тегом, если нашёлся), а не
+// сворачивать в короткое "Hooray" при полном покрытии — люди могли
+// записаться неделю назад и забыть, важно увидеть своё имя рядом с
+// датой. Hooray/Ура остаётся, но ИДЁТ ПОСЛЕ полного списка, как
+// заключительная фраза-подтверждение, а не вместо списка.
 function eventBlockEn(e) {
   const allCovered = e.languages.every((l) => l.hasAssistant);
   const lines = [
     formatProgramNameHtml(programLine(e.tabName, e.title), e.tabUrl, allCovered),
     `🕒 Arizona: ${formatMonthDayEn(e.date)}, ${formatRange12h(e.azStartMin, e.azEndMin)}`,
     `🕒 Moscow: ${formatMonthDayEn(mskDate(e))}, ${formatRange12h(e.mskStartMin, e.mskEndMin)}`,
+    '',
+    ...e.languages.map(languageLineEn),
   ];
   if (allCovered) {
-    lines.push('🎉 Hooray! All assistant roles for this session are covered.');
-  } else {
-    lines.push(...e.languages.map(languageLineEn));
+    lines.push(
+      '',
+      '🙏 Please everyone double-check — if your plans changed, let us know in advance.',
+      '🎉 Hooray! All assistant roles for this session are covered.'
+    );
   }
   return lines.join('\n');
 }
@@ -204,11 +271,15 @@ function eventBlockRu(e) {
     formatProgramNameHtml(programLine(e.tabName, e.title), e.tabUrl, allCovered),
     `🕒 Аризона: ${formatMonthDayRu(e.date)}, ${formatRange24h(e.azStartMin, e.azEndMin)}`,
     `🕒 Москва: ${formatMonthDayRu(mskDate(e))}, ${formatRange24h(e.mskStartMin, e.mskEndMin)}`,
+    '',
+    ...e.languages.map(languageLineRu),
   ];
   if (allCovered) {
-    lines.push('🎉 Ура! Все роли ассистентов на этот эфир назначены.');
-  } else {
-    lines.push(...e.languages.map(languageLineRu));
+    lines.push(
+      '',
+      '🙏 Пожалуйста, каждый проверьте — если планы изменились, дайте знать заранее.',
+      '🎉 Ура! Все роли ассистентов на этот эфир назначены.'
+    );
   }
   return lines.join('\n');
 }
