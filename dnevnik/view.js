@@ -79,11 +79,10 @@ function buildPrincipleResult(principle, entryLike) {
   return `${header}\n\n${momentBlocks.join('\n\n')}`;
 }
 
-// Краткая версия — только суть: у плюса радость + посвящение (что
-// прочувствовала и чему посвятила семя), у минуса сожаление (что именно
-// посеяла и почему вредно). Без text/опоры/антидота/решения — для
-// пересылки партнёру по практике, чтобы можно было реально прочитать за
-// минуту, а не разворачивать телефон текстом на весь день. Полная версия
+// Краткая версия — только суть: у плюса только радость (чему радуюсь), у
+// минуса только сожаление (за что сожалею). Без text/посвящения/опоры/
+// антидота/решения — для пересылки партнёру по практике, максимально
+// коротко, чтобы реально уместилось и прочиталось за минуту. Полная версия
 // (buildPrincipleResult/buildDayReport) остаётся для собственной, подробной
 // рефлексии.
 function buildPrincipleResultShort(principle, entryLike) {
@@ -92,10 +91,7 @@ function buildPrincipleResultShort(principle, entryLike) {
 
   const plusLines =
     pluses.length > 0
-      ? pluses.map((m, i) => {
-          const num = pluses.length > 1 ? ` ${i + 1}` : '';
-          return `😊${num} ${safe(m.radost)}\n🙏${num} ${safe(m.posvyashenie)}`;
-        })
+      ? pluses.map((m, i) => `😊${pluses.length > 1 ? ` ${i + 1}` : ''} ${safe(m.radost)}`)
       : ['➕ не наблюдался'];
   const minusLines =
     minuses.length > 0
