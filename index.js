@@ -246,17 +246,25 @@ bot.on('callback_query', async (query) => {
 // runDiffCheck ниже безопасны, несмотря на то что определены дальше по
 // файлу — это function-объявления, они поднимаются (hoisting) целиком, с
 // телом, до выполнения первой строки модуля.
+// Аргумент-required команды (ближайший/дата/добавить/удалить) вызываются с
+// пустым аргументом — то же самое, что голая команда без текста: покажут
+// использование/подсказку, реальный аргумент всё равно нужно напечатать
+// (кнопка не может собрать свободный текст) — см. menu.js.
 const MENU_RUN_HANDLERS = {
   new: execNew,
   dnevnik: execDnevnikSummary,
   dnevnik_princip: (chatId) => execDnevnikPrincip(chatId, null),
   dnevnik_day: execDnevnikDay,
+  dnevnik_kratko: execDnevnikDayShort,
   verse: execVerse,
   progress: execProgress,
   check: (chatId) => handleReportCommand(chatId, 'проверку по текущей неделе', generateCheckReport),
   weekly: (chatId) => handleReportCommand(chatId, 'полный обзор недели', generateWeeklyReport),
   next_week: (chatId) => handleReportCommand(chatId, 'расписание на следующую неделю', generateWeeklyAnnounceReport),
   autocheck: (chatId) => runDiffCheck(chatId, { updateLastRunDate: false, announceNoChange: true }),
+  assistenty: execAssistenty,
+  check_assistants: execCheckAssistants,
+  novye_programy: (chatId) => runProgramsWatchCheck(chatId, { announceNoChange: true }),
   kursy: execKursy,
   kurs1: (chatId) => execKursDetail(chatId, '1'),
   kurs2: (chatId) => execKursDetail(chatId, '2'),
@@ -265,6 +273,10 @@ const MENU_RUN_HANDLERS = {
   kurs5: (chatId) => execKursDetail(chatId, '5'),
   kurs6: (chatId) => execKursDetail(chatId, '6'),
   meditacii: execMeditacii,
+  blizhaishiy: (chatId) => execBlizhaishiy(chatId, ''),
+  data: (chatId) => execData(chatId, ''),
+  dobavit: (chatId) => execDobavit(chatId, ''),
+  udalit: (chatId) => execUdalit(chatId, ''),
   dubli: execDubli,
   razdelit: execRazdelit,
   ustarevshie: execUstarevshie,
@@ -273,9 +285,8 @@ const MENU_RUN_HANDLERS = {
   bezgruppy: execBezgruppy,
   gabarity: execGabarity,
   z: execZ,
-  pro: execPro,
-  zadacha: execZadachaUsage,
-  zadachi: execZadachi,
+  translate_on: (chatId, chatType) => execTranslateOn(chatId, chatType),
+  translate_off: execTranslateOff,
 };
 
 bot.on('callback_query', async (query) => {
@@ -283,6 +294,7 @@ bot.on('callback_query', async (query) => {
   if (!data.startsWith(MENU_RUN_PREFIX)) return;
 
   const chatId = query.message?.chat.id;
+  const chatType = query.message?.chat.type;
   const handler = MENU_RUN_HANDLERS[data.slice(MENU_RUN_PREFIX.length)];
 
   if (!chatId || !handler) {
@@ -291,7 +303,7 @@ bot.on('callback_query', async (query) => {
   }
 
   try {
-    await handler(chatId);
+    await handler(chatId, chatType);
     await bot.answerCallbackQuery(query.id);
   } catch (err) {
     console.error('[menu] ошибка выполнения команды из кнопки:', err.message);
@@ -571,13 +583,16 @@ bot.onText(/^\/дневник_день(?:@\S+)?$/, (msg) => {
 // остаётся для собственной подробной рефлексии. Кнопки под неотвеченными —
 // чтобы сразу увидеть, каких принципов не хватает, и дописать их, не
 // переключаясь на /дневник_день, перед тем как отправлять отчёт партнёру.
-bot.onText(/^\/дневник_кратко(?:@\S+)?$/, async (msg) => {
-  const chatId = msg.chat.id;
+async function execDnevnikDayShort(chatId) {
   const today = baliDateString();
   const entries = getDnevnikDay(today);
   const unanswered = entries.filter((e) => !e.answeredAt);
   const reply_markup = buildUnansweredKeyboard(unanswered);
   await sendDnevnikMessage(chatId, buildDayReportShort(today, entries), reply_markup ? { reply_markup } : undefined);
+}
+
+bot.onText(/^\/дневник_кратко(?:@\S+)?$/, (msg) => {
+  execDnevnikDayShort(msg.chat.id);
 });
 
 // Отправляет слот, если наступило его время по Бали и он ещё не отправлялся
@@ -877,8 +892,7 @@ bot.onText(/^\/автопроверка(?:@\S+)?$/, async (msg) => {
 // единого визуального стиля). Ручная команда, без периодического крона —
 // если понадобится авто-уведомление по аналогии с фоновой diff-проверкой
 // хостов, это отдельный следующий шаг.
-bot.onText(/^\/ассистенты(?:@\S+)?$/, async (msg) => {
-  const chatId = msg.chat.id;
+async function execAssistenty(chatId) {
   try {
     await bot.sendMessage(chatId, 'Собираю проверку ассистентов по языкам (ACI | V Houses)... 📝 Секунду.');
     const { text } = await generateAssistanceReport();
@@ -890,6 +904,10 @@ bot.onText(/^\/ассистенты(?:@\S+)?$/, async (msg) => {
     console.error(err.stack);
     await bot.sendMessage(chatId, `Не получилось собрать отчёт по ассистентам 😔 ${err.message}`);
   }
+}
+
+bot.onText(/^\/ассистенты(?:@\S+)?$/, (msg) => {
+  execAssistenty(msg.chat.id);
 });
 
 // ===== Ассистенты по языкам, ACI | V Houses SERIES (gid 24119706) =====
@@ -904,8 +922,7 @@ bot.onText(/^\/ассистенты(?:@\S+)?$/, async (msg) => {
 // не считает кириллицу "словом", из-за чего /следующая_неделя когда-то
 // молча переставала матчиться (см. соответствующий фикс) — не повторяем
 // ту же ошибку здесь.
-bot.onText(/^\/(check_assistants|чек_ассистенты)(?:@\S+)?$/, async (msg) => {
-  const chatId = msg.chat.id;
+async function execCheckAssistants(chatId) {
   try {
     await bot.sendMessage(chatId, 'Собираю проверку ассистентов по языкам (ACI | V Houses SERIES)... 📝 Секунду.');
     const { text } = await generateSeriesCheckReport();
@@ -917,6 +934,10 @@ bot.onText(/^\/(check_assistants|чек_ассистенты)(?:@\S+)?$/, async 
     console.error(err.stack);
     await bot.sendMessage(chatId, `Не получилось собрать отчёт по ассистентам 😔 ${err.message}`);
   }
+}
+
+bot.onText(/^\/(check_assistants|чек_ассистенты)(?:@\S+)?$/, (msg) => {
+  execCheckAssistants(msg.chat.id);
 });
 
 // ===== Мониторинг вкладки "2026 Programs" =====
@@ -1255,17 +1276,11 @@ bot.on('callback_query', async (query) => {
 });
 
 // ===== Прямые передачи курсов "Пять домов" =====
-bot.onText(/^\/добавить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) => {
-  const chatId = msg.chat.id;
-
+async function execDobavit(chatId, rawText) {
   if (!isTrustedUser(chatId)) {
     await bot.sendMessage(chatId, 'Эта команда доступна только организаторам.');
     return;
   }
-
-  const argText = match[1] ? match[1].trim() : '';
-  const replyText = msg.reply_to_message?.text || msg.reply_to_message?.caption || '';
-  const rawText = argText || replyText;
 
   if (!rawText) {
     await bot.sendMessage(
@@ -1357,6 +1372,12 @@ bot.onText(/^\/добавить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) 
       'Не смог распознать 😔 Попробуй переслать текст ещё раз или добавь вручную командой /добавить_вручную.'
     );
   }
+}
+
+bot.onText(/^\/добавить(?:@\S+)?(?:\s+([\s\S]+))?$/, (msg, match) => {
+  const argText = match[1] ? match[1].trim() : '';
+  const replyText = msg.reply_to_message?.text || msg.reply_to_message?.caption || '';
+  execDobavit(msg.chat.id, argText || replyText);
 });
 
 // ===== Мониторинг групп на анонсы передач =====
@@ -1503,10 +1524,7 @@ bot.onText(/^\/медитаци[яи](?:@\S+)?$/, (msg) => {
 // /ближайший <курс> — не список (как /курс1...курс6), а ровно одна, самая
 // ближайшая по времени запись, полным форматом. <курс> — номер 1-6 или
 // "медитация".
-bot.onText(/^\/ближайший(?:@\S+)?(?:\s+(\S+))?$/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const kursArg = match[1] ? match[1].trim() : '';
-
+async function execBlizhaishiy(chatId, kursArg) {
   if (!kursArg) {
     await bot.sendMessage(chatId, 'Использование: /ближайший <курс>\nНапример: /ближайший 6 или /ближайший медитация');
     return;
@@ -1522,6 +1540,10 @@ bot.onText(/^\/ближайший(?:@\S+)?(?:\s+(\S+))?$/, async (msg, match) =>
     console.error(err.stack);
     await bot.sendMessage(chatId, 'Не получилось получить ближайшую передачу 😔');
   }
+}
+
+bot.onText(/^\/ближайший(?:@\S+)?(?:\s+(\S+))?$/, (msg, match) => {
+  execBlizhaishiy(msg.chat.id, match[1] ? match[1].trim() : '');
 });
 
 // ДД.ММ -> {day, month} или null, если формат неверный.
@@ -1562,9 +1584,7 @@ function resolveDateArg(token, todayISO) {
 
 // Доступна всем, как /курсы и /медитации — показывает все записи (курсы и
 // медитации вместе) на конкретную дату, независимо от курса.
-bot.onText(/^\/дата(?:@\S+)?(?:\s+(\S+))?$/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const dateArg = match[1] ? match[1].trim() : '';
+async function execData(chatId, dateArg) {
   const usage = 'Используй формат: /дата 27.08';
 
   const { dateISO: todayISO } = getNowMsk();
@@ -1585,6 +1605,10 @@ bot.onText(/^\/дата(?:@\S+)?(?:\s+(\S+))?$/, async (msg, match) => {
     console.error(err.stack);
     await bot.sendMessage(chatId, 'Не получилось получить список передач 😔');
   }
+}
+
+bot.onText(/^\/дата(?:@\S+)?(?:\s+(\S+))?$/, (msg, match) => {
+  execData(msg.chat.id, match[1] ? match[1].trim() : '');
 });
 
 // Разовая/повторная проверка volume на задвоенные передачи (одинаковые
@@ -1823,15 +1847,12 @@ function parseDateArg(token) {
 // дата — ДД.ММ.ГГГГ или ГГГГ-ММ-ДД (через parseDateArg). Если на эту дату
 // у курса несколько записей с разным временем — ничего не удаляет, только
 // показывает варианты и просит уточнить время третьим параметром.
-bot.onText(/^\/удалить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) => {
-  const chatId = msg.chat.id;
-
+async function execUdalit(chatId, argText) {
   if (!isTrustedUser(chatId)) {
     await bot.sendMessage(chatId, 'Эта команда доступна только организаторам.');
     return;
   }
 
-  const argText = match[1] ? match[1].trim() : '';
   const usage = 'Использование: /удалить <курс> <дата> [время]\nНапример: /удалить 6 2026-08-26\nили /удалить 6 2026-08-26 17:00, если записей на эту дату несколько';
 
   if (!argText) {
@@ -1892,6 +1913,10 @@ bot.onText(/^\/удалить(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) =>
     console.error(err.stack);
     await bot.sendMessage(chatId, 'Не получилось удалить запись 😔');
   }
+}
+
+bot.onText(/^\/удалить(?:@\S+)?(?:\s+([\s\S]+))?$/, (msg, match) => {
+  execUdalit(msg.chat.id, match[1] ? match[1].trim() : '');
 });
 
 // Разовая/повторная проверка volume на записи с одинаковым kurs+dateISO+
@@ -2421,10 +2446,8 @@ bot.on('document', async (msg) => {
 });
 
 // ===== Перевод в группах (по кнопке) =====
-bot.onText(/^\/translate_on(?:@\S+)?$/, async (msg) => {
-  const chatId = msg.chat.id;
-
-  if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
+async function execTranslateOn(chatId, chatType) {
+  if (chatType !== 'group' && chatType !== 'supergroup') {
     await bot.sendMessage(chatId, 'Перевод можно включить только в групповом чате.');
     return;
   }
@@ -2441,11 +2464,13 @@ bot.onText(/^\/translate_on(?:@\S+)?$/, async (msg) => {
     chatId,
     '✅ Перевод включён для этой группы. Под каждым новым нетривиальным сообщением (en/es/ru) появятся кнопки "🔄 Translate / Traducir / Перевести" и "💬 Reply / Responder / Ответить".\n\nВажно: у бота в @BotFather должен быть отключён Privacy Mode (Group Privacy → Disabled), иначе он не увидит сообщения без команд.'
   );
+}
+
+bot.onText(/^\/translate_on(?:@\S+)?$/, (msg) => {
+  execTranslateOn(msg.chat.id, msg.chat.type);
 });
 
-bot.onText(/^\/translate_off(?:@\S+)?$/, async (msg) => {
-  const chatId = msg.chat.id;
-
+async function execTranslateOff(chatId) {
   try {
     disableTranslate(chatId);
   } catch (err) {
@@ -2455,6 +2480,10 @@ bot.onText(/^\/translate_off(?:@\S+)?$/, async (msg) => {
   }
 
   await bot.sendMessage(chatId, '🛑 Перевод выключен для этой группы.');
+}
+
+bot.onText(/^\/translate_off(?:@\S+)?$/, (msg) => {
+  execTranslateOff(msg.chat.id);
 });
 
 // chatId:userId -> { originalMessageId, originalText, targetLang } — кто из
