@@ -413,23 +413,44 @@ function isPastAzStart(e, now) {
   return azStartInstant(e) <= now.getTime();
 }
 
-// Programs excluded from ALL host-tracking, matched by a substring of the
-// event's own title — NOT by e.tabName/programLabel. Some multi-program tabs
-// (this one included: "DCC & GBOCS", gid 104338179, shares a sheet with
-// several unrelated programs one after another) only get a fresh
-// programLabel in findHeaderSegments when a segment repeats its own
-// standalone title row; a segment that doesn't carry the PREVIOUS segment's
-// label forward instead. Matching on tabName here would risk silently
-// excluding a different, unrelated program that happens to have inherited
-// the same stale label, instead of just this one. Every real session row
-// for an excluded program reliably contains this marker in its own title
-// cell (e.g. "#41 Pramana - The Emptiness of Colors with Adam Andrade &
-// Juan Jasso (Sep 04, 2026)"), so this is the one signal that's actually
-// tied to the program itself regardless of any segment-labeling quirk.
-const EXCLUDED_PROGRAM_TITLE_MARKERS = ['Pramana - The Emptiness of Colors with Adam Andrade & Juan Jasso'];
+// Programs excluded from ALL host-tracking. Two lists with different
+// matching rules, because the safe signal depends on the tab:
+//
+// EXCLUDED_BY_TITLE_ONLY — matched ONLY against the event's own title, NEVER
+// e.tabName/programLabel. "DCC & GBOCS" (gid 104338179) shares a sheet with
+// several unrelated programs one after another, and a segment only gets a
+// fresh programLabel in findHeaderSegments when it repeats its own
+// standalone title row — a segment that doesn't carry the PREVIOUS
+// segment's label forward instead. Confirmed directly: the unrelated
+// "Foundational Debate Masters Training with Ben Kramer" segment right
+// after Pramana's inherits "Pramana..." as its programLabel this same way —
+// so matching Pramana against tabName would silently exclude THAT other,
+// unrelated program's real open slots too. Title-only avoids this entirely.
+//
+// EXCLUDED_BY_TITLE_OR_TABNAME — matched against title OR programLabel,
+// for a tab confirmed single-program end-to-end, where a title-only match
+// would miss real rows. "ACI with Inna Ivanina and Bill McMichael" (gid
+// 1370395210) has one row, a same-day "Review Class" add-on right after
+// "Class 10", whose own title cell doesn't mention McMichael at all — but
+// the segment's programLabel does, and reliably: this tab's own zoom-link
+// preamble reads "ZOOM ACI 7:" / "ZOOM ACI 8:" instead of the usual "ZOOM
+// LINK'S:" that hasNearbyZoomLink checks for, so its real titles ("ACI 7,
+// The Bodhisattva Vows...", "ACI 8, Death and the Realms of Existence...")
+// never actually get detected — programLabel stays on the tabs-config.json
+// fallback name for every event on the tab, start to finish, with no
+// mislabeling risk the way DCC & GBOCS has. "McMichael" alone (rather than
+// the fuller "Bill & Inna McMichael") is what's shared between the titles
+// and that fallback name ("...and Bill McMichael") — confirmed as unique
+// to this tab across every other tab checked.
+// Elena: temporary while she confirms with Marina whether Inna's classes
+// get their own (non-WVP) hosts — not a permanent policy decision.
+const EXCLUDED_BY_TITLE_ONLY = ['Pramana - The Emptiness of Colors with Adam Andrade & Juan Jasso'];
+const EXCLUDED_BY_TITLE_OR_TABNAME = ['McMichael'];
 
-function isExcludedProgramEvent(title) {
-  return EXCLUDED_PROGRAM_TITLE_MARKERS.some((marker) => title.includes(marker));
+function isExcludedProgramEvent(title, tabName = '') {
+  if (EXCLUDED_BY_TITLE_ONLY.some((marker) => title.includes(marker))) return true;
+  if (EXCLUDED_BY_TITLE_OR_TABNAME.some((marker) => title.includes(marker) || tabName.includes(marker))) return true;
+  return false;
 }
 
 function parseTabEvents(tabName, rows) {
@@ -463,7 +484,7 @@ function parseTabEvents(tabName, rows) {
         date = lastKnownDate;
       }
       if (!date || azStartMin === null || azEndMin === null) continue;
-      if (isExcludedProgramEvent(title)) continue;
+      if (isExcludedProgramEvent(title, seg.programLabel)) continue;
 
       const coHost = seg.coHostCol !== -1 ? normalize(row[seg.coHostCol]) : '';
 
