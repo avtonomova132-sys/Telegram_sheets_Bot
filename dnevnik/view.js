@@ -79,10 +79,10 @@ function buildPrincipleResult(principle, entryLike) {
   return `${header}\n\n${momentBlocks.join('\n\n')}`;
 }
 
-// Краткая версия — только суть: у плюса только радость (чему радуюсь), у
-// минуса только сожаление (за что сожалею). Без text/посвящения/опоры/
-// антидота/решения — для пересылки партнёру по практике, максимально
-// коротко, чтобы реально уместилось и прочиталось за минуту. Полная версия
+// Краткая версия — суть: у плюса радость (слово "Радуюсь" + текст), у
+// минуса сожаление ("Сожалею") + антидот (чтобы было видно, чем очищать,
+// без опоры/решения) — для пересылки партнёру по практике и для себя в
+// конце дня, коротко, но с ключевыми полями четырёх сил. Полная версия
 // (buildPrincipleResult/buildDayReport) остаётся для собственной, подробной
 // рефлексии.
 function buildPrincipleResultShort(principle, entryLike) {
@@ -91,11 +91,14 @@ function buildPrincipleResultShort(principle, entryLike) {
 
   const plusLines =
     pluses.length > 0
-      ? pluses.map((m, i) => `🥳👏${pluses.length > 1 ? ` ${i + 1}` : ''} ${safe(m.radost)}`)
+      ? pluses.map((m, i) => `🥳👏 Радуюсь${pluses.length > 1 ? ` ${i + 1}` : ''}: ${safe(m.radost)}`)
       : ['➕ не наблюдался'];
   const minusLines =
     minuses.length > 0
-      ? minuses.map((m, i) => `🌱🙃🚀${minuses.length > 1 ? ` ${i + 1}` : ''} ${safe(m.sozhalenie)}`)
+      ? minuses.map((m, i) => {
+          const num = minuses.length > 1 ? ` ${i + 1}` : '';
+          return `🌱🙃🚀 Сожалею${num}: ${safe(m.sozhalenie)}\nАнтидот${num}: ${safe(m.antidot)}`;
+        })
       : ['➖ не наблюдался'];
 
   return `${header}\n${[...plusLines, ...minusLines].join('\n')}`;
