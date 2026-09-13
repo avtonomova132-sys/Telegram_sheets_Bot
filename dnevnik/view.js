@@ -35,7 +35,7 @@ function buildOneMoment(moment, index, total, isPlus) {
   const word = isPlus ? 'Плюс' : 'Минус';
   const label = total > 1 ? `${symbol} ${word} ${index + 1}` : `${symbol} ${word}`;
   if (isPlus) {
-    return `${label}\n${safe(moment.text)}\n🥳👏 ${safe(moment.radost)}\n🙏 Посвящение: ${safe(moment.posvyashenie)}`;
+    return `${label}\n${safe(moment.text)}\n😊 ${safe(moment.radost)}\n🙏 Посвящение: ${safe(moment.posvyashenie)}`;
   }
   return (
     `${label}\n` +
@@ -91,13 +91,13 @@ function buildPrincipleResultShort(principle, entryLike) {
 
   const plusLines =
     pluses.length > 0
-      ? pluses.map((m, i) => `🥳👏 Радуюсь${pluses.length > 1 ? ` ${i + 1}` : ''}: ${safe(m.radost)}`)
+      ? pluses.map((m, i) => `😊 Радуюсь${pluses.length > 1 ? ` ${i + 1}` : ''}: ${safe(m.radost)}`)
       : ['➕ не наблюдался'];
   const minusLines =
     minuses.length > 0
       ? minuses.map((m, i) => {
           const num = minuses.length > 1 ? ` ${i + 1}` : '';
-          return `🌱🙃🚀 Сожалею${num}: ${safe(m.sozhalenie)}\nАнтидот${num}: ${safe(m.antidot)}`;
+          return `😔 Сожалею${num}: ${safe(m.sozhalenie)}\n☯️ Антидот${num}: ${safe(m.antidot)}`;
         })
       : ['➖ не наблюдался'];
 
