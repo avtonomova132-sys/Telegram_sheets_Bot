@@ -164,31 +164,28 @@ function findNoHostNeededNote(row) {
 // their header block monthly also reprint the SAME "ZOOM LINK'S:" every
 // month — so a stray name dozens of rows before an unrelated month's
 // reprint would coincidentally satisfy "nearby". What genuinely
-// distinguishes a new program's title is that its own link is only a FEW
-// non-blank rows away (blank rows skipped for free) — originally tightened
-// to "the very next non-blank row, no exceptions", which broke on a real
-// title ("Six Flavors of Emptiness (Mahamudra) with Sarahni Stumpf**" on
-// the ACI | V Houses tab) followed by a one-line note ("no need host from
-// WVP, only REC and INT") before its own "ZOOM LINK'S:" row — the note is
-// legitimate preamble, not a sign this isn't a real title, but the
-// zero-tolerance check silently fell back to the tab's raw configured name
-// for that title and everything under it. A small bounded tolerance
-// (MAX_NON_BLANK_BEFORE_LINK non-blank rows, not just blank ones) survives
-// that case while staying far short of the ~50-row gap between one
-// segment's zoom link and the next month's reprint that the strict
-// version was built to guard against.
-const MAX_NON_BLANK_BEFORE_LINK = 3;
-
+// distinguishes a new program's title is that the very next non-blank row
+// after it IS "ZOOM LINK'S:" — nothing else legitimately sits between a
+// real title and its own link, with exactly ONE known exception: a "no
+// host needed"-style note (see findNoHostNeededNote), as found on ACI |
+// V Houses under "Six Flavors of Emptiness (Mahamudra) with Sarahni
+// Stumpf**". A bounded tolerance that let ANY non-blank row through (tried
+// first, see git history) reopened the exact false-positive this was
+// built to prevent — "My Lan @MyLan0608", "Rocio Diaz @LaChioDiaz" and
+// "Yeiii Evgeny speaks German!!" all sit within a few rows of SOME
+// month's zoom-link reprint on Xuanzang's Tower and got mistaken for new
+// program titles, corrupting the /weekly breakdown with people's names.
+// Skipping specifically past a no-host-needed note (and nothing else)
+// keeps the original protection intact for every other case.
 function hasNearbyZoomLink(rows, fromIndex, window = 15) {
   const end = Math.min(rows.length, fromIndex + window);
-  let nonBlankSeen = 0;
   for (let r = fromIndex; r < end; r++) {
     const row = rows[r];
     const isBlank = !row.some((cell) => normalize(cell).length > 0);
     if (isBlank) continue;
     if (row.some((cell) => /zoom link/i.test(normalize(cell)))) return true;
-    nonBlankSeen++;
-    if (nonBlankSeen >= MAX_NON_BLANK_BEFORE_LINK) return false;
+    if (findNoHostNeededNote(row)) continue;
+    return false;
   }
   return false;
 }
