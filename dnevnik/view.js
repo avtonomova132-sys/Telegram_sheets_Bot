@@ -24,10 +24,29 @@ function formatExamples(examples) {
   return examples.map((e) => `   • ${e}`).join('\n');
 }
 
+// Сообщения дневника отправляются с parse_mode: 'HTML' (см. index.js), чтобы
+// можно было выделять строку принципа жирным. Весь текст, который приходит
+// не из наших статичных строк (ответы модели по словам Elena — text, radost,
+// sozhalenie, antidot, opora, reshenie, posvyashenie), обязательно экранируем
+// — иначе случайный "<" или ">" в надиктованном тексте сломает разметку
+// всего сообщения (Telegram воспримет его как незакрытый тег).
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function bold(text) {
+  return `<b>${escapeHtml(text)}</b>`;
+}
+
 // На случай, если модель пропустит какое-то поле (бывает редко, но
 // случается) — подстраховка от буквального "undefined" в сообщении.
+// Экранирует HTML, так как значение почти всегда идёт от модели.
 function safe(value, fallback = '(не указано)') {
-  return value === undefined || value === null || value === '' ? fallback : value;
+  const resolved = value === undefined || value === null || value === '' ? fallback : value;
+  return escapeHtml(resolved);
 }
 
 function buildOneMoment(moment, index, total, isPlus) {
@@ -72,7 +91,7 @@ function extractMoments(entryLike) {
 function buildPrincipleResult(principle, entryLike) {
   const { pluses, minuses } = extractMoments(entryLike);
 
-  const header = `📿 Принцип №${principle.number} (${principle.category}): ${principle.title}`;
+  const header = `📿 ${bold(`Принцип №${principle.number} (${principle.category}): ${principle.title}`)}`;
   const plusBlocks = pluses.length > 0 ? pluses.map((m, i) => buildOneMoment(m, i, pluses.length, true)) : ['➕ Плюс: не наблюдался'];
   const minusBlocks = minuses.length > 0 ? minuses.map((m, i) => buildOneMoment(m, i, minuses.length, false)) : ['➖ Минус: не наблюдался'];
   const momentBlocks = [...plusBlocks, ...minusBlocks];
@@ -87,7 +106,7 @@ function buildPrincipleResult(principle, entryLike) {
 // рефлексии.
 function buildPrincipleResultShort(principle, entryLike) {
   const { pluses, minuses } = extractMoments(entryLike);
-  const header = `№${principle.number} (${principle.category}): ${principle.title}`;
+  const header = bold(`№${principle.number} (${principle.category}): ${principle.title}`);
 
   const plusLines =
     pluses.length > 0
@@ -106,9 +125,9 @@ function buildPrincipleResultShort(principle, entryLike) {
 
 function buildSlotMessage(principle, slotIndex) {
   return (
-    `📿 Дневник ${slotIndex}/6 — Принцип №${principle.number} (${principle.category}): ${principle.title}\n\n` +
-    `❌ ${principle.negative}\n${formatExamples(previewNegative(principle))}\n\n` +
-    `✅ ${principle.positive}\n${formatExamples(previewPositive(principle))}\n\n` +
+    `📿 ${bold(`Дневник ${slotIndex}/6 — Принцип №${principle.number} (${principle.category}): ${principle.title}`)}\n\n` +
+    `❌ ${escapeHtml(principle.negative)}\n${escapeHtml(formatExamples(previewNegative(principle)))}\n\n` +
+    `✅ ${escapeHtml(principle.positive)}\n${escapeHtml(formatExamples(previewPositive(principle)))}\n\n` +
     `Что сейчас происходит по этому принципу? Если ситуаций несколько — рассказывай все, ничего не потеряется. Напиши или надиктуй голосом — отвечу прямо сюда.\n\n` +
     `(если сейчас не момент — не страшно, окно останется живым почти до следующего слота, вечером соберу список того, что всё же не успели)`
   );
@@ -119,9 +138,9 @@ function buildSlotMessage(principle, slotIndex) {
 function buildUnansweredBlock(entry) {
   const principle = getPrinciple(entry.principleNumber);
   return (
-    `⏳ №${entry.principleNumber} (${principle.category}): ${principle.title}\n` +
-    `❌ ${principle.negative}\n${formatExamples(previewNegative(principle))}\n` +
-    `✅ ${principle.positive}\n${formatExamples(previewPositive(principle))}`
+    `⏳ ${bold(`№${entry.principleNumber} (${principle.category}): ${principle.title}`)}\n` +
+    `❌ ${escapeHtml(principle.negative)}\n${escapeHtml(formatExamples(previewNegative(principle)))}\n` +
+    `✅ ${escapeHtml(principle.positive)}\n${escapeHtml(formatExamples(previewPositive(principle)))}`
   );
 }
 
@@ -129,9 +148,9 @@ function buildUnansweredBlock(entry) {
 // примеров, как в оригинальных карточках Gold Клуб, без усечения.
 function buildPrincipleDetail(principle) {
   return (
-    `📖 Принцип №${principle.number} (${principle.category}): ${principle.title}\n\n` +
-    `❌ ${principle.negative}\n${formatExamples(principle.negativeExamples)}\n\n` +
-    `✅ ${principle.positive}\n${formatExamples(principle.positiveExamples)}\n\n` +
+    `📖 ${bold(`Принцип №${principle.number} (${principle.category}): ${principle.title}`)}\n\n` +
+    `❌ ${escapeHtml(principle.negative)}\n${escapeHtml(formatExamples(principle.negativeExamples))}\n\n` +
+    `✅ ${escapeHtml(principle.positive)}\n${escapeHtml(formatExamples(principle.positiveExamples))}\n\n` +
     `Расскажи, что было сегодня по этому принципу — если ситуаций несколько, рассказывай все подряд, ничего называть отдельно не нужно.`
   );
 }
@@ -156,15 +175,16 @@ function buildEntryLine(entry) {
   const time = entry.sentAt ? entry.sentAt.slice(11, 16) : '--:--';
   const principle = getPrinciple(entry.principleNumber);
   const categoryTag = principle ? ` (${principle.category})` : '';
+  const principleLabel = bold(`принцип №${entry.principleNumber}${categoryTag}`);
   if (!entry.answeredAt) {
-    return `⏳ ${entry.dateBali} ${time} — принцип №${entry.principleNumber}${categoryTag} (ещё не отвечено)`;
+    return `⏳ ${entry.dateBali} ${time} — ${principleLabel} (ещё не отвечено)`;
   }
   const pluses = entry.pluses || [];
   const minuses = entry.minuses || [];
   const marker = pluses.length > 0 && minuses.length > 0 ? '✅❌' : pluses.length > 0 ? '✅' : '❌';
-  const preview = pluses[0]?.text || minuses[0]?.sozhalenie || '';
+  const preview = escapeHtml(pluses[0]?.text || minuses[0]?.sozhalenie || '');
   const countsNote = pluses.length + minuses.length > 1 ? ` (+${pluses.length}/−${minuses.length})` : '';
-  return `${marker} ${entry.dateBali} ${time} — принцип №${entry.principleNumber}${categoryTag}${countsNote}: ${preview}`;
+  return `${marker} ${entry.dateBali} ${time} — ${principleLabel}${countsNote}: ${preview}`;
 }
 
 function buildDnevnikSummary(recentEntries, pendingCount) {
@@ -231,7 +251,7 @@ function buildDayReportShort(dateBali, entries) {
   const blocks = entries.map((entry) => {
     const principle = getPrinciple(entry.principleNumber);
     if (!entry.answeredAt) {
-      return `⏳ №${entry.principleNumber} (${principle.category}): ${principle.title} — ещё не отвечено`;
+      return `⏳ ${bold(`№${entry.principleNumber} (${principle.category}): ${principle.title}`)} — ещё не отвечено`;
     }
     return buildPrincipleResultShort(principle, entry);
   });

@@ -348,11 +348,14 @@ const dnevnikSelectedEntryId = new Map();
 // подтверждение с несколькими принципами) стали регулярно превышать лимит.
 // Всегда шлём дневник через это — режет на части по chunkMessage (границы
 // абзацев), reply_markup (кнопки) — только на последний кусок.
+// parse_mode: 'HTML' — dnevnik/view.js оборачивает строку принципа в <b>, а
+// весь пользовательский/AI-текст экранирует (escapeHtml/safe), так что
+// разметка не ломается на случайных "<"/"&"/">" в надиктованном тексте.
 async function sendDnevnikMessage(chatId, text, options = {}) {
   const chunks = chunkMessage(text);
   for (let i = 0; i < chunks.length; i += 1) {
     const isLast = i === chunks.length - 1;
-    await bot.sendMessage(chatId, chunks[i], isLast ? options : undefined);
+    await bot.sendMessage(chatId, chunks[i], { parse_mode: 'HTML', ...(isLast ? options : {}) });
   }
 }
 
