@@ -412,4 +412,30 @@ function getPrinciple(number) {
   return PRINCIPLES.find((p) => p.number === number) || null;
 }
 
-module.exports = { PRINCIPLES, getPrinciple };
+// Три очищающие мантры (тело/речь/ум) — Elena прислала фото страниц из
+// сборника (RUS MB FORMACION, стр. 46-48). Привязаны к категории принципа,
+// показываются вместе с уведомлением о принципе, чтобы читать их в уме в
+// момент рефлексии — сеять семена вместе с самой практикой.
+const MANTRAS = {
+  Тело: {
+    name: 'Мантра для очищения тела',
+    sanskrit: 'Oṃ sutari sutari sumari sumari svāhā',
+    russian: 'Ом сутари сутари сумари сумари сваха',
+  },
+  Речь: {
+    name: 'Мантра для очищения речи',
+    sanskrit: 'Oṃ suri suri mahāsuri susuri svāhā',
+    russian: 'Ом сури сури махасури сусури сваха',
+  },
+  Ум: {
+    name: 'Мантра для очищения ума',
+    sanskrit: 'Oṃ Vajradhara hūṃ',
+    russian: 'Ом Ваджрадхара хум',
+  },
+};
+
+function getMantra(category) {
+  return MANTRAS[category] || null;
+}
+
+module.exports = { PRINCIPLES, getPrinciple, MANTRAS, getMantra };

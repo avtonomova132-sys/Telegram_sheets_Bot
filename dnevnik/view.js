@@ -1,4 +1,4 @@
-const { getPrinciple } = require('./principles');
+const { getPrinciple, getMantra } = require('./principles');
 
 // Префикс callback_data для кнопок выбора принципа в /дневник_день и в
 // вечернем автосписке — единое место, чтобы index.js (кнопки) и обработчик
@@ -39,6 +39,15 @@ function escapeHtml(value) {
 
 function bold(text) {
   return `<b>${escapeHtml(text)}</b>`;
+}
+
+// Блок с очищающей мантрой по категории принципа (Тело/Речь/Ум) — жирным,
+// чтобы прочитать в уме в момент рефлексии. Если для категории почему-то
+// нет мантры — просто не добавляем блок, не ломаем сообщение.
+function buildMantraBlock(category) {
+  const mantra = getMantra(category);
+  if (!mantra) return '';
+  return `\n\n🕉 ${bold(mantra.name)}\n${escapeHtml(mantra.sanskrit)}\n${escapeHtml(mantra.russian)}`;
 }
 
 // На случай, если модель пропустит какое-то поле (бывает редко, но
@@ -127,7 +136,8 @@ function buildSlotMessage(principle, slotIndex) {
   return (
     `📿 ${bold(`Дневник ${slotIndex}/6 — Принцип №${principle.number} (${principle.category}): ${principle.title}`)}\n\n` +
     `❌ ${escapeHtml(principle.negative)}\n${escapeHtml(formatExamples(previewNegative(principle)))}\n\n` +
-    `✅ ${escapeHtml(principle.positive)}\n${escapeHtml(formatExamples(previewPositive(principle)))}\n\n` +
+    `✅ ${escapeHtml(principle.positive)}\n${escapeHtml(formatExamples(previewPositive(principle)))}` +
+    `${buildMantraBlock(principle.category)}\n\n` +
     `Что сейчас происходит по этому принципу? Если ситуаций несколько — рассказывай все, ничего не потеряется. Напиши или надиктуй голосом — отвечу прямо сюда.\n\n` +
     `(если сейчас не момент — не страшно, окно останется живым почти до следующего слота, вечером соберу список того, что всё же не успели)`
   );
@@ -140,7 +150,8 @@ function buildUnansweredBlock(entry) {
   return (
     `⏳ ${bold(`№${entry.principleNumber} (${principle.category}): ${principle.title}`)}\n` +
     `❌ ${escapeHtml(principle.negative)}\n${escapeHtml(formatExamples(previewNegative(principle)))}\n` +
-    `✅ ${escapeHtml(principle.positive)}\n${escapeHtml(formatExamples(previewPositive(principle)))}`
+    `✅ ${escapeHtml(principle.positive)}\n${escapeHtml(formatExamples(previewPositive(principle)))}` +
+    `${buildMantraBlock(principle.category)}`
   );
 }
 
@@ -150,7 +161,8 @@ function buildPrincipleDetail(principle) {
   return (
     `📖 ${bold(`Принцип №${principle.number} (${principle.category}): ${principle.title}`)}\n\n` +
     `❌ ${escapeHtml(principle.negative)}\n${escapeHtml(formatExamples(principle.negativeExamples))}\n\n` +
-    `✅ ${escapeHtml(principle.positive)}\n${escapeHtml(formatExamples(principle.positiveExamples))}\n\n` +
+    `✅ ${escapeHtml(principle.positive)}\n${escapeHtml(formatExamples(principle.positiveExamples))}` +
+    `${buildMantraBlock(principle.category)}\n\n` +
     `Расскажи, что было сегодня по этому принципу — если ситуаций несколько, рассказывай все подряд, ничего называть отдельно не нужно.`
   );
 }
