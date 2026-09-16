@@ -47,7 +47,7 @@ function bold(text) {
 function buildMantraBlock(category) {
   const mantra = getMantra(category);
   if (!mantra) return '';
-  return `\n\n🕉 ${bold(mantra.name)}\n${escapeHtml(mantra.sanskrit)}\n${escapeHtml(mantra.russian)}`;
+  return `🕉 ${bold(mantra.name)}\n${escapeHtml(mantra.sanskrit)}\n${escapeHtml(mantra.russian)}`;
 }
 
 // На случай, если модель пропустит какое-то поле (бывает редко, но
@@ -135,9 +135,9 @@ function buildPrincipleResultShort(principle, entryLike) {
 function buildSlotMessage(principle, slotIndex) {
   return (
     `📿 ${bold(`Дневник ${slotIndex}/6 — Принцип №${principle.number} (${principle.category}): ${principle.title}`)}\n\n` +
-    `❌ ${escapeHtml(principle.negative)}\n${escapeHtml(formatExamples(previewNegative(principle)))}\n\n` +
-    `✅ ${escapeHtml(principle.positive)}\n${escapeHtml(formatExamples(previewPositive(principle)))}` +
     `${buildMantraBlock(principle.category)}\n\n` +
+    `❌ ${escapeHtml(principle.negative)}\n${escapeHtml(formatExamples(previewNegative(principle)))}\n\n` +
+    `✅ ${escapeHtml(principle.positive)}\n${escapeHtml(formatExamples(previewPositive(principle)))}\n\n` +
     `Что сейчас происходит по этому принципу? Если ситуаций несколько — рассказывай все, ничего не потеряется. Напиши или надиктуй голосом — отвечу прямо сюда.\n\n` +
     `(если сейчас не момент — не страшно, окно останется живым почти до следующего слота, вечером соберу список того, что всё же не успели)`
   );
@@ -149,9 +149,9 @@ function buildUnansweredBlock(entry) {
   const principle = getPrinciple(entry.principleNumber);
   return (
     `⏳ ${bold(`№${entry.principleNumber} (${principle.category}): ${principle.title}`)}\n` +
+    `${buildMantraBlock(principle.category)}\n` +
     `❌ ${escapeHtml(principle.negative)}\n${escapeHtml(formatExamples(previewNegative(principle)))}\n` +
-    `✅ ${escapeHtml(principle.positive)}\n${escapeHtml(formatExamples(previewPositive(principle)))}` +
-    `${buildMantraBlock(principle.category)}`
+    `✅ ${escapeHtml(principle.positive)}\n${escapeHtml(formatExamples(previewPositive(principle)))}`
   );
 }
 
@@ -160,9 +160,9 @@ function buildUnansweredBlock(entry) {
 function buildPrincipleDetail(principle) {
   return (
     `📖 ${bold(`Принцип №${principle.number} (${principle.category}): ${principle.title}`)}\n\n` +
-    `❌ ${escapeHtml(principle.negative)}\n${escapeHtml(formatExamples(principle.negativeExamples))}\n\n` +
-    `✅ ${escapeHtml(principle.positive)}\n${escapeHtml(formatExamples(principle.positiveExamples))}` +
     `${buildMantraBlock(principle.category)}\n\n` +
+    `❌ ${escapeHtml(principle.negative)}\n${escapeHtml(formatExamples(principle.negativeExamples))}\n\n` +
+    `✅ ${escapeHtml(principle.positive)}\n${escapeHtml(formatExamples(principle.positiveExamples))}\n\n` +
     `Расскажи, что было сегодня по этому принципу — если ситуаций несколько, рассказывай все подряд, ничего называть отдельно не нужно.`
   );
 }
