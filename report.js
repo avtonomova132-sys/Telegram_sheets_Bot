@@ -659,10 +659,6 @@ function formatMonthDayEn(date) {
   return `${MONTHS_EN_FULL[date.getUTCMonth()]} ${date.getUTCDate()}`;
 }
 
-function formatMonthDayShortEn(date) {
-  return `${MONTHS_EN_FULL[date.getUTCMonth()].slice(0, 3)} ${date.getUTCDate()}`;
-}
-
 function formatMonthDayRu(date) {
   return `${date.getUTCDate()} ${MONTHS_RU_GENITIVE[date.getUTCMonth()]}`;
 }
@@ -804,22 +800,6 @@ function enHostPhrase(n) {
   return `NEEDED ${n} HOST${n === 1 ? '' : 'S'}`;
 }
 
-function ruBroadcastWord(n) {
-  if (ruIsOneForm(n)) return 'эфир';
-  return ruFewForm(n) ? 'эфира' : 'эфиров';
-}
-
-function ruMissingHeader(n) {
-  if (ruIsOneForm(n)) return `${n} хост ещё не назначен — пожалуйста, откликнитесь!`;
-  return `${n} ${ruFewForm(n) ? 'хоста' : 'хостов'} ещё не назначены — пожалуйста, откликнитесь!`;
-}
-
-function enMissingHeader(n) {
-  return n === 1
-    ? 'One host is still not assigned — please respond!'
-    : `${n} hosts are still not assigned — please respond!`;
-}
-
 // ---- /check event blocks (only used for the "missing host" listing) ----
 
 function checkEventBlockEn(e) {
@@ -940,210 +920,69 @@ function buildCheckMessage(events, range, tags, failedTabs = [], now = new Date(
   return parts.join('\n\n');
 }
 
-// ---- /weekly event blocks (every event, host or not) ----
-
-function weeklyHostLineEn(e) {
-  if (e.hasHost) {
-    const co = e.coHost ? `, Co-Host: ${escapeHtml(e.coHost)}` : '';
-    return `👤 Host: ${escapeHtml(e.host)}${co}`;
-  }
-  return '👤 Host: volunteer needed 🙏';
+// ---- /weekly / /следующая_неделя / Sunday auto-announce — full listing ----
+// Elena's new compact format (Sept 2026): Russian only, no per-event ✅/📛
+// markers, no clickable program-name links, no breakdown counts, no CTA
+// line — replaces all of that. Self-signup convention lives once, in the
+// instructions block, instead of a per-event "volunteer needed" line: a
+// blank host slot shows literally "✅/❌?" so someone can reply with just
+// that emoji, no icon suggesting a person is still owed a mention.
+// Deliberately NOT shared with buildCheckMessage or the diff-check's
+// notices below — /check and background notifications keep the old
+// bilingual, marker'd format on purpose (Elena was explicit both stay).
+function formatDDMM(date) {
+  return `${String(date.getUTCDate()).padStart(2, '0')}.${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
 }
 
-function weeklyHostLineRu(e) {
-  if (e.hasHost) {
-    const co = e.coHost ? `, Ко-хост: ${escapeHtml(e.coHost)}` : '';
-    return `👤 Хост: ${escapeHtml(e.host)}${co}`;
-  }
-  return '👤 Хост: нужен волонтёр 🙏';
+function weeklyEventLineRu(e) {
+  const mskD = mskDate(e);
+  const sameDate = mskD.getTime() === e.date.getTime();
+  const hostPart = e.hasHost ? `👤 ${escapeHtml(e.host)}` : '✅/❌?';
+  const dateHeader = sameDate
+    ? `🗓 ${formatDDMM(e.date)} — ${escapeHtml(e.tabName)}`
+    : `🗓 ${formatDDMM(e.date)} AZ / ${formatDDMM(mskD)} MCK — ${escapeHtml(e.tabName)}`;
+  const timeLine = sameDate
+    ? `🕒 AZ: ${formatRange24h(e.azStartMin, e.azEndMin)} · МСК: ${formatRange24h(e.mskStartMin, e.mskEndMin)} ${hostPart}`
+    : `🕒 AZ (${formatDDMM(e.date)}): ${formatRange24h(e.azStartMin, e.azEndMin)} · МСК (${formatDDMM(mskD)}): ${formatRange24h(e.mskStartMin, e.mskEndMin)} ${hostPart}`;
+  return [dateHeader, timeLine].join('\n');
 }
 
-function weeklyEventBlockEn(e) {
-  return [
-    formatProgramNameHtml(programLine(e.tabName, e.title), e.tabUrl, e.hasHost),
-    `🕒 Arizona: ${formatMonthDayEn(e.date)}, ${formatRange12h(e.azStartMin, e.azEndMin)}`,
-    `🕒 Moscow: ${formatMonthDayEn(mskDate(e))}, ${formatRange24h(e.mskStartMin, e.mskEndMin)}`,
-    weeklyHostLineEn(e),
-  ].join('\n');
-}
-
-function weeklyEventBlockRu(e) {
-  return [
-    formatProgramNameHtml(programLine(e.tabName, e.title), e.tabUrl, e.hasHost),
-    `🕒 Аризона: ${formatMonthDayRu(e.date)}, ${formatRange24h(e.azStartMin, e.azEndMin)}`,
-    `🕒 Москва: ${formatMonthDayRu(mskDate(e))}, ${formatRange24h(e.mskStartMin, e.mskEndMin)}`,
-    weeklyHostLineRu(e),
-  ].join('\n');
-}
-
-function tabBreakdownEn(events) {
-  const order = [];
-  const counts = new Map();
-  const missing = new Map();
-  for (const e of events) {
-    if (!counts.has(e.tabName)) {
-      counts.set(e.tabName, 0);
-      missing.set(e.tabName, false);
-      order.push(e.tabName);
-    }
-    counts.set(e.tabName, counts.get(e.tabName) + 1);
-    if (!e.hasHost) missing.set(e.tabName, true);
-  }
-  return order
-    .map((name, i) => {
-      const isLast = i === order.length - 1;
-      const alert = missing.get(name) ? '‼️ ' : '';
-      return `${alert}${counts.get(name)} from ${escapeHtml(name)}${isLast ? '.' : ','}`;
-    })
-    .join('\n');
-}
-
-function tabBreakdownRu(events) {
-  const order = [];
-  const counts = new Map();
-  const missing = new Map();
-  for (const e of events) {
-    if (!counts.has(e.tabName)) {
-      counts.set(e.tabName, 0);
-      missing.set(e.tabName, false);
-      order.push(e.tabName);
-    }
-    counts.set(e.tabName, counts.get(e.tabName) + 1);
-    if (!e.hasHost) missing.set(e.tabName, true);
-  }
-  return order
-    .map((name, i) => {
-      const isLast = i === order.length - 1;
-      const alert = missing.get(name) ? '‼️ ' : '';
-      return `${alert}${counts.get(name)} — ${escapeHtml(name)}${isLast ? '.' : ','}`;
-    })
-    .join('\n');
-}
-
-function warningBlockEn(missing) {
-  if (missing.length === 0) return '';
-  const items = missing
-    .map(
-      (e) =>
-        `${escapeHtml(e.tabName)},\nArizona: ${formatMonthDayEn(e.date)}, ${formatPoint12h(e.azStartMin)},\nMoscow: ${formatMonthDayEn(mskDate(e))}, ${formatPoint24h(e.mskStartMin)}.`
-    )
-    .join('\n\n');
-  return `⚠️ ${enMissingHeader(missing.length)}\n${items}`;
-}
-
-function warningBlockRu(missing) {
-  if (missing.length === 0) return '';
-  const items = missing
-    .map(
-      (e) =>
-        `${escapeHtml(e.tabName)},\nАризона: ${formatMonthDayRu(e.date)}, ${formatPoint24h(e.azStartMin)},\nМосква: ${formatMonthDayRu(mskDate(e))}, ${formatPoint24h(e.mskStartMin)}.`
-    )
-    .join('\n\n');
-  return `⚠️ ${ruMissingHeader(missing.length)}\n${items}`;
-}
-
-function ctaLineEn(missing) {
-  if (missing.length === 0) return '';
-  if (missing.length === 1) {
-    const e = missing[0];
-    const label = escapeHtml(sessionLabel(e.title) || e.tabName);
-    return `If anyone can host ${label} (${formatMonthDayShortEn(e.date)}) — please sign up via the link below 🙏`;
-  }
-  return 'If anyone can host one of the sessions above — please sign up via the link below 🙏';
-}
-
-function ctaLineRu(missing) {
-  if (missing.length === 0) return '';
-  if (missing.length === 1) {
-    const e = missing[0];
-    const label = escapeHtml(sessionLabel(e.title) || e.tabName);
-    return `Если кто-то может провести «${label}» (${formatMonthDayRu(e.date)}) — пожалуйста, запишитесь по ссылке ниже 🙏`;
-  }
-  return 'Если вы можете провести одну из сессий выше — пожалуйста, запишитесь по ссылке ниже 🙏';
-}
-
-// /weekly — full listing of every event in the range, host or not.
 // `upcoming` picks the header wording: true for the Sunday auto-announce
-// (range is genuinely next week), false for the manual command (range is
-// the week already in progress) — see generateWeeklyReport vs
+// and /следующая_неделя (range is genuinely next week), false for /weekly
+// (range is the week already in progress) — see generateWeeklyReport vs
 // generateWeeklyAnnounceReport.
-function buildWeeklyMessage(events, range, { upcoming = false, failedTabs = [], now = new Date(), tags = [] } = {}) {
-  // Excludes slots whose Arizona start has already passed — only from the
-  // "still needs a host" set used by the warning block + CTA below. The
-  // full per-event listing further down uses `events` directly, not
-  // `missing`, so past sessions still show up there as a historical
-  // record regardless of host status, on purpose.
-  const missing = events.filter((e) => !e.hasHost && !isPastAzStart(e, now));
-  const rangeEn = formatWeekRangeEn(range.start, range.end);
+function buildWeeklyMessage(events, range, { upcoming = false, failedTabs = [] } = {}) {
   const rangeRu = formatWeekRangeRu(range.start, range.end);
-  const scheduleLabelEn = upcoming ? 'Zoom broadcast schedule for the upcoming week' : 'Zoom broadcast schedule for this week';
-  const scheduleLabelRu = upcoming ? 'Расписание Zoom-эфиров на предстоящую неделю' : 'Расписание Zoom-эфиров на эту неделю';
+  const scheduleLabelRu = upcoming ? 'на предстоящую неделю' : 'на эту неделю';
 
-  const enSectionParts = ['📝', 'Precious Angels 🪽', '', 'Wishing everyone kindness and enlightenment in this life 💎', ''];
-  const ruSectionParts = ['📝', 'Дорогие Ангелы 🪽', '', 'Желаем всем доброты и просветления в этой жизни 💎', ''];
+  const parts = [];
 
-  // Some tabs failing to load means the counts/listing below are built from
-  // whatever DID load, not the full schedule — "no sessions this week"
-  // would otherwise be indistinguishable from "couldn't read most tabs".
-  // The warning goes up front regardless of whether events.length is 0,
-  // since a nonzero count can undercount just as easily as a zero count
-  // can be flat wrong.
+  // Same reasoning as before: a tab that failed to load means the listing
+  // below is built from whatever DID load, not the full schedule — this
+  // goes up front regardless of events.length, since either an undercount
+  // or a flat-wrong "nothing scheduled" can result.
   if (failedTabs.length > 0) {
-    enSectionParts.push('', partialDataWarningEn(failedTabs));
-    ruSectionParts.push('', partialDataWarningRu(failedTabs));
+    parts.push(partialDataWarningRu(failedTabs));
   }
+
+  parts.push(`📅🔔 Расписание Zoom-эфиров ${scheduleLabelRu}, ${rangeRu}`);
 
   if (events.length === 0) {
-    enSectionParts.push(scheduleLabelEn, rangeEn, '', 'No sessions scheduled this week.');
-    ruSectionParts.push(scheduleLabelRu, rangeRu, '', 'На этой неделе нет запланированных сессий.');
-  } else {
-    enSectionParts.push(
-      scheduleLabelEn,
-      rangeEn,
-      '',
-      `In total, ${events.length} broadcast${events.length === 1 ? '' : 's'} this week:`,
-      '',
-      tabBreakdownEn(events)
-    );
-    ruSectionParts.push(
-      scheduleLabelRu,
-      rangeRu,
-      '',
-      `Всего на этой неделе ${events.length} ${ruBroadcastWord(events.length)}:`,
-      '',
-      tabBreakdownRu(events)
-    );
-
-    if (missing.length > 0) {
-      enSectionParts.push('', warningBlockEn(missing));
-      ruSectionParts.push('', warningBlockRu(missing));
-    }
-
-    enSectionParts.push('', events.map(weeklyEventBlockEn).join('\n\n'));
-    ruSectionParts.push('', events.map(weeklyEventBlockRu).join('\n\n'));
-
-    if (missing.length > 0) {
-      enSectionParts.push('', ctaLineEn(missing));
-      ruSectionParts.push('', ctaLineRu(missing));
-    }
+    parts.push('На этой неделе нет запланированных сессий.');
+    return parts.join('\n\n');
   }
 
-  enSectionParts.push('', 'If anyone has any changes or needs help, please let us know in advance. 💛');
-  ruSectionParts.push('', 'Если у кого-то есть изменения или нужна помощь — пожалуйста, сообщите заранее. 💛');
+  parts.push(
+    [
+      'Там, где нет Хоста, отпишитесь, пожалуйста, указав значок:',
+      '✅ - это значит «беру эфир, в расписание себя внёс»',
+      '❌ - это значит «не получается быть хостом» 🙏',
+    ].join('\n')
+  );
 
-  const enSection = enSectionParts.join('\n');
-  const ruSection = ruSectionParts.join('\n');
+  parts.push(events.map(weeklyEventLineRu).join('\n\n'));
 
-  // No general host-signup link here either (see buildCheckMessage's
-  // identical reasoning) — every event above already links straight to
-  // its own tab via formatProgramNameHtml.
-  const parts = [enSection, '---', ruSection];
-  // Same rule as /check: only tag people when there's actually an open
-  // slot this week to respond to — a fully-covered week has nothing to
-  // ping anyone about.
-  if (missing.length > 0 && tags.length > 0) {
-    parts.push(tags.map((t) => escapeHtml(formatCommunityTag(t))).join(' '));
-  }
+  parts.push('🙏 Спасибо 🌿');
 
   return parts.join('\n\n');
 }
@@ -1153,8 +992,7 @@ function buildWeeklyMessage(events, range, { upcoming = false, failedTabs = [], 
 async function generateWeeklyReport(now = new Date()) {
   const range = getCurrentWeekRange(now);
   const { events, failedTabs, debugCounts } = await collectWeekEvents(range);
-  const tags = loadCommunityTags();
-  const text = buildWeeklyMessage(events, range, { upcoming: false, failedTabs, now, tags });
+  const text = buildWeeklyMessage(events, range, { upcoming: false, failedTabs });
   return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
 }
 
@@ -1164,8 +1002,7 @@ async function generateWeeklyReport(now = new Date()) {
 async function generateWeeklyAnnounceReport(now = new Date()) {
   const range = getNextWeekRange(now);
   const { events, failedTabs, debugCounts } = await collectWeekEvents(range);
-  const tags = loadCommunityTags();
-  const text = buildWeeklyMessage(events, range, { upcoming: true, failedTabs, now, tags });
+  const text = buildWeeklyMessage(events, range, { upcoming: true, failedTabs });
   return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
 }
 
