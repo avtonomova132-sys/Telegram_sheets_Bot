@@ -6,6 +6,7 @@ const { OpenAI, toFile } = require('openai');
 const {
   generateWeeklyReport,
   generateWeeklyAnnounceReport,
+  generateSundayAnnounceReport,
   generateCheckReport,
   runDailyHostDiffCheck,
   getWeeklyAnnounceLastSentDate,
@@ -710,11 +711,13 @@ bot.onText(/\/(check|report)\b/, (msg) => {
   handleReportCommand(msg.chat.id, 'проверку по текущей неделе', generateCheckReport);
 });
 
-// /следующая_неделя (он же /next_week) — та же generateWeeklyAnnounceReport,
-// что и воскресная авторассылка ниже (следующая Пн-Вс неделя, формат
-// /weekly), просто по запросу в любой день, а не только в 10:00 по
-// воскресеньям. Не трогает markWeeklyAnnounceSent — вызов вручную никак не
-// связан с "отправляли ли уже сегодня" авторассылки.
+// /следующая_неделя (он же /next_week) — тот же двуязычный host-needed
+// формат, что и /weekly, но на следующую Пн-Вс неделю. Использует
+// generateWeeklyAnnounceReport (не путать с generateSundayAnnounceReport
+// ниже — у воскресной авторассылки свой отдельный компактный формат,
+// Elena сузила его применение только до неё). Не трогает
+// markWeeklyAnnounceSent — вызов вручную никак не связан с "отправляли ли
+// уже сегодня" авторассылки.
 //
 // БЫЛО: `\b` на конце регулярки. `\b` в JS считает "словом" только
 // [A-Za-z0-9_] — кириллица в это множество не входит, так что сразу после
@@ -732,10 +735,12 @@ bot.onText(/^\/(следующая_неделя|next_week)(?:@\S+)?$/, (msg) => 
 
 // ===== Воскресная авторассылка /weekly =====
 // Каждое воскресенье в WEEKLY_ANNOUNCE_HOUR (по умолчанию 10:00) по Бали бот
-// сам присылает Елене в личку то же самое сообщение, что и команда /weekly —
-// без ручного запуска, чтобы оно было готово к пересылке в группу с утра.
-// Тот же устойчивый "проверяем каждые 5 минут" паттерн, что и у изречения:
-// не завязан на ровный тик именно в нужную минуту.
+// сам присылает Елене в личку расписание на следующую неделю — без ручного
+// запуска, чтобы оно было готово к пересылке в группу с утра. Свой отдельный
+// компактный формат (generateSundayAnnounceReport), отличный от /weekly —
+// Elena явно сузила новый формат только до этой рассылки. Тот же устойчивый
+// "проверяем каждые 5 минут" паттерн, что и у изречения: не завязан на
+// ровный тик именно в нужную минуту.
 async function checkAndSendWeeklyAnnounce() {
   const nowBali = new Date(Date.now() + 8 * 60 * 60 * 1000);
   if (nowBali.getUTCDay() !== 0) return; // не воскресенье (по Бали)
@@ -745,7 +750,7 @@ async function checkAndSendWeeklyAnnounce() {
   if (baliHour() < WEEKLY_ANNOUNCE_HOUR) return; // ещё не наступил нужный час
 
   try {
-    await handleReportCommand(myChatId, 'воскресную рассылку /weekly', generateWeeklyAnnounceReport);
+    await handleReportCommand(myChatId, 'воскресную рассылку /weekly', generateSundayAnnounceReport);
     markWeeklyAnnounceSent(today);
   } catch (err) {
     console.error('[weekly-announce] ошибка воскресной рассылки:', err.message);
