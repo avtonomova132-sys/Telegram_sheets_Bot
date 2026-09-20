@@ -6,7 +6,6 @@ const { OpenAI, toFile } = require('openai');
 const {
   generateWeeklyReport,
   generateSundayAnnounceReport,
-  buildSundayKeyboard,
   generateCheckReport,
   runDailyHostDiffCheck,
   getWeeklyAnnounceLastSentDate,
@@ -753,42 +752,6 @@ bot.onText(/\/(check|report)\b/, (msg) => {
 bot.onText(/^\/(следующая_неделя|next_week)(?:@\S+)?$/, (msg) => {
   handleReportCommand(msg.chat.id, 'расписание на следующую неделю', generateSundayAnnounceReport);
 });
-
-// ===== ВРЕМЕННО: одноразовый живой тест кнопок (только личка Elena) =====
-// Шлёт РОВНО то же сообщение, что /next_week, + кнопки под ❌-эфирами. Маркер
-// на volume пишется ДО отправки — при рестарте/передеплое не повторится.
-// Кнопка «Не могу» пока «для вида» (только всплывающая подсказка).
-// Удалить после проверки.
-(async () => {
-  if (!myChatId) return;
-  const fs = require('fs');
-  const markerPath = process.env.BUTTONS_TEST_MARKER_PATH || '/data/buttons_test_sent.json';
-  if (fs.existsSync(markerPath)) return;
-  try {
-    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
-  } catch (err) {
-    console.error('[buttons-test] не удалось записать маркер, тест не отправлен:', err.message);
-    return;
-  }
-  try {
-    const { text, events } = await generateSundayAnnounceReport();
-    const chunks = chunkMessage(text);
-    const keyboard = buildSundayKeyboard(events);
-    for (let i = 0; i < chunks.length; i++) {
-      const isLast = i === chunks.length - 1;
-      await bot.sendMessage(myChatId, chunks[i], {
-        parse_mode: 'HTML',
-        ...(isLast && keyboard.length > 0 ? { reply_markup: { inline_keyboard: keyboard } } : {}),
-      });
-    }
-    console.log(`[buttons-test] отправлено в личку: чанков=${chunks.length}, строк кнопок=${keyboard.length}`);
-  } catch (err) {
-    console.error('[buttons-test] ошибка отправки:', err.message);
-    try {
-      fs.unlinkSync(markerPath);
-    } catch {}
-  }
-})();
 
 bot.on('callback_query', async (query) => {
   if (!(query.data || '').startsWith('nmtest:')) return;
