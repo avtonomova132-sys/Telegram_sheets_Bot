@@ -941,8 +941,9 @@ function buildCheckMessage(events, range, tags, failedTabs = [], now = new Date(
 }
 
 // ---- Sunday 10:00-Bali auto-announce ONLY — Elena's new compact format ----
-// (Sept 2026): Russian only, no per-event ✅/📛 marker, no clickable
-// program-name link, no breakdown counts, no CTA line. Self-signup
+// (Sept 2026): Russian only, no per-event ✅/📛 marker, no breakdown counts,
+// no CTA line; program name is a link to its tab only while the host slot
+// is open, and community tags close the message. Self-signup
 // convention lives once, in the instructions block, instead of a per-event
 // "volunteer needed" line: a blank host slot shows literally "✅/❌?" so
 // someone can reply with just that emoji, no icon suggesting a person is
@@ -954,20 +955,30 @@ function formatDDMM(date) {
   return `${String(date.getUTCDate()).padStart(2, '0')}.${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
 }
 
+// Program name is a link to its own tab (e.tabUrl, gid from tabs-config.json)
+// ONLY while the host slot is still open — same "link = still needs a host"
+// signal as formatProgramNameHtml, minus the ✅/📛 marker and bold. Once a
+// host is assigned it is plain text.
+function sundayProgramName(e) {
+  const name = escapeHtml(e.tabName);
+  return !e.hasHost && e.tabUrl ? `<a href="${e.tabUrl}">${name}</a>` : name;
+}
+
 function weeklyEventLineRu(e) {
   const mskD = mskDate(e);
   const sameDate = mskD.getTime() === e.date.getTime();
   const hostPart = e.hasHost ? `👤 ${escapeHtml(e.host)}` : '✅/❌?';
+  const programName = sundayProgramName(e);
   const dateHeader = sameDate
-    ? `🗓 ${formatDDMM(e.date)} — ${escapeHtml(e.tabName)}`
-    : `🗓 ${formatDDMM(e.date)} AZ / ${formatDDMM(mskD)} MCK — ${escapeHtml(e.tabName)}`;
+    ? `🗓 ${formatDDMM(e.date)} — ${programName}`
+    : `🗓 ${formatDDMM(e.date)} AZ / ${formatDDMM(mskD)} MCK — ${programName}`;
   const timeLine = sameDate
     ? `🕒 AZ: ${formatRange24h(e.azStartMin, e.azEndMin)} · МСК: ${formatRange24h(e.mskStartMin, e.mskEndMin)} ${hostPart}`
     : `🕒 AZ (${formatDDMM(e.date)}): ${formatRange24h(e.azStartMin, e.azEndMin)} · МСК (${formatDDMM(mskD)}): ${formatRange24h(e.mskStartMin, e.mskEndMin)} ${hostPart}`;
   return [dateHeader, timeLine].join('\n');
 }
 
-function buildSundayAnnounceMessage(events, range, { failedTabs = [] } = {}) {
+function buildSundayAnnounceMessage(events, range, { failedTabs = [], tags = [] } = {}) {
   const rangeRu = formatWeekRangeRu(range.start, range.end);
 
   const parts = [];
@@ -994,6 +1005,11 @@ function buildSundayAnnounceMessage(events, range, { failedTabs = [] } = {}) {
   parts.push(events.map(weeklyEventLineRu).join('\n\n'));
 
   parts.push('🙏 Спасибо 🌿');
+
+  // Same rule as buildWeeklyMessage: tags only while somebody is still needed.
+  if (tags.length > 0 && events.some((e) => !e.hasHost)) {
+    parts.push(tags.map((t) => escapeHtml(formatCommunityTag(t))).join(' '));
+  }
 
   return parts.join('\n\n');
 }
@@ -1223,7 +1239,8 @@ async function generateWeeklyAnnounceReport(now = new Date()) {
 async function generateSundayAnnounceReport(now = new Date()) {
   const range = getNextWeekRange(now);
   const { events, failedTabs, debugCounts } = await collectWeekEvents(range);
-  const text = buildSundayAnnounceMessage(events, range, { failedTabs });
+  const tags = loadCommunityTags();
+  const text = buildSundayAnnounceMessage(events, range, { failedTabs, tags });
   return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
 }
 
