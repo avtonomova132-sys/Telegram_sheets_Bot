@@ -1014,16 +1014,36 @@ function buildSundayAnnounceMessage(events, range, { failedTabs = [], tags = [] 
   return parts.join('\n\n');
 }
 
-// One row of two buttons per still-open (❌) event: a URL button to that
-// event's own tab (same link as the program name in the text) and a
-// callback button "can't" (nmtest: prefix — display-only for now).
+// Which event a button is about, readable without scrolling up: both time
+// zones with their dates, or one shared date when AZ and MSK fall on the
+// same day. Start times only.
+function sundayButtonWhen(e) {
+  const az = formatPoint24h(e.azStartMin);
+  const msk = formatPoint24h(e.mskStartMin);
+  const mskD = mskDate(e);
+  if (mskD.getTime() === e.date.getTime()) return `${formatDDMM(e.date)} · AZ ${az} / MCK ${msk}`;
+  return `AZ ${formatDDMM(e.date)} ${az} / MCK ${formatDDMM(mskD)} ${msk}`;
+}
+
+// Two full-width buttons per still-open (❌) event, one per row, green then
+// red (Bot API 9.4 `style`): a URL button to that event's own tab (same link
+// as the program name in the text) and a callback "can't" button (nmtest:
+// prefix — display-only for now).
 function buildSundayKeyboard(events) {
-  return events
-    .filter((e) => !e.hasHost && e.tabUrl)
-    .map((e) => [
-      { text: `✅ Я возьму · ${formatDDMM(e.date)}`, url: e.tabUrl },
-      { text: `❌ Не могу · ${formatDDMM(e.date)}`, callback_data: `nmtest:${formatDDMM(e.date)}` },
+  const rows = [];
+  for (const e of events) {
+    if (e.hasHost || !e.tabUrl) continue;
+    const when = sundayButtonWhen(e);
+    rows.push([{ text: `✅ Беру · ${when}`, url: e.tabUrl, style: 'success' }]);
+    rows.push([
+      {
+        text: `❌ Не могу · ${when}`,
+        callback_data: `nmtest:${formatDDMM(e.date)}:${formatPoint24h(e.azStartMin)}`,
+        style: 'danger',
+      },
     ]);
+  }
+  return rows;
 }
 
 // ---- /weekly — restored old bilingual format ----
