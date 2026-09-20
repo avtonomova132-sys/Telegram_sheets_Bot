@@ -947,10 +947,10 @@ function buildCheckMessage(events, range, tags, failedTabs = [], now = new Date(
 // convention lives once, in the instructions block, instead of a per-event
 // "volunteer needed" line: a blank host slot shows literally "✅/❌?" so
 // someone can reply with just that emoji, no icon suggesting a person is
-// still owed a mention. A follow-up from Elena narrowed this format to the
-// Sunday auto-announce ONLY — /weekly and /следующая_неделя went back to
-// the old bilingual, full-structure format below (buildWeeklyMessage);
-// /check and the diff-check's notices were never touched either way.
+// still owed a mention. Used ONLY by the Sunday auto-announce and the manual
+// /следующая_неделя (/next_week) — /weekly keeps the old bilingual format
+// below (buildWeeklyMessage); /check and the diff-check's notices were
+// never touched either way.
 function formatDDMM(date) {
   return `${String(date.getUTCDate()).padStart(2, '0')}.${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
 }
@@ -1014,9 +1014,9 @@ function buildSundayAnnounceMessage(events, range, { failedTabs = [], tags = [] 
   return parts.join('\n\n');
 }
 
-// ---- /weekly and /следующая_неделя — restored old bilingual format ----
-// (Elena reverted these two, keeping the new compact format above for the
-// Sunday auto-announce only.) One deliberate change from the original,
+// ---- /weekly — restored old bilingual format ----
+// (Elena kept /weekly in the old format; the new compact one above is for
+// the Sunday auto-announce and /следующая_неделя.) One deliberate change from the original,
 // pre-"new format" version: the per-event listing near the bottom now
 // shows ONLY events still missing a host (`missing`), not every event in
 // the range — Elena asked for this explicitly on top of the revert.
@@ -1142,18 +1142,15 @@ function ctaLineRu(missing) {
   return 'Если вы можете провести одну из сессий выше — пожалуйста, запишитесь по ссылке ниже 🙏';
 }
 
-// `upcoming` picks the header wording: true for /следующая_неделя (range is
-// genuinely next week), false for /weekly (range is the week already in
-// progress) — see generateWeeklyReport vs generateWeeklyAnnounceReport.
-function buildWeeklyMessage(events, range, { upcoming = false, failedTabs = [], now = new Date(), tags = [] } = {}) {
+function buildWeeklyMessage(events, range, { failedTabs = [], now = new Date(), tags = [] } = {}) {
   // Only this "missing" set is shown in the per-event listing below
   // (Elena's explicit ask) — the breakdown counts above it still cover
   // every event, unchanged from before.
   const missing = events.filter((e) => !e.hasHost && !isPastAzStart(e, now));
   const rangeEn = formatWeekRangeEn(range.start, range.end);
   const rangeRu = formatWeekRangeRu(range.start, range.end);
-  const scheduleLabelEn = upcoming ? 'Zoom broadcast schedule for the upcoming week' : 'Zoom broadcast schedule for this week';
-  const scheduleLabelRu = upcoming ? 'Расписание Zoom-эфиров на предстоящую неделю' : 'Расписание Zoom-эфиров на эту неделю';
+  const scheduleLabelEn = 'Zoom broadcast schedule for this week';
+  const scheduleLabelRu = 'Расписание Zoom-эфиров на эту неделю';
 
   const enSectionParts = ['📝', 'Precious Angels 🪽', '', 'Wishing everyone kindness and enlightenment in this life 💎', ''];
   const ruSectionParts = ['📝', 'Дорогие Ангелы 🪽', '', 'Желаем всем доброты и просветления в этой жизни 💎', ''];
@@ -1217,24 +1214,15 @@ async function generateWeeklyReport(now = new Date()) {
   const range = getCurrentWeekRange(now);
   const { events, failedTabs, debugCounts } = await collectWeekEvents(range);
   const tags = loadCommunityTags();
-  const text = buildWeeklyMessage(events, range, { upcoming: false, failedTabs, now, tags });
+  const text = buildWeeklyMessage(events, range, { failedTabs, now, tags });
   return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
 }
 
-// /следующая_неделя (он же /next_week) — same bilingual host-needed format
-// as /weekly, just for next week's range instead of the current one.
-async function generateWeeklyAnnounceReport(now = new Date()) {
-  const range = getNextWeekRange(now);
-  const { events, failedTabs, debugCounts } = await collectWeekEvents(range);
-  const tags = loadCommunityTags();
-  const text = buildWeeklyMessage(events, range, { upcoming: true, failedTabs, now, tags });
-  return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
-}
-
-// Sunday 10:00-Bali auto-announce ONLY (see checkAndSendWeeklyAnnounce in
-// index.js) — the one place that keeps Elena's new compact Russian-only
-// format (buildSundayAnnounceMessage) and the one deliberate place that
-// wants next week instead of the current one, since on Sunday "this week"
+// Next week's schedule in Elena's compact Russian-only format
+// (buildSundayAnnounceMessage). Used by BOTH the Sunday 10:00-Bali
+// auto-announce (checkAndSendWeeklyAnnounce in index.js) and the manual
+// /следующая_неделя (/next_week) — they must stay the exact same message.
+// Wants next week instead of the current one, since on Sunday "this week"
 // is the one already wrapping up.
 async function generateSundayAnnounceReport(now = new Date()) {
   const range = getNextWeekRange(now);
@@ -1655,7 +1643,6 @@ module.exports = {
   buildSundayAnnounceMessage,
   buildCheckMessage,
   generateWeeklyReport,
-  generateWeeklyAnnounceReport,
   generateSundayAnnounceReport,
   generateCheckReport,
   chunkMessage,

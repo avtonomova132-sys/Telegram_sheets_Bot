@@ -5,7 +5,6 @@ const TelegramBot = require('node-telegram-bot-api');
 const { OpenAI, toFile } = require('openai');
 const {
   generateWeeklyReport,
-  generateWeeklyAnnounceReport,
   generateSundayAnnounceReport,
   generateCheckReport,
   runDailyHostDiffCheck,
@@ -178,6 +177,27 @@ const bot = new TelegramBot(token, { polling: true });
 const openai = openaiKey ? new OpenAI({ apiKey: openaiKey, maxRetries: 0, timeout: 60000 }) : null;
 
 console.log('Бот запущен и слушает сообщения...');
+
+// Регистрация латинских волонтёрских команд в меню Telegram (setMyCommands).
+// Сначала читаем то, что уже настроено (например, через BotFather), и
+// ДОБАВЛЯЕМ/обновляем только свои — чтобы не затереть чужой список.
+(async () => {
+  const ours = [
+    { command: 'check', description: 'Кто ещё не назначен хостом на эту неделю' },
+    { command: 'weekly', description: 'Расписание текущей недели (где нужен хост)' },
+    { command: 'next_week', description: 'Расписание Zoom-эфиров на следующую неделю' },
+    { command: 'autocheck', description: 'Ручной прогон проверки изменений по хостам' },
+  ];
+  try {
+    const existing = await bot.getMyCommands();
+    const ourNames = new Set(ours.map((c) => c.command));
+    const merged = [...existing.filter((c) => !ourNames.has(c.command)), ...ours];
+    await bot.setMyCommands(merged);
+    console.log(`[commands] setMyCommands: ${merged.map((c) => '/' + c.command).join(' ')}`);
+  } catch (err) {
+    console.error('[commands] не удалось зарегистрировать команды:', err.message);
+  }
+})();
 
 // Подтверждение в логах, что список групп с включённым переводом (см.
 // translate/store.js) действительно пережил рестарт/передеплой — читается
@@ -711,13 +731,13 @@ bot.onText(/\/(check|report)\b/, (msg) => {
   handleReportCommand(msg.chat.id, 'проверку по текущей неделе', generateCheckReport);
 });
 
-// /следующая_неделя (он же /next_week) — тот же двуязычный host-needed
-// формат, что и /weekly, но на следующую Пн-Вс неделю. Использует
-// generateWeeklyAnnounceReport (не путать с generateSundayAnnounceReport
-// ниже — у воскресной авторассылки свой отдельный компактный формат,
-// Elena сузила его применение только до неё). Не трогает
-// markWeeklyAnnounceSent — вызов вручную никак не связан с "отправляли ли
-// уже сегодня" авторассылки.
+// /следующая_неделя (он же /next_week) — РОВНО то же сообщение, что уходит
+// в воскресной авторассылке (generateSundayAnnounceReport: компактный
+// русский формат, полный список эфиров следующей Пн-Вс недели, ссылки на
+// вкладку только у ❌, теги в конце), просто по запросу в любой день. Не
+// трогает markWeeklyAnnounceSent — вызов вручную никак не связан с
+// "отправляли ли уже сегодня" авторассылки. /weekly и /check остаются в
+// старом двуязычном формате "только где нужен хост".
 //
 // БЫЛО: `\b` на конце регулярки. `\b` в JS считает "словом" только
 // [A-Za-z0-9_] — кириллица в это множество не входит, так что сразу после
@@ -730,15 +750,15 @@ bot.onText(/\/(check|report)\b/, (msg) => {
 // команды в этом файле (/автопроверка, /дубли, /группы и т.д.) — там
 // \b вообще не участвует.
 bot.onText(/^\/(следующая_неделя|next_week)(?:@\S+)?$/, (msg) => {
-  handleReportCommand(msg.chat.id, 'расписание на следующую неделю', generateWeeklyAnnounceReport);
+  handleReportCommand(msg.chat.id, 'расписание на следующую неделю', generateSundayAnnounceReport);
 });
 
 // ===== Воскресная авторассылка /weekly =====
 // Каждое воскресенье в WEEKLY_ANNOUNCE_HOUR (по умолчанию 10:00) по Бали бот
 // сам присылает Елене в личку расписание на следующую неделю — без ручного
-// запуска, чтобы оно было готово к пересылке в группу с утра. Свой отдельный
-// компактный формат (generateSundayAnnounceReport), отличный от /weekly —
-// Elena явно сузила новый формат только до этой рассылки. Тот же устойчивый
+// запуска, чтобы оно было готово к пересылке в группу с утра. Компактный
+// формат generateSundayAnnounceReport (тот же, что у /следующая_неделя),
+// отличный от /weekly. Тот же устойчивый
 // "проверяем каждые 5 минут" паттерн, что и у изречения: не завязан на
 // ровный тик именно в нужную минуту.
 async function checkAndSendWeeklyAnnounce() {
@@ -798,7 +818,10 @@ async function runDiffCheck(chatId, { updateLastRunDate = false, announceNoChang
 // сравнения. Раньше запись снимка была безусловной, и ручной вызов здесь
 // мог тихо стереть реальную предыдущую базу, из-за чего следующий плановый
 // периодический тик сравнивал уже подменённую базу и ничего не находил.
-bot.onText(/^\/автопроверка(?:@\S+)?$/, async (msg) => {
+// /autocheck — латинский алиас: Telegram подсвечивает синим (bot_command)
+// только команды из [A-Za-z0-9_], кириллическая /автопроверка в меню
+// оставалась серым текстом.
+bot.onText(/^\/(автопроверка|autocheck)(?:@\S+)?$/, async (msg) => {
   try {
     await runDiffCheck(msg.chat.id, { updateLastRunDate: false, announceNoChange: true });
   } catch (err) {
