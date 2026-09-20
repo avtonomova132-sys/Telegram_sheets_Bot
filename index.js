@@ -179,22 +179,17 @@ const openai = openaiKey ? new OpenAI({ apiKey: openaiKey, maxRetries: 0, timeou
 
 console.log('Бот запущен и слушает сообщения...');
 
-// Регистрация латинских волонтёрских команд в меню Telegram (setMyCommands).
-// Сначала читаем то, что уже настроено (например, через BotFather), и
-// ДОБАВЛЯЕМ/обновляем только свои — чтобы не затереть чужой список.
+// Регистрация меню Telegram (кнопка слева от поля ввода, setMyCommands).
+// Раньше здесь мерджился отдельный список из 4 волонтёрских команд поверх
+// того, что уже было настроено — из-за этого фиолетовая кнопка показывала
+// устаревший узкий список. Теперь вся навигация идёт через /menu (см.
+// menu.js) — полная замена (не merge) на единственный пункт, чтобы кнопка
+// открывала ровно то же меню из 8 разделов, что и ручной ввод /menu.
 (async () => {
-  const ours = [
-    { command: 'check', description: 'Кто ещё не назначен хостом на эту неделю' },
-    { command: 'weekly', description: 'Расписание текущей недели (где нужен хост)' },
-    { command: 'next_week', description: 'Расписание Zoom-эфиров на следующую неделю' },
-    { command: 'autocheck', description: 'Ручной прогон проверки изменений по хостам' },
-  ];
+  const ours = [{ command: 'menu', description: 'Главное меню — все разделы' }];
   try {
-    const existing = await bot.getMyCommands();
-    const ourNames = new Set(ours.map((c) => c.command));
-    const merged = [...existing.filter((c) => !ourNames.has(c.command)), ...ours];
-    await bot.setMyCommands(merged);
-    console.log(`[commands] setMyCommands: ${merged.map((c) => '/' + c.command).join(' ')}`);
+    await bot.setMyCommands(ours);
+    console.log(`[commands] setMyCommands: ${ours.map((c) => '/' + c.command).join(' ')}`);
   } catch (err) {
     console.error('[commands] не удалось зарегистрировать команды:', err.message);
   }
