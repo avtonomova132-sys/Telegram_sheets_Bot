@@ -281,7 +281,7 @@ const MENU_RUN_HANDLERS = {
   progress: execProgress,
   check: (chatId) => handleReportCommand(chatId, 'проверку по текущей неделе', generateCheckReport),
   weekly: (chatId) => handleReportCommand(chatId, 'полный обзор недели', generateWeeklyReport),
-  next_week: (chatId) => handleReportCommand(chatId, 'расписание на следующую неделю', generateWeeklyAnnounceReport),
+  next_week: (chatId) => handleReportCommand(chatId, 'расписание на следующую неделю', generateSundayAnnounceReport),
   autocheck: (chatId) => runDiffCheck(chatId, { updateLastRunDate: false, announceNoChange: true }),
   assistenty: execAssistenty,
   check_assistants: execCheckAssistants,
@@ -308,6 +308,9 @@ const MENU_RUN_HANDLERS = {
   z: execZ,
   translate_on: (chatId, chatType) => execTranslateOn(chatId, chatType),
   translate_off: execTranslateOff,
+  pro: execPro,
+  zadacha: execZadachaUsage,
+  zadachi: execZadachi,
 };
 
 bot.on('callback_query', async (query) => {

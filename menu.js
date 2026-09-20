@@ -45,7 +45,7 @@ const SECTIONS = [
   },
   {
     key: 'volunteering',
-    title: '📅 Волонтёрство',
+    title: '📅 Волонтёрство (WVP)',
     intro: 'Координация хостов Zoom-эфиров WVP.',
     buttons: [
       [{ label: '✅ Кто не назначен', run: 'check' }],
@@ -105,6 +105,16 @@ const SECTIONS = [
     buttons: [
       [{ label: '✅ Включить перевод', run: 'translate_on' }],
       [{ label: '🛑 Выключить перевод', run: 'translate_off' }],
+    ],
+  },
+  {
+    key: 'misc',
+    title: '💬 Разное',
+    intro: 'Без привязки к конкретному направлению — личные практики и заметки.',
+    buttons: [
+      [{ label: '✅ Чек-лист практик (/pro)', run: 'pro' }],
+      [{ label: '📝 Как добавить задачу', run: 'zadacha' }],
+      [{ label: '📋 Список задач', run: 'zadachi' }],
     ],
   },
 ];
