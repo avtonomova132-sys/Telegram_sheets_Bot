@@ -1014,6 +1014,18 @@ function buildSundayAnnounceMessage(events, range, { failedTabs = [], tags = [] 
   return parts.join('\n\n');
 }
 
+// One row of two buttons per still-open (❌) event: a URL button to that
+// event's own tab (same link as the program name in the text) and a
+// callback button "can't" (nmtest: prefix — display-only for now).
+function buildSundayKeyboard(events) {
+  return events
+    .filter((e) => !e.hasHost && e.tabUrl)
+    .map((e) => [
+      { text: `✅ Я возьму · ${formatDDMM(e.date)}`, url: e.tabUrl },
+      { text: `❌ Не могу · ${formatDDMM(e.date)}`, callback_data: `nmtest:${formatDDMM(e.date)}` },
+    ]);
+}
+
 // ---- /weekly — restored old bilingual format ----
 // (Elena kept /weekly in the old format; the new compact one above is for
 // the Sunday auto-announce and /следующая_неделя.) One deliberate change from the original,
@@ -1229,7 +1241,7 @@ async function generateSundayAnnounceReport(now = new Date()) {
   const { events, failedTabs, debugCounts } = await collectWeekEvents(range);
   const tags = loadCommunityTags();
   const text = buildSundayAnnounceMessage(events, range, { failedTabs, tags });
-  return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
+  return { text, events, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
 }
 
 // Tracks the Bali calendar date /weekly was last auto-sent on Sunday
@@ -1641,6 +1653,7 @@ module.exports = {
   markWeeklyAnnounceSent,
   buildWeeklyMessage,
   buildSundayAnnounceMessage,
+  buildSundayKeyboard,
   buildCheckMessage,
   generateWeeklyReport,
   generateSundayAnnounceReport,
