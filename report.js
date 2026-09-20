@@ -1025,21 +1025,21 @@ function sundayButtonWhen(e) {
   return `AZ ${formatDDMM(e.date)} ${az} / MCK ${formatDDMM(mskD)} ${msk}`;
 }
 
-// Two full-width buttons per still-open (❌) event, one per row, green then
-// red (Bot API 9.4 `style`): a URL button to that event's own tab (same link
-// as the program name in the text) and a callback "can't" button (nmtest:
-// prefix — display-only for now).
+// Two full-width buttons per still-open (❌) event, one per row: a URL
+// button to that event's own tab (same link as the program name in the text)
+// and a callback "can't" button (nmtest: prefix — display-only for now).
+// Deliberately NO Bot API `style` colors — Elena found solid green/red too
+// loud; the ✅/❌ emoji carry the meaning on neutral default buttons.
 function buildSundayKeyboard(events) {
   const rows = [];
   for (const e of events) {
     if (e.hasHost || !e.tabUrl) continue;
     const when = sundayButtonWhen(e);
-    rows.push([{ text: `✅ Беру · ${when}`, url: e.tabUrl, style: 'success' }]);
+    rows.push([{ text: `✅ Беру · ${when}`, url: e.tabUrl }]);
     rows.push([
       {
         text: `❌ Не могу · ${when}`,
         callback_data: `nmtest:${formatDDMM(e.date)}:${formatPoint24h(e.azStartMin)}`,
-        style: 'danger',
       },
     ]);
   }
