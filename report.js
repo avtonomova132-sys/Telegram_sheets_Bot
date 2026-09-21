@@ -1046,6 +1046,117 @@ function buildSundayKeyboard(events) {
   return rows;
 }
 
+// ---- "2 days out, still no host" reminder (see hostReminder.js) ----
+// Separate from the Sunday announce and /next_week. One bilingual header
+// (EN then RU), then ONLY the still-unstaffed events, each with its own
+// "can't" counter, then the volunteer tags.
+
+// Refuser = { id, username|null, name }. Counted in "N из M" only when the
+// username matches one of the volunteer tags; anyone else who pressed is
+// listed on a separate line so nobody's answer is lost or miscounted.
+function refusalCounterRu(refusers, tags) {
+  if (!refusers || refusers.length === 0) return '';
+  const norm = (s) => String(s).replace(/^@/, '').toLowerCase();
+  const refuserNames = new Set(refusers.filter((r) => r.username).map((r) => norm(r.username)));
+  const tagNorms = new Set(tags.map(norm));
+  const no = tags.filter((t) => refuserNames.has(norm(t)));
+  const rest = tags.filter((t) => !refuserNames.has(norm(t)));
+  const others = refusers.filter((r) => !r.username || !tagNorms.has(norm(r.username)));
+  const show = (t) => escapeHtml(formatCommunityTag(t));
+  const lines = [`❌ Не могут: ${no.length} из ${tags.length}${no.length ? ` — ${no.map(show).join(', ')}` : ''}`];
+  if (others.length) {
+    lines.push(`❌ Также не могут: ${others.map((r) => escapeHtml(r.username ? `@${r.username}` : r.name)).join(', ')}`);
+  }
+  lines.push(`Ещё не отметились: ${rest.length ? rest.map(show).join(', ') : '—'}`);
+  return lines.join('\n');
+}
+
+// One line: shared date when AZ and MSK fall on the same day, otherwise each
+// zone with its own date (same convention as the Sunday announce).
+function hostReminderTimeLine(e) {
+  const mskD = mskDate(e);
+  const az = formatRange24h(e.azStartMin, e.azEndMin);
+  const msk = formatRange24h(e.mskStartMin, e.mskEndMin);
+  if (mskD.getTime() === e.date.getTime()) return `🕒 ${formatDDMM(e.date)} · AZ ${az} · MCK ${msk}`;
+  return `🕒 AZ (${formatDDMM(e.date)}): ${az} · MCK (${formatDDMM(mskD)}): ${msk}`;
+}
+
+function buildHostReminderMessage(events, { tags = [], refusals = [], test = false } = {}) {
+  const many = events.length !== 1;
+  const en = many
+    ? '🙏 Friendly reminder: the broadcasts below are in 2 days and still need a host!'
+    : '🙏 Friendly reminder: the broadcast below is in 2 days and still needs a host!';
+  const ru = many
+    ? '🙏 Дружеское напоминание: этим эфирам осталось 2 дня, а хост ещё не назначен!'
+    : '🙏 Дружеское напоминание: этому эфиру осталось 2 дня, а хост ещё не назначен!';
+
+  const parts = [];
+  if (test) parts.push('🧪 ТЕСТ: эфиры ниже на самом деле не через 2 дня, это пример формата.');
+  parts.push(`${en}\n${ru}`);
+  events.forEach((e, i) => {
+    const lines = [formatProgramNameHtml(e.tabName, e.tabUrl, false), hostReminderTimeLine(e)];
+    const counter = refusalCounterRu(refusals[i], tags);
+    if (counter) lines.push(counter);
+    parts.push(lines.join('\n'));
+  });
+  if (tags.length > 0) parts.push(tags.map((t) => escapeHtml(formatCommunityTag(t))).join(' '));
+  return parts.join('\n\n');
+}
+
+// Per event: full-width "take it" URL button to its own tab, then a
+// full-width "can't" callback button (hr:<index in this message>).
+function buildHostReminderKeyboard(events) {
+  const rows = [];
+  events.forEach((e, i) => {
+    const when = sundayButtonWhen(e);
+    if (e.tabUrl) rows.push([{ text: `✅ Беру · ${when}`, url: e.tabUrl }]);
+    rows.push([{ text: `❌ Не могу · ${when}`, callback_data: `hr:${i}` }]);
+  });
+  return rows;
+}
+
+// JSON-safe copies so a sent reminder can be re-rendered on every button
+// press without re-reading the spreadsheet.
+function snapshotEvent(e) {
+  return {
+    tabName: e.tabName,
+    title: e.title,
+    tabUrl: e.tabUrl,
+    date: e.date.toISOString(),
+    azStartMin: e.azStartMin,
+    azEndMin: e.azEndMin,
+    mskStartMin: e.mskStartMin,
+    mskStartDayOffset: e.mskStartDayOffset,
+    mskEndMin: e.mskEndMin,
+    mskEndDayOffset: e.mskEndDayOffset,
+    hasHost: false,
+    host: '',
+  };
+}
+
+function reviveEvent(s) {
+  return { ...s, date: new Date(s.date) };
+}
+
+// Unstaffed events whose AZ calendar date is exactly `daysAhead` days after
+// today's Bali date (the project-wide "today").
+async function findHostReminderEvents(now = new Date(), daysAhead = 2) {
+  const bali = baliNow(now);
+  const target = new Date(Date.UTC(bali.getUTCFullYear(), bali.getUTCMonth(), bali.getUTCDate() + daysAhead));
+  const { events, failedTabs } = await collectWeekEvents({ start: target, end: target });
+  return { target, events: events.filter((e) => !e.hasHost), failedTabs };
+}
+
+// Test data only: the next few real unstaffed, not-yet-started events
+// (current + next week), to show the reminder format when nothing is
+// actually 2 days out.
+async function findSampleUnstaffedEvents(now = new Date(), limit = 3) {
+  const cur = getCurrentWeekRange(now);
+  const next = getNextWeekRange(now);
+  const { events } = await collectWeekEvents({ start: cur.start, end: next.end });
+  return events.filter((e) => !e.hasHost && !isPastAzStart(e, now)).slice(0, limit);
+}
+
 // ---- /weekly — restored old bilingual format ----
 // (Elena kept /weekly in the old format; the new compact one above is for
 // the Sunday auto-announce and /следующая_неделя.) One deliberate change from the original,
@@ -1674,6 +1785,12 @@ module.exports = {
   buildWeeklyMessage,
   buildSundayAnnounceMessage,
   buildSundayKeyboard,
+  buildHostReminderMessage,
+  buildHostReminderKeyboard,
+  snapshotEvent,
+  reviveEvent,
+  findHostReminderEvents,
+  findSampleUnstaffedEvents,
   buildCheckMessage,
   generateWeeklyReport,
   generateSundayAnnounceReport,
