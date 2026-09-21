@@ -896,25 +896,33 @@ function buildCompactCheckBody(missing, range, tags, failedTabs) {
   const body = missing.map(compactCheckEventBlock).join('\n\n');
   const partial = failedTabs.length > 0;
 
-  const enBlock = [
+  // Only the header + symbol legend is bilingual (EN then RU); dates, program
+  // names and tags are language-neutral, so the event list appears ONCE.
+  const enHead = [
     partial ? partialDataWarningEn(failedTabs) : null,
     `❗️‼️ NEED ${n} HOST${n === 1 ? '' : 'S'} this week, ${formatWeekRangeEn(range.start, range.end)}`,
-    body,
-    '🙏 Thank you 🌿',
+    [
+      "For any sessions that don't have a Host yet, please reply using one of these symbols:",
+      '✅ — "I\'ll take this session and add myself to the schedule."',
+      '❌ — "I\'m not able to be the Host." 🙏',
+    ].join('\n'),
   ]
     .filter((part) => part !== null)
     .join('\n\n');
 
-  const ruBlock = [
+  const ruHead = [
     partial ? partialDataWarningRu(failedTabs) : null,
     `❗️‼️ ${ruHostPhrase(n)} на эту неделю, ${formatWeekRangeRuMonthFirst(range.start, range.end)}`,
-    body,
-    '🙏 Спасибо 🌿',
+    [
+      'Там, где нет Хоста, отпишитесь, пожалуйста, указав значок:',
+      '✅ - это значит «беру эфир, в расписание себя внёс»',
+      '❌ - это значит «не получается быть хостом» 🙏',
+    ].join('\n'),
   ]
     .filter((part) => part !== null)
     .join('\n\n');
 
-  const parts = [enBlock, ruBlock];
+  const parts = [enHead, ruHead, body, '🙏 Thank you / Спасибо 🌿'];
   if (tags && tags.length > 0) parts.push(tags.map((t) => escapeHtml(formatCommunityTag(t))).join(' '));
   return parts.join('\n\n');
 }
