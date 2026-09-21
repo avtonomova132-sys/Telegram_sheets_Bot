@@ -887,8 +887,10 @@ function compactCheckDateLine(e) {
   return `🗓 ${formatDDMM(e.date)} AZ / ${formatDDMM(mskD)} MCK · AZ ${az} · MCK ${msk}`;
 }
 
+// Program name links to its own tab (same helper as the Sunday announce /
+// /next_week; every event listed here is unstaffed, so it is always a link).
 function compactCheckEventBlock(e) {
-  return [compactCheckDateLine(e), escapeHtml(e.tabName), '✅ / ❌ ?'].join('\n');
+  return [compactCheckDateLine(e), sundayProgramName(e), '✅ / ❌ ?'].join('\n');
 }
 
 function buildCompactCheckBody(missing, range, tags, failedTabs) {
