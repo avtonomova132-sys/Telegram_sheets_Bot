@@ -855,14 +855,19 @@ bot.on('callback_query', async (query) => {
 // Отдельная от воскресного анонса проверка (см. hostReminder.js). Цель —
 // группа из VOLUNTEER_GROUP_ID; пока переменная не задана, уходит в личку
 // Elena (MY_CHAT_ID), чтобы ничего не терялось и её можно было переслать.
+// НА ПАУЗЕ по просьбе Elena: ежедневная проверка не запускается, пока не
+// задано HOST_REMINDER_ENABLED=1 (код и обработчик кнопок остаются).
 const hostReminderChatId = process.env.VOLUNTEER_GROUP_ID || myChatId;
+const hostReminderEnabled = process.env.HOST_REMINDER_ENABLED === '1';
 
 bot.on('callback_query', (query) => {
   if (!(query.data || '').startsWith(HOST_REMINDER_CALLBACK_PREFIX)) return;
   handleReminderCallback(bot, query);
 });
 
-if (hostReminderChatId) {
+if (!hostReminderEnabled) {
+  console.log('[host-reminder] на паузе (HOST_REMINDER_ENABLED не задан) — проверка не запускается');
+} else if (hostReminderChatId) {
   if (!process.env.VOLUNTEER_GROUP_ID) {
     console.log('[host-reminder] VOLUNTEER_GROUP_ID не задан — напоминания уходят в личку MY_CHAT_ID');
   }
