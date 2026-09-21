@@ -865,6 +865,60 @@ function partialDataWarningRu(failedTabs) {
   ].join('\n');
 }
 
+// ---- /check compact layout ----
+
+const MONTHS_RU_NOMINATIVE = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
+
+// "сентябрь 21–27" (month first, nominative) — the exact header wording
+// Elena specified for /check, unlike formatWeekRangeRu's "21–27 сентября".
+function formatWeekRangeRuMonthFirst(start, end) {
+  const sameMonth = start.getUTCMonth() === end.getUTCMonth() && start.getUTCFullYear() === end.getUTCFullYear();
+  if (sameMonth) return `${MONTHS_RU_NOMINATIVE[start.getUTCMonth()]} ${start.getUTCDate()}–${end.getUTCDate()}`;
+  return `${MONTHS_RU_NOMINATIVE[start.getUTCMonth()]} ${start.getUTCDate()} – ${MONTHS_RU_NOMINATIVE[end.getUTCMonth()]} ${end.getUTCDate()}`;
+}
+
+// One line: shared date when AZ and MSK fall on the same day, otherwise both
+// dates up front and both time ranges after.
+function compactCheckDateLine(e) {
+  const mskD = mskDate(e);
+  const az = formatRange24h(e.azStartMin, e.azEndMin);
+  const msk = formatRange24h(e.mskStartMin, e.mskEndMin);
+  if (mskD.getTime() === e.date.getTime()) return `🗓 ${formatDDMM(e.date)} · AZ ${az} · MCK ${msk}`;
+  return `🗓 ${formatDDMM(e.date)} AZ / ${formatDDMM(mskD)} MCK · AZ ${az} · MCK ${msk}`;
+}
+
+function compactCheckEventBlock(e) {
+  return [compactCheckDateLine(e), escapeHtml(e.tabName), '✅ / ❌ ?'].join('\n');
+}
+
+function buildCompactCheckBody(missing, range, tags, failedTabs) {
+  const n = missing.length;
+  const body = missing.map(compactCheckEventBlock).join('\n\n');
+  const partial = failedTabs.length > 0;
+
+  const enBlock = [
+    partial ? partialDataWarningEn(failedTabs) : null,
+    `❗️‼️ NEED ${n} HOST${n === 1 ? '' : 'S'} this week, ${formatWeekRangeEn(range.start, range.end)}`,
+    body,
+    '🙏 Thank you 🌿',
+  ]
+    .filter((part) => part !== null)
+    .join('\n\n');
+
+  const ruBlock = [
+    partial ? partialDataWarningRu(failedTabs) : null,
+    `❗️‼️ ${ruHostPhrase(n)} на эту неделю, ${formatWeekRangeRuMonthFirst(range.start, range.end)}`,
+    body,
+    '🙏 Спасибо 🌿',
+  ]
+    .filter((part) => part !== null)
+    .join('\n\n');
+
+  const parts = [enBlock, ruBlock];
+  if (tags && tags.length > 0) parts.push(tags.map((t) => escapeHtml(formatCommunityTag(t))).join(' '));
+  return parts.join('\n\n');
+}
+
 // /check — only the events still missing a host; a short all-clear message
 // if everything is covered. When some tabs failed to load, a confirmed
 // all-clear is never possible — the warning replaces the "Hooray"/"Ура"
@@ -873,7 +927,12 @@ function partialDataWarningRu(failedTabs) {
 // any slot whose Arizona start time has already passed relative to `now`
 // — asking for a host for something that already happened is misleading,
 // even though it's technically still "this week".
-function buildCheckMessage(events, range, tags, failedTabs = [], now = new Date()) {
+//
+// `compact` is the manual /check's newer look (one date+time line per event,
+// "✅ / ❌ ?" instead of the "Host: needed" line, no links, full EN section
+// then full RU section). The daily diff-check's pasted recap still calls this
+// without it and keeps the older per-zone layout on purpose.
+function buildCheckMessage(events, range, tags, failedTabs = [], now = new Date(), { compact = false } = {}) {
   const missing = events.filter((e) => !e.hasHost && !isPastAzStart(e, now));
   const rangeEn = formatWeekRangeEn(range.start, range.end);
   const rangeRu = formatWeekRangeRu(range.start, range.end);
@@ -902,6 +961,8 @@ function buildCheckMessage(events, range, tags, failedTabs = [], now = new Date(
         ].join('\n\n');
     return [enBlock, ruBlock].join('\n\n');
   }
+
+  if (compact) return buildCompactCheckBody(missing, range, tags, failedTabs);
 
   const enBody = missing.map(checkEventBlockEn).join('\n\n');
   const ruBody = missing.map(checkEventBlockRu).join('\n\n');
@@ -1399,7 +1460,7 @@ async function generateCheckReport(now = new Date()) {
   const range = getCurrentWeekRange(now);
   const { events, failedTabs, debugCounts } = await collectWeekEvents(range);
   const tags = loadCommunityTags();
-  const text = buildCheckMessage(events, range, tags, failedTabs, now);
+  const text = buildCheckMessage(events, range, tags, failedTabs, now, { compact: true });
   return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
 }
 
