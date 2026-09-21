@@ -14,7 +14,6 @@ const {
 } = require('./report');
 const {
   checkAndSendHostReminder,
-  sendHostReminder,
   handleReminderCallback,
   CALLBACK_PREFIX: HOST_REMINDER_CALLBACK_PREFIX,
 } = require('./hostReminder');
@@ -875,37 +874,6 @@ if (hostReminderChatId) {
     }
   });
 }
-
-// ВРЕМЕННО: одноразовый живой тест напоминания (только личка Elena) на
-// реальных эфирах без хоста. Маркер пишется ДО отправки — рестарт не
-// повторит. Удалить после проверки.
-(async () => {
-  if (!myChatId) return;
-  const fs = require('fs');
-  const markerPath = process.env.REMINDER_TEST_MARKER_PATH || '/data/reminder_test_sent.json';
-  if (fs.existsSync(markerPath)) return;
-  try {
-    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
-  } catch (err) {
-    console.error('[reminder-test] не удалось записать маркер, тест не отправлен:', err.message);
-    return;
-  }
-  try {
-    const { findSampleUnstaffedEvents, loadCommunityTags } = require('./report');
-    const events = await findSampleUnstaffedEvents();
-    if (events.length === 0) {
-      console.log('[reminder-test] нет эфиров без хоста для примера');
-      return;
-    }
-    await sendHostReminder(bot, { chatId: myChatId, events, tags: loadCommunityTags(), test: true });
-    console.log(`[reminder-test] отправлено в личку: эфиров=${events.length}`);
-  } catch (err) {
-    console.error('[reminder-test] ошибка отправки:', err.message);
-    try {
-      fs.unlinkSync(markerPath);
-    } catch {}
-  }
-})();
 
 // ===== Воскресная авторассылка /weekly =====
 // Каждое воскресенье в WEEKLY_ANNOUNCE_HOUR (по умолчанию 10:00) по Бали бот
