@@ -884,7 +884,7 @@ function compactCheckDateLine(e) {
   const az = formatRange24h(e.azStartMin, e.azEndMin);
   const msk = formatRange24h(e.mskStartMin, e.mskEndMin);
   if (mskD.getTime() === e.date.getTime()) return `🗓 ${formatDDMM(e.date)} · AZ ${az} · MCK ${msk}`;
-  return `🗓 ${formatDDMM(e.date)} AZ / ${formatDDMM(mskD)} MCK · AZ ${az} · MCK ${msk}`;
+  return `🗓 AZ (<b>${formatDDMM(e.date)}</b>): ${az} · MCK (<b>${formatDDMM(mskD)}</b>): ${msk}`;
 }
 
 // Program name links to its own tab (same helper as the Sunday announce /
@@ -1045,7 +1045,7 @@ function weeklyEventLineRu(e) {
     : `🗓 ${formatDDMM(e.date)} AZ / ${formatDDMM(mskD)} MCK — ${programName}`;
   const timeLine = sameDate
     ? `🕒 AZ: ${formatRange24h(e.azStartMin, e.azEndMin)} · МСК: ${formatRange24h(e.mskStartMin, e.mskEndMin)} ${hostPart}`
-    : `🕒 AZ (${formatDDMM(e.date)}): ${formatRange24h(e.azStartMin, e.azEndMin)} · МСК (${formatDDMM(mskD)}): ${formatRange24h(e.mskStartMin, e.mskEndMin)} ${hostPart}`;
+    : `🕒 AZ (<b>${formatDDMM(e.date)}</b>): ${formatRange24h(e.azStartMin, e.azEndMin)} · МСК (<b>${formatDDMM(mskD)}</b>): ${formatRange24h(e.mskStartMin, e.mskEndMin)} ${hostPart}`;
   return [dateHeader, timeLine].join('\n');
 }
 
@@ -1149,7 +1149,7 @@ function hostReminderTimeLine(e) {
   const az = formatRange24h(e.azStartMin, e.azEndMin);
   const msk = formatRange24h(e.mskStartMin, e.mskEndMin);
   if (mskD.getTime() === e.date.getTime()) return `🕒 ${formatDDMM(e.date)} · AZ ${az} · MCK ${msk}`;
-  return `🕒 AZ (${formatDDMM(e.date)}): ${az} · MCK (${formatDDMM(mskD)}): ${msk}`;
+  return `🕒 AZ (<b>${formatDDMM(e.date)}</b>): ${az} · MCK (<b>${formatDDMM(mskD)}</b>): ${msk}`;
 }
 
 function buildHostReminderMessage(events, { tags = [], refusals = [], test = false } = {}) {
