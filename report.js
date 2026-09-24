@@ -1117,6 +1117,25 @@ function buildSundayKeyboard(events) {
   return rows;
 }
 
+// Test-only variant of buildSundayKeyboard: buttons under EVERY event,
+// hosted or not, so a test group has something to click on any given week
+// (the real keyboard only puts buttons on still-open ❌ events).
+function buildSundayKeyboardAll(events) {
+  const rows = [];
+  for (const e of events) {
+    if (!e.tabUrl) continue;
+    const when = sundayButtonWhen(e);
+    rows.push([{ text: `✅ Беру · ${when}`, url: e.tabUrl }]);
+    rows.push([
+      {
+        text: `❌ Не могу · ${when}`,
+        callback_data: `nmtest:${formatDDMM(e.date)}:${formatPoint24h(e.azStartMin)}`,
+      },
+    ]);
+  }
+  return rows;
+}
+
 // ---- "2 days out, still no host" reminder (see hostReminder.js) ----
 // Separate from the Sunday announce and /next_week. One bilingual header
 // (EN then RU), then ONLY the still-unstaffed events, each with its own
@@ -1856,6 +1875,7 @@ module.exports = {
   buildWeeklyMessage,
   buildSundayAnnounceMessage,
   buildSundayKeyboard,
+  buildSundayKeyboardAll,
   buildHostReminderMessage,
   buildHostReminderKeyboard,
   snapshotEvent,
