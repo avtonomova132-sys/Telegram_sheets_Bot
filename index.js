@@ -851,58 +851,6 @@ bot.on('callback_query', async (query) => {
   }
 });
 
-// ВРЕМЕННО: маленький упрощённый тест кнопок в ТЕСТОВОЙ ГРУППЕ, на
-// ПРИДУМАННЫХ данных (не настоящее расписание) — по просьбе Elena, взамен
-// слишком длинного предыдущего теста. Каждый эфир — ОТДЕЛЬНОЕ сообщение
-// (не один длинный список), у эфиров без хоста кнопки прикреплены прямо к
-// сообщению ЭТОГО эфира, а не общим блоком внизу. Ссылки "Беру" ведут на
-// настоящие вкладки (реальные gid из tabs-config.json), сами даты/хосты —
-// вымышленные. Маркер пишется ДО отправки — рестарт не повторит. Удалить
-// после проверки.
-(async () => {
-  const TEST_GROUP_CHAT_ID = -5172293748;
-  const fs = require('fs');
-  const markerPath = process.env.SIMPLE_BUTTONS_TEST_MARKER_PATH || '/data/simple_buttons_test_sent.json';
-  if (fs.existsSync(markerPath)) return;
-  try {
-    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
-  } catch (err) {
-    console.error('[simple-buttons-test] не удалось записать маркер, тест не отправлен:', err.message);
-    return;
-  }
-  const SID = '1IvNop2sv3YMjE-D5SpL8iBMj04Vjjzi1CBhHaitnPwA';
-  const tabUrl = (gid) => `https://docs.google.com/spreadsheets/d/${SID}/edit?gid=${gid}#gid=${gid}`;
-  const events = [
-    { title: 'Diamond Sutra Study', when: '🗓 AZ: 21.09, 09:00–10:00 · MCK: 21.09, 19:00–20:00', host: 'Anna', gid: '1999892677' },
-    { title: 'Lojong Mind Training', when: '🗓 AZ: 22.09, 06:00–07:30 · MCK: 22.09, 16:00–17:30', host: null, gid: '1540568700' },
-    { title: 'Bodhicitta Circle', when: '🗓 AZ (23.09): 14:00–15:00 · MCK (24.09): 00:00–01:00', host: 'Mikhail', gid: '1153396063' },
-    { title: 'Emptiness Discussion', when: '🗓 AZ: 25.09, 05:00–06:30 · MCK: 25.09, 15:00–16:30', host: null, gid: '675522741' },
-    { title: 'Refuge Practice', when: '🗓 AZ (26.09): 18:00–19:00 · MCK (27.09): 04:00–05:00', host: null, gid: '1411715457' },
-  ];
-  try {
-    await bot.sendMessage(TEST_GROUP_CHAT_ID, 'Schedule for the upcoming week, September 21–27');
-    for (const e of events) {
-      const url = tabUrl(e.gid);
-      const lines = [e.title, e.when];
-      if (e.host) lines.push(`👤 Host: ${e.host}`);
-      const options = e.host
-        ? {}
-        : {
-            reply_markup: {
-              inline_keyboard: [[{ text: '✅ Беру', url }], [{ text: '❌ Не могу', callback_data: `nmtest:${e.gid}` }]],
-            },
-          };
-      await bot.sendMessage(TEST_GROUP_CHAT_ID, lines.join('\n'), options);
-    }
-    console.log(`[simple-buttons-test] отправлено в тестовую группу ${TEST_GROUP_CHAT_ID}: сообщений=${events.length + 1}`);
-  } catch (err) {
-    console.error('[simple-buttons-test] ошибка отправки:', err.message);
-    try {
-      fs.unlinkSync(markerPath);
-    } catch {}
-  }
-})();
-
 // ===== Напоминание за 2 дня до эфира без хоста + счётчик "❌ Не могу" =====
 // Отдельная от воскресного анонса проверка (см. hostReminder.js). Цель —
 // группа из VOLUNTEER_GROUP_ID; пока переменная не задана, уходит в личку
