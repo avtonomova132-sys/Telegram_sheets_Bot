@@ -851,46 +851,6 @@ bot.on('callback_query', async (query) => {
   }
 });
 
-// ВРЕМЕННО: одноразовый живой тест кнопок в ТЕСТОВОЙ ГРУППЕ (не личка).
-// Реальное расписание ТЕКУЩЕЙ недели (та же generateSundayAnnounceReport'а
-// текстовая сборка, buildSundayAnnounceMessage), но с кнопками под КАЖДЫМ
-// эфиром, даже с уже назначенным хостом — чтобы в группе было на чём
-// понажимать. Маркер пишется ДО отправки — рестарт не повторит. Удалить
-// после проверки.
-(async () => {
-  const TEST_GROUP_CHAT_ID = -5172293748;
-  const fs = require('fs');
-  const markerPath = process.env.GROUP_BUTTONS_TEST_MARKER_PATH || '/data/group_buttons_test_sent.json';
-  if (fs.existsSync(markerPath)) return;
-  try {
-    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
-  } catch (err) {
-    console.error('[group-buttons-test] не удалось записать маркер, тест не отправлен:', err.message);
-    return;
-  }
-  try {
-    const { getCurrentWeekRange, collectWeekEvents, buildSundayAnnounceMessage, buildSundayKeyboardAll, loadCommunityTags } = require('./report');
-    const range = getCurrentWeekRange();
-    const { events, failedTabs } = await collectWeekEvents(range);
-    const text = buildSundayAnnounceMessage(events, range, { failedTabs, tags: loadCommunityTags() });
-    const chunks = chunkMessage(text);
-    const keyboard = buildSundayKeyboardAll(events);
-    for (let i = 0; i < chunks.length; i++) {
-      const isLast = i === chunks.length - 1;
-      await bot.sendMessage(TEST_GROUP_CHAT_ID, chunks[i], {
-        parse_mode: 'HTML',
-        ...(isLast && keyboard.length > 0 ? { reply_markup: { inline_keyboard: keyboard } } : {}),
-      });
-    }
-    console.log(`[group-buttons-test] отправлено в тестовую группу ${TEST_GROUP_CHAT_ID}: чанков=${chunks.length}, рядов кнопок=${keyboard.length}`);
-  } catch (err) {
-    console.error('[group-buttons-test] ошибка отправки:', err.message);
-    try {
-      fs.unlinkSync(markerPath);
-    } catch {}
-  }
-})();
-
 // ===== Напоминание за 2 дня до эфира без хоста + счётчик "❌ Не могу" =====
 // Отдельная от воскресного анонса проверка (см. hostReminder.js). Цель —
 // группа из VOLUNTEER_GROUP_ID; пока переменная не задана, уходит в личку
