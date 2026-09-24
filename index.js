@@ -871,69 +871,6 @@ cron.schedule('*/5 * * * *', async () => {
   }
 });
 
-// ВРЕМЕННО: живой тест РЕАЛЬНЫХ кнопок (не "для вида") в ТЕСТОВОЙ ГРУППЕ,
-// на той же вымышленной неделе. По просьбе Elena после того, как визуально
-// формат карточек одобрен: теперь "Беру" реально закрывает карточку
-// (убирает кнопки, показывает "✅ Взял(а): @имя"), а "Не могу" реально
-// ведёт и обновляет счётчик "не могут / ещё не отметились" под КОНКРЕТНОЙ
-// карточкой. Маркер пишется ДО отправки — рестарт не повторит. Удалить
-// после проверки (сам механизм в cardButtons.js остаётся не тестовым).
-(async () => {
-  const TEST_GROUP_CHAT_ID = -5172293748;
-  const fs = require('fs');
-  const markerPath = process.env.REAL_CARD_TEST_MARKER_PATH || '/data/real_card_test_sent.json';
-  if (fs.existsSync(markerPath)) return;
-  try {
-    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
-  } catch (err) {
-    console.error('[real-card-test] не удалось записать маркер, тест не отправлен:', err.message);
-    return;
-  }
-  const SID = '1IvNop2sv3YMjE-D5SpL8iBMj04Vjjzi1CBhHaitnPwA';
-  const tabUrl = (gid) => `https://docs.google.com/spreadsheets/d/${SID}/edit?gid=${gid}#gid=${gid}`;
-  const events = [
-    { title: 'Diamond Sutra Study', az: '21.09', azTime: '09:00–10:00', msk: '21.09', mskTime: '19:00–20:00', host: 'Anna', gid: '1999892677' },
-    { title: 'Lojong Mind Training', az: '22.09', azTime: '06:00–07:30', msk: '22.09', mskTime: '16:00–17:30', host: null, gid: '1540568700' },
-    { title: 'Bodhicitta Circle', az: '23.09', azTime: '14:00–15:00', msk: '24.09', mskTime: '00:00–01:00', host: 'Mikhail', gid: '1153396063' },
-    { title: 'Emptiness Discussion', az: '25.09', azTime: '05:00–06:30', msk: '25.09', mskTime: '15:00–16:30', host: null, gid: '675522741' },
-    { title: 'Refuge Practice', az: '26.09', azTime: '18:00–19:00', msk: '27.09', mskTime: '04:00–05:00', host: null, gid: '1411715457' },
-  ];
-  try {
-    const { loadCommunityTags, escapeHtml } = require('./report');
-    const candidateTags = loadCommunityTags();
-    await bot.sendMessage(
-      TEST_GROUP_CHAT_ID,
-      [
-        '📅🔔 Zoom broadcast schedule for the upcoming week, September 21–27',
-        "Please mark whether you can or can't take a session.",
-        '',
-        '📅🔔 Расписание Zoom-эфиров на предстоящую неделю, 21–27 сентября',
-        'Отметьте, пожалуйста, кто может, а кто не может взять эфир.',
-        '',
-        '🧪 Тест: реальные кнопки, счётчик и закрытие карточки по нажатию.',
-      ].join('\n')
-    );
-    let i = 0;
-    for (const e of events) {
-      i++;
-      const dateLine = `🗓 AZ: <b>${e.az}</b>, ${e.azTime} · MCK: <b>${e.msk}</b>, ${e.mskTime}`;
-      if (e.host) {
-        const titleLine = `${i}. <b>${escapeHtml(e.title)}</b>`;
-        await bot.sendMessage(TEST_GROUP_CHAT_ID, [titleLine, dateLine, `👤 Host: ${escapeHtml(e.host)}`].join('\n'), { parse_mode: 'HTML' });
-      } else {
-        const titleLine = `${i}. <b><a href="${tabUrl(e.gid)}">${escapeHtml(e.title)}</a></b>`;
-        await sendCard(bot, TEST_GROUP_CHAT_ID, { titleLine, dateLine, candidateTags });
-      }
-    }
-    console.log(`[real-card-test] отправлено в тестовую группу ${TEST_GROUP_CHAT_ID}: сообщений=${events.length + 1}`);
-  } catch (err) {
-    console.error('[real-card-test] ошибка отправки:', err.message);
-    try {
-      fs.unlinkSync(markerPath);
-    } catch {}
-  }
-})();
-
 // ===== Напоминание за 2 дня до эфира без хоста + счётчик "❌ Не могу" =====
 // Отдельная от воскресного анонса проверка (см. hostReminder.js). Цель —
 // группа из VOLUNTEER_GROUP_ID; пока переменная не задана, уходит в личку
