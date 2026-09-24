@@ -72,7 +72,10 @@ function cardText(record) {
     lines.push(`✅ Взял(а): ${escapeHtml(displayName(record.takenBy))} (только что)`);
   } else {
     const counter = refusalCounterBlock(record.refusers, record.candidateTags);
-    if (counter) lines.push(counter);
+    // Blank line + a small bold header separates the volunteer-response
+    // status from the date/title above it — without this it read as one
+    // run-on block and was easy to miss.
+    if (counter) lines.push('', '📊 <b>Статус ответов:</b>', counter);
   }
   return lines.join('\n');
 }
