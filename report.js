@@ -1901,6 +1901,7 @@ module.exports = {
   formatRange12h,
   formatRange24h,
   escapeHtml,
+  formatCommunityTag,
   isPastAzStart,
   formatProgramNameHtml,
   csvUrl,
