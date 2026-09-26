@@ -938,7 +938,15 @@ function notifyElena(text) {
   bot.sendMessage(myChatId, text).catch((err) => console.error('[weekly-announce] не удалось написать Елене:', err.message));
 }
 
+// НА ПАУЗЕ по просьбе Elena (сначала обсуждает формат/логику с коллегой):
+// автоматическая воскресная рассылка не отправляется, пока не задано
+// WEEKLY_ANNOUNCE_ENABLED=1 — после её отдельного "можно отправлять". Ручной
+// /next_week, карточки, счётчик и список хостов от этого не зависят.
+const WEEKLY_ANNOUNCE_ENABLED = process.env.WEEKLY_ANNOUNCE_ENABLED === '1';
+
 async function checkAndSendWeeklyAnnounce() {
+  if (!WEEKLY_ANNOUNCE_ENABLED) return;
+
   const nowBali = new Date(Date.now() + 8 * 60 * 60 * 1000);
   if (nowBali.getUTCDay() !== 0) return; // не воскресенье (по Бали)
 
@@ -995,6 +1003,9 @@ if (myChatId) {
 // исключён) или писать в ней не может — Елене сразу в личку, а не в
 // воскресенье в 10:00, когда рассылка уже упадёт.
 (async () => {
+  if (!WEEKLY_ANNOUNCE_ENABLED) {
+    console.log('[weekly-announce] НА ПАУЗЕ (WEEKLY_ANNOUNCE_ENABLED не задан) — автоматическая воскресная рассылка не отправляется');
+  }
   const groupId = process.env.VOLUNTEER_GROUP_ID;
   if (!groupId) {
     console.log('[weekly-announce] VOLUNTEER_GROUP_ID не задан — воскресная рассылка пойдёт в личку MY_CHAT_ID');
