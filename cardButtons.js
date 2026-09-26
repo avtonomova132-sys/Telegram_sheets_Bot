@@ -163,6 +163,13 @@ async function sendWeekCards(bot, chatId, { now = new Date(), requireComplete = 
   if (events.length === 0) return { aborted: 'empty', failedTabs, events: 0, sent: 0 };
   if (requireComplete && failedTabs.length > 0) return { aborted: 'failedTabs', failedTabs, events: events.length, sent: 0 };
 
+  return postWeekCards(bot, chatId, events, range, failedTabs);
+}
+
+// The sending half of sendWeekCards, on an already-collected event list
+// (split out so a test can post a hand-adjusted list through the exact same
+// code path).
+async function postWeekCards(bot, chatId, events, range, failedTabs = []) {
   const { header, cards, closing, openCount } = buildWeekCardParts(events, range);
   // Every event of the week already has a host — nothing to ask for.
   if (openCount === 0) return { aborted: 'allCovered', failedTabs, events: events.length, sent: 0 };
@@ -295,4 +302,4 @@ async function checkCardExpiry(bot) {
   if (changed) writeJsonAtomic(store);
 }
 
-module.exports = { sendCard, sendWeekCards, handleCardCallback, checkCardExpiry, TAKE_CALLBACK, PASS_CALLBACK };
+module.exports = { sendCard, sendWeekCards, postWeekCards, handleCardCallback, checkCardExpiry, TAKE_CALLBACK, PASS_CALLBACK };

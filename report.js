@@ -1082,15 +1082,15 @@ function buildWeekCardParts(events, range) {
   const header = [
     `❗️‼️ NEED ${n} HOST${n === 1 ? '' : 'S'} for the upcoming week, ${formatWeekRangeEn(range.start, range.end)}`,
     '',
-    'Where there is no Host yet, please reply with one of these symbols (or in any other convenient way):',
-    '✅ — "I\'ll take this session and add myself to the schedule."',
-    '❌ — "I\'m not able to be the Host." 🙏',
+    'Please mark below by tapping:',
+    "✅ - take this session - you'll be taken to that session's tab.",
+    "❌ - can't do it - we'll know for sure who's not available 🙏",
     '',
     `❗️‼️ ${ruHostPhrase(n)} на предстоящую неделю, ${formatWeekRangeRuMonthFirst(range.start, range.end)}`,
     '',
-    'Там, где нет Хоста, отпишитесь, пожалуйста, указав значок или другим удобным способом:',
-    '✅ - это значит «беру эфир, в расписание себя внёс»',
-    '❌ - это значит «не получается быть хостом» 🙏',
+    'Отметьтесь, пожалуйста, ниже, нажав на:',
+    '✅ - беру эфир - попадёте во вкладку эфира.',
+    '❌ - не могу - будем знать, кто точно не может 🙏',
   ].join('\n');
 
   const cards = open.map((e, i) => ({
