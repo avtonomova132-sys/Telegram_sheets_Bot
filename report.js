@@ -444,13 +444,34 @@ function isPastAzStart(e, now) {
 // to this tab across every other tab checked.
 // Elena: temporary while she confirms with Marina whether Inna's classes
 // get their own (non-WVP) hosts — not a permanent policy decision.
+//
+// EXCLUDED_BY_TITLE_OR_GENERIC_ROW_UNDER_LABEL — "THE BREAKFAST CLUB with Nick
+// Lashaw" (same shared gid 104338179 tab as Pramana; its hosts are not from
+// our volunteer group). Its own segment DOES get the right programLabel (it
+// has its own standalone title row), but some of its rows carry only a bare
+// "Class 3" as the title (confirmed: the Sep 24 2026 row), so a title-only
+// match would miss them. Matching the label alone would be the same
+// inheritance trap as Pramana above (a later program added below it without
+// its own title row would inherit this label and vanish). So: excluded when
+// the title names the program, OR when the label is this program AND the
+// title has no "… with …" program name of its own (every real program title
+// on this sheet has one) — a different program inheriting the label keeps
+// showing up.
 const EXCLUDED_BY_TITLE_ONLY = ['Pramana - The Emptiness of Colors with Adam Andrade & Juan Jasso'];
 const EXCLUDED_BY_TITLE_OR_TABNAME = ['McMichael'];
+const EXCLUDED_BY_TITLE_OR_GENERIC_ROW_UNDER_LABEL = ['THE BREAKFAST CLUB with Nick Lashaw'];
 
 function isExcludedProgramEvent(title, tabName = '') {
   if (EXCLUDED_BY_TITLE_ONLY.some((marker) => title.includes(marker))) return true;
   if (EXCLUDED_BY_TITLE_OR_TABNAME.some((marker) => title.includes(marker) || tabName.includes(marker))) return true;
-  return false;
+
+  const lowerTitle = title.toLowerCase();
+  const lowerTab = tabName.toLowerCase();
+  const hasOwnProgramName = /\bwith\b/i.test(title);
+  return EXCLUDED_BY_TITLE_OR_GENERIC_ROW_UNDER_LABEL.some((marker) => {
+    const m = marker.toLowerCase();
+    return lowerTitle.includes(m) || (lowerTab.includes(m) && !hasOwnProgramName);
+  });
 }
 
 function parseTabEvents(tabName, rows) {
@@ -1057,10 +1078,14 @@ function weekCardDateLine(e) {
 function buildWeekCardParts(events, range) {
   const header = [
     `📅🔔 Zoom broadcast schedule for the upcoming week, ${formatWeekRangeEn(range.start, range.end)}`,
-    "Please mark whether you can or can't take a session.",
+    'Please mark:',
+    '✅ — you can take it',
+    "❌ — you can't take it",
     '',
     `📅🔔 Расписание Zoom-эфиров на предстоящую неделю, ${formatWeekRangeRu(range.start, range.end)}`,
-    'Отметьте, пожалуйста, кто может, а кто не может взять эфир.',
+    'Отметьте:',
+    '✅ — можете взять эфир',
+    '❌ — не можете взять эфир',
   ].join('\n');
 
   const cards = events.map((e, i) => {

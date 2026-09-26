@@ -990,6 +990,31 @@ if (myChatId) {
   cron.schedule('*/5 * * * *', checkAndSendWeeklyAnnounce);
 }
 
+// Проверка при старте, КУДА уйдёт воскресная рассылка: название группы и
+// статус бота в ней пишутся в лог; если бот группу не видит (не добавлен /
+// исключён) или писать в ней не может — Елене сразу в личку, а не в
+// воскресенье в 10:00, когда рассылка уже упадёт.
+(async () => {
+  const groupId = process.env.VOLUNTEER_GROUP_ID;
+  if (!groupId) {
+    console.log('[weekly-announce] VOLUNTEER_GROUP_ID не задан — воскресная рассылка пойдёт в личку MY_CHAT_ID');
+    return;
+  }
+  try {
+    const me = await bot.getMe();
+    const chat = await bot.getChat(groupId);
+    const member = await bot.getChatMember(groupId, me.id);
+    const cannotWrite = member.status === 'left' || member.status === 'kicked' || member.can_send_messages === false;
+    console.log(`[weekly-announce] цель воскресной рассылки: группа "${chat.title}" (${chat.type}, id ${groupId}), статус бота: ${member.status}${cannotWrite ? ' — ПИСАТЬ НЕЛЬЗЯ' : ''}`);
+    if (cannotWrite) {
+      notifyElena(`⚠️ Воскресная рассылка настроена на группу "${chat.title}", но бот там не может писать (статус: ${member.status}). Проверь права бота в группе.`);
+    }
+  } catch (err) {
+    console.error('[weekly-announce] не удалось проверить группу рассылки:', err.message);
+    notifyElena(`⚠️ Воскресная рассылка настроена на группу ${groupId}, но бот её не видит: ${err.message}. Проверь, что бот добавлен в группу и id верный.`);
+  }
+})();
+
 // ===== Ежедневная diff-проверка хостов =====
 // Раз в день (в 9:00 по Бали) сравнивает вкладки из daily-check-tabs.json с
 // тем, что было при прошлой проверке (снимок на Railway Volume), и пишет
