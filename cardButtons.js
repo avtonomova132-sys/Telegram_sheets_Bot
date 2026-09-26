@@ -22,7 +22,27 @@
 
 const fs = require('fs');
 const path = require('path');
-const { escapeHtml, formatCommunityTag } = require('./report');
+const { escapeHtml, formatCommunityTag, getNextWeekRange, collectWeekEvents, buildWeekCardParts } = require('./report');
+
+// Telegram allows roughly 20 messages/minute into one group — a week is
+// ~25 cards, so group sends are paced ~3.2s apart (a burst gets HTTP 429).
+const GROUP_GAP_MS = 3200;
+const PRIVATE_GAP_MS = 350;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// One retry after Telegram's own "retry_after" hint on a 429; anything else
+// (bot not in the group, chat not found, ...) is thrown to the caller.
+async function withRetry(fn) {
+  try {
+    return await fn();
+  } catch (err) {
+    const retryAfter = err && err.response && err.response.body && err.response.body.parameters && err.response.body.parameters.retry_after;
+    if (!retryAfter) throw err;
+    await sleep((retryAfter + 1) * 1000);
+    return fn();
+  }
+}
 
 const STATE_PATH = process.env.CARD_BUTTONS_STATE_PATH || '/data/card_buttons.json';
 const KEEP_MS = 30 * 24 * 60 * 60 * 1000;
@@ -102,10 +122,12 @@ function cardKeyboard(record) {
 // модуль только хранит состояние и отрисовывает статус/кнопки под ними).
 async function sendCard(bot, chatId, { titleLine, dateLine, candidateTags = loadHostCandidates() }) {
   const record = { titleLine, dateLine, candidateTags, refusers: [], takenBy: null };
-  const sent = await bot.sendMessage(chatId, cardText(record), {
-    parse_mode: 'HTML',
-    reply_markup: { inline_keyboard: cardKeyboard(record) },
-  });
+  const sent = await withRetry(() =>
+    bot.sendMessage(chatId, cardText(record), {
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: cardKeyboard(record) },
+    })
+  );
 
   const store = readJson({ messages: {} });
   const cutoff = Date.now() - KEEP_MS;
@@ -115,6 +137,44 @@ async function sendCard(bot, chatId, { titleLine, dateLine, candidateTags = load
   store.messages[`${chatId}:${sent.message_id}`] = { ...record, createdAt: Date.now() };
   writeJsonAtomic(store);
   return sent;
+}
+
+// Next week's schedule as a header + one card per event (see report.js:
+// buildWeekCardParts). Used by the Sunday auto-announce and /next_week.
+// requireComplete: when a spreadsheet tab failed to load, post NOTHING
+// (returns aborted:'failedTabs') instead of publishing a partial schedule
+// to a group. On a send error midway the thrown error carries `sentSoFar`.
+async function sendWeekCards(bot, chatId, { now = new Date(), requireComplete = false } = {}) {
+  const range = getNextWeekRange(now);
+  const { events, failedTabs } = await collectWeekEvents(range);
+
+  if (events.length === 0) return { aborted: 'empty', failedTabs, events: 0, sent: 0 };
+  if (requireComplete && failedTabs.length > 0) return { aborted: 'failedTabs', failedTabs, events: events.length, sent: 0 };
+
+  const { header, cards } = buildWeekCardParts(events, range);
+  const gapMs = chatId < 0 ? GROUP_GAP_MS : PRIVATE_GAP_MS;
+  let sent = 0;
+
+  try {
+    await withRetry(() => bot.sendMessage(chatId, header));
+    sent++;
+    for (const card of cards) {
+      await sleep(gapMs);
+      if (card.open) {
+        await sendCard(bot, chatId, { titleLine: card.titleLine, dateLine: card.dateLine });
+      } else {
+        await withRetry(() =>
+          bot.sendMessage(chatId, [card.titleLine, card.dateLine, card.hostLine].join('\n'), { parse_mode: 'HTML' })
+        );
+      }
+      sent++;
+    }
+  } catch (err) {
+    err.sentSoFar = sent;
+    throw err;
+  }
+
+  return { aborted: null, failedTabs, events: events.length, sent };
 }
 
 async function redrawCard(bot, chatId, messageId, record) {
@@ -221,4 +281,4 @@ async function checkCardExpiry(bot) {
   if (changed) writeJsonAtomic(store);
 }
 
-module.exports = { sendCard, handleCardCallback, checkCardExpiry, TAKE_CALLBACK, PASS_CALLBACK };
+module.exports = { sendCard, sendWeekCards, handleCardCallback, checkCardExpiry, TAKE_CALLBACK, PASS_CALLBACK };

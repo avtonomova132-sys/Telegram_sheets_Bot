@@ -1011,17 +1011,7 @@ function buildCheckMessage(events, range, tags, failedTabs = [], now = new Date(
   return parts.join('\n\n');
 }
 
-// ---- Sunday 10:00-Bali auto-announce ONLY — Elena's new compact format ----
-// (Sept 2026): Russian only, no per-event ✅/📛 marker, no breakdown counts,
-// no CTA line; program name is a link to its tab only while the host slot
-// is open, and community tags close the message. Self-signup
-// convention lives once, in the instructions block, instead of a per-event
-// "volunteer needed" line: a blank host slot shows literally "✅/❌?" so
-// someone can reply with just that emoji, no icon suggesting a person is
-// still owed a mention. Used ONLY by the Sunday auto-announce and the manual
-// /следующая_неделя (/next_week) — /weekly keeps the old bilingual format
-// below (buildWeeklyMessage); /check and the diff-check's notices were
-// never touched either way.
+// ---- Shared compact date/link helpers (/check, week cards, host reminder) ----
 function formatDDMM(date) {
   return `${String(date.getUTCDate()).padStart(2, '0')}.${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
 }
@@ -1029,65 +1019,15 @@ function formatDDMM(date) {
 // Program name is a link to its own tab (e.tabUrl, gid from tabs-config.json)
 // ONLY while the host slot is still open — same "link = still needs a host"
 // signal as formatProgramNameHtml, minus the ✅/📛 marker and bold. Once a
-// host is assigned it is plain text.
+// host is assigned it is plain text. (Used by /check.)
 function sundayProgramName(e) {
   const name = escapeHtml(e.tabName);
   return !e.hasHost && e.tabUrl ? `<a href="${e.tabUrl}">${name}</a>` : name;
 }
 
-function weeklyEventLineRu(e) {
-  const mskD = mskDate(e);
-  const sameDate = mskD.getTime() === e.date.getTime();
-  const hostPart = e.hasHost ? `👤 ${escapeHtml(e.host)}` : '✅/❌?';
-  const programName = sundayProgramName(e);
-  const dateHeader = sameDate
-    ? `🗓 ${formatDDMM(e.date)} — ${programName}`
-    : `🗓 ${formatDDMM(e.date)} AZ / ${formatDDMM(mskD)} MCK — ${programName}`;
-  const timeLine = sameDate
-    ? `🕒 AZ: ${formatRange24h(e.azStartMin, e.azEndMin)} · МСК: ${formatRange24h(e.mskStartMin, e.mskEndMin)} ${hostPart}`
-    : `🕒 AZ (<b>${formatDDMM(e.date)}</b>): ${formatRange24h(e.azStartMin, e.azEndMin)} · МСК (<b>${formatDDMM(mskD)}</b>): ${formatRange24h(e.mskStartMin, e.mskEndMin)} ${hostPart}`;
-  return [dateHeader, timeLine].join('\n');
-}
-
-function buildSundayAnnounceMessage(events, range, { failedTabs = [], tags = [] } = {}) {
-  const rangeRu = formatWeekRangeRu(range.start, range.end);
-
-  const parts = [];
-
-  if (failedTabs.length > 0) {
-    parts.push(partialDataWarningRu(failedTabs));
-  }
-
-  parts.push(`📅🔔 Расписание Zoom-эфиров на предстоящую неделю, ${rangeRu}`);
-
-  if (events.length === 0) {
-    parts.push('На этой неделе нет запланированных сессий.');
-    return parts.join('\n\n');
-  }
-
-  parts.push(
-    [
-      'Там, где нет Хоста, отпишитесь, пожалуйста, указав значок:',
-      '✅ - это значит «беру эфир, в расписание себя внёс»',
-      '❌ - это значит «не получается быть хостом» 🙏',
-    ].join('\n')
-  );
-
-  parts.push(events.map(weeklyEventLineRu).join('\n\n'));
-
-  parts.push('🙏 Спасибо 🌿');
-
-  // Same rule as buildWeeklyMessage: tags only while somebody is still needed.
-  if (tags.length > 0 && events.some((e) => !e.hasHost)) {
-    parts.push(tags.map((t) => escapeHtml(formatCommunityTag(t))).join(' '));
-  }
-
-  return parts.join('\n\n');
-}
-
 // Which event a button is about, readable without scrolling up: both time
 // zones with their dates, or one shared date when AZ and MSK fall on the
-// same day. Start times only.
+// same day. Start times only. (Used by the host-reminder keyboard.)
 function sundayButtonWhen(e) {
   const az = formatPoint24h(e.azStartMin);
   const msk = formatPoint24h(e.mskStartMin);
@@ -1096,44 +1036,47 @@ function sundayButtonWhen(e) {
   return `AZ ${formatDDMM(e.date)} ${az} / MCK ${formatDDMM(mskD)} ${msk}`;
 }
 
-// Two full-width buttons per still-open (❌) event, one per row: a URL
-// button to that event's own tab (same link as the program name in the text)
-// and a callback "can't" button (nmtest: prefix — display-only for now).
-// Deliberately NO Bot API `style` colors — Elena found solid green/red too
-// loud; the ✅/❌ emoji carry the meaning on neutral default buttons.
-function buildSundayKeyboard(events) {
-  const rows = [];
-  for (const e of events) {
-    if (e.hasHost || !e.tabUrl) continue;
-    const when = sundayButtonWhen(e);
-    rows.push([{ text: `✅ Беру · ${when}`, url: e.tabUrl }]);
-    rows.push([
-      {
-        text: `❌ Не могу · ${when}`,
-        callback_data: `nmtest:${formatDDMM(e.date)}:${formatPoint24h(e.azStartMin)}`,
-      },
-    ]);
-  }
-  return rows;
+// ---- One-message-per-event weekly schedule (see cardButtons.js: sendWeekCards) ----
+// The Sunday auto-announce and /next_week: a bilingual header, then every
+// event of the week as its own numbered card, in chronological order.
+// Open (no host) events get a linked bold title and the ✅ Беру / ❌ Не могу
+// buttons (added by cardButtons.js); hosted events are plain cards with the
+// host line and no buttons.
+
+function keycapNumber(n) {
+  return String(n)
+    .split('')
+    .map((d) => `${d}️⃣`)
+    .join('');
 }
 
-// Test-only variant of buildSundayKeyboard: buttons under EVERY event,
-// hosted or not, so a test group has something to click on any given week
-// (the real keyboard only puts buttons on still-open ❌ events).
-function buildSundayKeyboardAll(events) {
-  const rows = [];
-  for (const e of events) {
-    if (!e.tabUrl) continue;
-    const when = sundayButtonWhen(e);
-    rows.push([{ text: `✅ Беру · ${when}`, url: e.tabUrl }]);
-    rows.push([
-      {
-        text: `❌ Не могу · ${when}`,
-        callback_data: `nmtest:${formatDDMM(e.date)}:${formatPoint24h(e.azStartMin)}`,
-      },
-    ]);
-  }
-  return rows;
+function weekCardDateLine(e) {
+  return `🗓 AZ: <b>${formatDDMM(e.date)}</b>, ${formatRange24h(e.azStartMin, e.azEndMin)} · MCK: <b>${formatDDMM(mskDate(e))}</b>, ${formatRange24h(e.mskStartMin, e.mskEndMin)}`;
+}
+
+function buildWeekCardParts(events, range) {
+  const header = [
+    `📅🔔 Zoom broadcast schedule for the upcoming week, ${formatWeekRangeEn(range.start, range.end)}`,
+    "Please mark whether you can or can't take a session.",
+    '',
+    `📅🔔 Расписание Zoom-эфиров на предстоящую неделю, ${formatWeekRangeRu(range.start, range.end)}`,
+    'Отметьте, пожалуйста, кто может, а кто не может взять эфир.',
+  ].join('\n');
+
+  const cards = events.map((e, i) => {
+    const num = keycapNumber(i + 1);
+    const name = escapeHtml(e.tabName);
+    const open = !e.hasHost;
+    const titleLine = open && e.tabUrl ? `${num} <b><a href="${e.tabUrl}">${name}</a></b>` : `${num} <b>${name}</b>`;
+    return {
+      open,
+      titleLine,
+      dateLine: weekCardDateLine(e),
+      hostLine: open ? null : `👤 Host: ${escapeHtml(e.host)}`,
+    };
+  });
+
+  return { header, cards };
 }
 
 // ---- "2 days out, still no host" reminder (see hostReminder.js) ----
@@ -1449,20 +1392,6 @@ async function generateWeeklyReport(now = new Date()) {
   const tags = loadCommunityTags();
   const text = buildWeeklyMessage(events, range, { failedTabs, now, tags });
   return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
-}
-
-// Next week's schedule in Elena's compact Russian-only format
-// (buildSundayAnnounceMessage). Used by BOTH the Sunday 10:00-Bali
-// auto-announce (checkAndSendWeeklyAnnounce in index.js) and the manual
-// /следующая_неделя (/next_week) — they must stay the exact same message.
-// Wants next week instead of the current one, since on Sunday "this week"
-// is the one already wrapping up.
-async function generateSundayAnnounceReport(now = new Date()) {
-  const range = getNextWeekRange(now);
-  const { events, failedTabs, debugCounts } = await collectWeekEvents(range);
-  const tags = loadCommunityTags();
-  const text = buildSundayAnnounceMessage(events, range, { failedTabs, tags });
-  return { text, events, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
 }
 
 // Tracks the Bali calendar date /weekly was last auto-sent on Sunday
@@ -1873,9 +1802,7 @@ module.exports = {
   getWeeklyAnnounceLastSentDate,
   markWeeklyAnnounceSent,
   buildWeeklyMessage,
-  buildSundayAnnounceMessage,
-  buildSundayKeyboard,
-  buildSundayKeyboardAll,
+  buildWeekCardParts,
   buildHostReminderMessage,
   buildHostReminderKeyboard,
   snapshotEvent,
@@ -1884,7 +1811,6 @@ module.exports = {
   findSampleUnstaffedEvents,
   buildCheckMessage,
   generateWeeklyReport,
-  generateSundayAnnounceReport,
   generateCheckReport,
   chunkMessage,
   // Pure formatting/date helpers only — no host-tracking business logic —
