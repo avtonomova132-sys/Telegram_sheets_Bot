@@ -831,7 +831,7 @@ bot.onText(/\/(check|report)\b/, (msg) => {
 
 // /следующая_неделя (он же /next_week) — РОВНО то же, что уходит в
 // воскресной авторассылке (sendWeekCards: шапка + карточка на каждый эфир
-// следующей Пн-Вс недели, кнопки под эфирами без хоста), просто по запросу в
+// следующей Пн-Вс недели БЕЗ хоста, кнопки под каждой), просто по запросу в
 // любой день, в тот чат, где вызвана. Не трогает markWeeklyAnnounceSent —
 // вызов вручную никак не связан с "отправляли ли уже сегодня" авторассылки.
 // /weekly и /check остаются в старом виде. В группах команду выполняет
@@ -844,6 +844,8 @@ async function execNextWeek(chatId, { inGroup = false } = {}) {
 
     if (result.aborted === 'empty') {
       await bot.sendMessage(chatId, 'На следующей неделе нет запланированных сессий.');
+    } else if (result.aborted === 'allCovered') {
+      await bot.sendMessage(chatId, 'На следующей неделе у всех эфиров уже есть хост 🎉 — просить некого.');
     } else if (result.aborted === 'failedTabs') {
       await bot.sendMessage(chatId, `⚠️ Часть вкладок не загрузилась, расписание не отправлено (неполное в группу не публикую):\n${result.failedTabs.join('\n')}`);
     } else if (result.failedTabs.length > 0) {
@@ -917,10 +919,35 @@ if (!hostReminderEnabled) {
   });
 }
 
+// ВРЕМЕННО: одноразовая проверка обновлённого формата (по правкам Михаила) на
+// живых данных следующей недели — в ТЕСТОВУЮ группу "Дебаты". Маркер
+// пишется ДО отправки — рестарт не повторит. Удалить после проверки.
+(async () => {
+  const TEST_GROUP_CHAT_ID = -5172293748;
+  const fs = require('fs');
+  const markerPath = process.env.WEEK_CARDS_TEST2_MARKER_PATH || '/data/week_cards_test2_sent.json';
+  if (fs.existsSync(markerPath)) return;
+  try {
+    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
+  } catch (err) {
+    console.error('[week-cards-test2] не удалось записать маркер, тест не отправлен:', err.message);
+    return;
+  }
+  try {
+    const result = await sendWeekCards(bot, TEST_GROUP_CHAT_ID, { requireComplete: true });
+    console.log(`[week-cards-test2] в тестовую группу: aborted=${result.aborted}, эфиров всего=${result.events}, без хоста=${result.open}, сообщений=${result.sent}, failedTabs=${result.failedTabs.length}`);
+  } catch (err) {
+    console.error(`[week-cards-test2] ошибка отправки (отправлено до ошибки: ${err.sentSoFar ?? 0}):`, err.message);
+    try {
+      fs.unlinkSync(markerPath);
+    } catch {}
+  }
+})();
+
 // ===== Воскресная авторассылка =====
 // Каждое воскресенье в WEEKLY_ANNOUNCE_HOUR (по умолчанию 10:00) по Бали бот
 // сам отправляет расписание на следующую неделю карточками (шапка + одно
-// сообщение на эфир, кнопки ✅ Беру / ❌ Не могу под эфирами без хоста — см.
+// сообщение на эфир БЕЗ хоста, кнопки "I'll take it" / "Can't do it" — см.
 // cardButtons.js: sendWeekCards, тот же формат, что у /next_week) в группу из
 // VOLUNTEER_GROUP_ID. Пока переменная не задана — Елене в личку.
 // В группу неполное расписание НЕ публикуется: если часть вкладок таблицы не
@@ -976,6 +1003,11 @@ async function checkAndSendWeeklyAnnounce() {
 
     if (result.aborted === 'empty') {
       notifyElena('На следующей неделе нет запланированных сессий — воскресная рассылка не отправлялась.');
+      return;
+    }
+
+    if (result.aborted === 'allCovered') {
+      notifyElena('На следующей неделе у всех эфиров уже есть хост — воскресная рассылка не отправлялась (просить некого).');
       return;
     }
 

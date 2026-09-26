@@ -1058,11 +1058,11 @@ function sundayButtonWhen(e) {
 }
 
 // ---- One-message-per-event weekly schedule (see cardButtons.js: sendWeekCards) ----
-// The Sunday auto-announce and /next_week: a bilingual header, then every
-// event of the week as its own numbered card, in chronological order.
-// Open (no host) events get a linked bold title and the ✅ Беру / ❌ Не могу
-// buttons (added by cardButtons.js); hosted events are plain cards with the
-// host line and no buttons.
+// The Sunday auto-announce and /next_week: a bilingual header, then ONLY the
+// events still missing a host, each as its own numbered card in
+// chronological order (hosted events are not shown at all — Mikhail's
+// format). The title is plain bold text; the link to the event's tab lives
+// only on the buttons (added by cardButtons.js). Closes with a thank-you line.
 
 function keycapNumber(n) {
   return String(n)
@@ -1076,32 +1076,33 @@ function weekCardDateLine(e) {
 }
 
 function buildWeekCardParts(events, range) {
+  const open = events.filter((e) => !e.hasHost);
+  const n = open.length;
+
   const header = [
-    `📅🔔 Zoom broadcast schedule for the upcoming week, ${formatWeekRangeEn(range.start, range.end)}`,
-    'Please mark:',
-    '✅ — you can take it',
-    "❌ — you can't take it",
+    `❗️‼️ NEED ${n} HOST${n === 1 ? '' : 'S'} for the upcoming week, ${formatWeekRangeEn(range.start, range.end)}`,
     '',
-    `📅🔔 Расписание Zoom-эфиров на предстоящую неделю, ${formatWeekRangeRu(range.start, range.end)}`,
-    'Отметьте:',
-    '✅ — можете взять эфир',
-    '❌ — не можете взять эфир',
+    'Where there is no Host yet, please reply with one of these symbols (or in any other convenient way):',
+    '✅ — "I\'ll take this session and add myself to the schedule."',
+    '❌ — "I\'m not able to be the Host." 🙏',
+    '',
+    `❗️‼️ ${ruHostPhrase(n)} на предстоящую неделю, ${formatWeekRangeRuMonthFirst(range.start, range.end)}`,
+    '',
+    'Там, где нет Хоста, отпишитесь, пожалуйста, указав значок или другим удобным способом:',
+    '✅ - это значит «беру эфир, в расписание себя внёс»',
+    '❌ - это значит «не получается быть хостом» 🙏',
   ].join('\n');
 
-  const cards = events.map((e, i) => {
-    const num = keycapNumber(i + 1);
-    const name = escapeHtml(e.tabName);
-    const open = !e.hasHost;
-    const titleLine = open && e.tabUrl ? `${num} <b><a href="${e.tabUrl}">${name}</a></b>` : `${num} <b>${name}</b>`;
-    return {
-      open,
-      titleLine,
-      dateLine: weekCardDateLine(e),
-      hostLine: open ? null : `👤 Host: ${escapeHtml(e.host)}`,
-    };
-  });
+  const cards = open.map((e, i) => ({
+    titleLine: `${keycapNumber(i + 1)} <b>${escapeHtml(e.tabName)}</b>`,
+    dateLine: weekCardDateLine(e),
+    tabUrl: e.tabUrl || null,
+    when: sundayButtonWhen(e),
+  }));
 
-  return { header, cards };
+  const closing = '🙏 Thank you for your service / Спасибо за ваше служение 🌿';
+
+  return { header, cards, closing, openCount: n };
 }
 
 // ---- "2 days out, still no host" reminder (see hostReminder.js) ----

@@ -5,12 +5,11 @@
 // Почему "Беру" — callback-кнопка, а не URL-кнопка, хотя ссылку на вкладку
 // таблицы всё равно нужно открыть: Telegram НЕ шлёт боту никакого события,
 // когда нажимают URL-кнопку — про такое нажатие узнать невозможно в
-// принципе, это ограничение платформы, не наше. Поэтому "Беру" — обычная
-// callback-кнопка: по нажатию бот узнаёт, кто нажал, сразу убирает кнопки с
-// ЭТОЙ карточки и показывает "✅ Взял(а): @имя", а ссылка на саму вкладку
-// остаётся в названии программы (оно кликабельно, как обычно у открытых
-// слотов) — так что попасть в таблицу и правда вписать себя туда всё равно
-// можно, просто через название, а не через кнопку.
+// принципе, это ограничение платформы, не наше. Поэтому "I'll take it" —
+// обычная callback-кнопка: по нажатию бот узнаёт, кто нажал, сразу убирает
+// обе кнопки с ЭТОЙ карточки и показывает "✅ Взял(а): @имя", а вместо них
+// появляется одна URL-кнопка "Open the schedule tab" — название эфира по
+// формату Михаила больше не ссылка, ссылка живёт только в кнопках.
 //
 // Подтверждение "хост реально появился в таблице" СЮДА НЕ подключено —
 // это отдельная, более крупная задача (связать с ежедневной diff-проверкой
@@ -112,16 +111,29 @@ function cardText(record) {
   return lines.join('\n');
 }
 
+// English labels (Mikhail's format), each carrying the event's AZ/MCK
+// date+time so a button is unambiguous on its own. The link to the event's
+// tab lives ONLY on buttons, never in the title: once someone takes the
+// slot, the two answer buttons are replaced by a single URL button to the
+// tab so they can still open the sheet and add themselves. (A tap on a URL
+// button is never reported to the bot, so "I'll take it" itself has to be a
+// callback button — hence the extra tap to open the tab.)
 function cardKeyboard(record) {
-  if (record.takenBy) return [];
-  return [[{ text: '✅ Беру', callback_data: TAKE_CALLBACK }], [{ text: '❌ Не могу', callback_data: PASS_CALLBACK }]];
+  if (record.takenBy) {
+    return record.tabUrl ? [[{ text: '📄 Open the schedule tab', url: record.tabUrl }]] : [];
+  }
+  const suffix = record.when ? ` · ${record.when}` : '';
+  return [
+    [{ text: `✅ I'll take it${suffix}`, callback_data: TAKE_CALLBACK }],
+    [{ text: `❌ Can't do it${suffix}`, callback_data: PASS_CALLBACK }],
+  ];
 }
 
 // titleLine/dateLine приходят уже готовыми HTML-строками (жирные даты,
 // ссылка на вкладку в названии и т.д. собираются в вызывающем коде — этот
 // модуль только хранит состояние и отрисовывает статус/кнопки под ними).
-async function sendCard(bot, chatId, { titleLine, dateLine, candidateTags = loadHostCandidates() }) {
-  const record = { titleLine, dateLine, candidateTags, refusers: [], takenBy: null };
+async function sendCard(bot, chatId, { titleLine, dateLine, tabUrl = null, when = null, candidateTags = loadHostCandidates() }) {
+  const record = { titleLine, dateLine, tabUrl, when, candidateTags, refusers: [], takenBy: null };
   const sent = await withRetry(() =>
     bot.sendMessage(chatId, cardText(record), {
       parse_mode: 'HTML',
@@ -151,7 +163,10 @@ async function sendWeekCards(bot, chatId, { now = new Date(), requireComplete = 
   if (events.length === 0) return { aborted: 'empty', failedTabs, events: 0, sent: 0 };
   if (requireComplete && failedTabs.length > 0) return { aborted: 'failedTabs', failedTabs, events: events.length, sent: 0 };
 
-  const { header, cards } = buildWeekCardParts(events, range);
+  const { header, cards, closing, openCount } = buildWeekCardParts(events, range);
+  // Every event of the week already has a host — nothing to ask for.
+  if (openCount === 0) return { aborted: 'allCovered', failedTabs, events: events.length, sent: 0 };
+
   const gapMs = chatId < 0 ? GROUP_GAP_MS : PRIVATE_GAP_MS;
   let sent = 0;
 
@@ -160,21 +175,18 @@ async function sendWeekCards(bot, chatId, { now = new Date(), requireComplete = 
     sent++;
     for (const card of cards) {
       await sleep(gapMs);
-      if (card.open) {
-        await sendCard(bot, chatId, { titleLine: card.titleLine, dateLine: card.dateLine });
-      } else {
-        await withRetry(() =>
-          bot.sendMessage(chatId, [card.titleLine, card.dateLine, card.hostLine].join('\n'), { parse_mode: 'HTML' })
-        );
-      }
+      await sendCard(bot, chatId, { titleLine: card.titleLine, dateLine: card.dateLine, tabUrl: card.tabUrl, when: card.when });
       sent++;
     }
+    await sleep(gapMs);
+    await withRetry(() => bot.sendMessage(chatId, closing));
+    sent++;
   } catch (err) {
     err.sentSoFar = sent;
     throw err;
   }
 
-  return { aborted: null, failedTabs, events: events.length, sent };
+  return { aborted: null, failedTabs, events: events.length, open: openCount, sent };
 }
 
 async function redrawCard(bot, chatId, messageId, record) {
@@ -213,7 +225,9 @@ async function processCardCallback(bot, query) {
     store.messages[key] = record;
     writeJsonAtomic(store);
     await redrawCard(bot, message.chat.id, message.message_id, record);
-    await bot.answerCallbackQuery(query.id, { text: 'Записано, ты хост! Не забудь вписать себя в таблицу по ссылке в названии 🙏' });
+    await bot.answerCallbackQuery(query.id, {
+      text: 'Recorded! Open the tab with the button below and add yourself / Записано! Откройте вкладку кнопкой ниже и впишите себя 🙏',
+    });
     return;
   }
 
