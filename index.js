@@ -919,31 +919,6 @@ if (!hostReminderEnabled) {
   });
 }
 
-// ВРЕМЕННО: одноразовая проверка обновлённого формата (по правкам Михаила) на
-// живых данных следующей недели — в ТЕСТОВУЮ группу "Дебаты". Маркер
-// пишется ДО отправки — рестарт не повторит. Удалить после проверки.
-(async () => {
-  const TEST_GROUP_CHAT_ID = -5172293748;
-  const fs = require('fs');
-  const markerPath = process.env.WEEK_CARDS_TEST2_MARKER_PATH || '/data/week_cards_test2_sent.json';
-  if (fs.existsSync(markerPath)) return;
-  try {
-    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
-  } catch (err) {
-    console.error('[week-cards-test2] не удалось записать маркер, тест не отправлен:', err.message);
-    return;
-  }
-  try {
-    const result = await sendWeekCards(bot, TEST_GROUP_CHAT_ID, { requireComplete: true });
-    console.log(`[week-cards-test2] в тестовую группу: aborted=${result.aborted}, эфиров всего=${result.events}, без хоста=${result.open}, сообщений=${result.sent}, failedTabs=${result.failedTabs.length}`);
-  } catch (err) {
-    console.error(`[week-cards-test2] ошибка отправки (отправлено до ошибки: ${err.sentSoFar ?? 0}):`, err.message);
-    try {
-      fs.unlinkSync(markerPath);
-    } catch {}
-  }
-})();
-
 // ===== Воскресная авторассылка =====
 // Каждое воскресенье в WEEKLY_ANNOUNCE_HOUR (по умолчанию 10:00) по Бали бот
 // сам отправляет расписание на следующую неделю карточками (шапка + одно
