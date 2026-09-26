@@ -738,14 +738,23 @@ async function transcribeVoice(buffer, attempts = 3) {
 
 bot.on('voice', async (msg) => {
   const chatId = msg.chat.id;
+  const inGroup = msg.chat.type !== 'private';
+
+  // В группах бот молчит на голосовые: ни "Слушаю...", ни эхо-транскрипта, ни
+  // сообщений об ошибках. Единственное исключение — голосовой ответ
+  // собеседнику после нажатия "💬 Ответить" (переводчик, включённый в этой
+  // группе явной командой): это реакция на кнопку, не на обычное сообщение.
+  if (inGroup && (!isTranslateEnabled(chatId) || !pendingTranslateReply.has(pendingReplyKey(chatId, msg.from?.id)))) {
+    return;
+  }
 
   if (!openai) {
-    bot.sendMessage(chatId, 'Распознавание голоса пока не настроено 😔');
+    if (!inGroup) bot.sendMessage(chatId, 'Распознавание голоса пока не настроено 😔');
     return;
   }
 
   try {
-    bot.sendMessage(chatId, 'Слушаю... 🎧');
+    if (!inGroup) bot.sendMessage(chatId, 'Слушаю... 🎧');
 
     const fileId = msg.voice.file_id;
     const fileLink = await bot.getFileLink(fileId);
@@ -759,9 +768,9 @@ bot.on('voice', async (msg) => {
     // Голосовой ответ собеседнику после "💬 Ответить" в группе — та же логика,
     // что и для текста (handleTranslateReplyText), просто на транскрипте.
     // Актуально только в группах, поэтому дневник (личный чат) не задет.
-    if (msg.chat.type === 'group' || msg.chat.type === 'supergroup') {
-      const handledAsTranslateReply = await handleTranslateReplyText(chatId, msg.from?.id, msg.message_id, transcription.text);
-      if (handledAsTranslateReply) return;
+    if (inGroup) {
+      await handleTranslateReplyText(chatId, msg.from?.id, msg.message_id, transcription.text);
+      return; // в группе — никакого дневника и эхо-транскрипта дальше
     }
 
     // Голосовой ответ на дневник перехватывается той же функцией, что и
@@ -775,7 +784,7 @@ bot.on('voice', async (msg) => {
     console.error('Ошибка распознавания голоса:', err.message);
     console.error('Детали:', err.cause || err.code || err.name || 'нет доп. деталей');
     console.error('Полный стек:', err.stack);
-    bot.sendMessage(chatId, 'Не получилось распознать голос 😔 Попробуй ещё раз.');
+    if (!inGroup) bot.sendMessage(chatId, 'Не получилось распознать голос 😔 Попробуй ещё раз.');
   }
 });
 
@@ -870,6 +879,67 @@ cron.schedule('*/5 * * * *', async () => {
     console.error('[card-buttons] ошибка проверки истёкших "Беру":', err.message);
   }
 });
+
+// ВРЕМЕННО: финальный тест с 10 реальными хостами (host-candidates.json) в
+// ТЕСТОВОЙ ГРУППЕ, та же вымышленная неделя, визуал — как в последней
+// утверждённой версии. Маркер пишется ДО отправки — рестарт не повторит.
+// Удалить после проверки.
+(async () => {
+  const TEST_GROUP_CHAT_ID = -5172293748;
+  const fs = require('fs');
+  const markerPath = process.env.REAL_CARD_TEST3_MARKER_PATH || '/data/real_card_test3_sent.json';
+  if (fs.existsSync(markerPath)) return;
+  try {
+    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
+  } catch (err) {
+    console.error('[real-card-test3] не удалось записать маркер, тест не отправлен:', err.message);
+    return;
+  }
+  const SID = '1IvNop2sv3YMjE-D5SpL8iBMj04Vjjzi1CBhHaitnPwA';
+  const tabUrl = (gid) => `https://docs.google.com/spreadsheets/d/${SID}/edit?gid=${gid}#gid=${gid}`;
+  const DIGIT_EMOJI = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'];
+  const events = [
+    { title: 'Diamond Sutra Study', az: '21.09', azTime: '09:00–10:00', msk: '21.09', mskTime: '19:00–20:00', host: 'Anna', gid: '1999892677' },
+    { title: 'Lojong Mind Training', az: '22.09', azTime: '06:00–07:30', msk: '22.09', mskTime: '16:00–17:30', host: null, gid: '1540568700' },
+    { title: 'Bodhicitta Circle', az: '23.09', azTime: '14:00–15:00', msk: '24.09', mskTime: '00:00–01:00', host: 'Mikhail', gid: '1153396063' },
+    { title: 'Emptiness Discussion', az: '25.09', azTime: '05:00–06:30', msk: '25.09', mskTime: '15:00–16:30', host: null, gid: '675522741' },
+    { title: 'Refuge Practice', az: '26.09', azTime: '18:00–19:00', msk: '27.09', mskTime: '04:00–05:00', host: null, gid: '1411715457' },
+  ];
+  try {
+    const { escapeHtml } = require('./report');
+    await bot.sendMessage(
+      TEST_GROUP_CHAT_ID,
+      [
+        '📅🔔 Zoom broadcast schedule for the upcoming week, September 21–27',
+        "Please mark whether you can or can't take a session.",
+        '',
+        '📅🔔 Расписание Zoom-эфиров на предстоящую неделю, 21–27 сентября',
+        'Отметьте, пожалуйста, кто может, а кто не может взять эфир.',
+        '',
+        '🧪 Финальный тест: счётчик по списку из 10 реальных хостов.',
+      ].join('\n')
+    );
+    let i = 0;
+    for (const e of events) {
+      const num = DIGIT_EMOJI[i] || `${i + 1}.`;
+      i++;
+      const dateLine = `🗓 AZ: <b>${e.az}</b>, ${e.azTime} · MCK: <b>${e.msk}</b>, ${e.mskTime}`;
+      if (e.host) {
+        const titleLine = `${num} <b>${escapeHtml(e.title)}</b>`;
+        await bot.sendMessage(TEST_GROUP_CHAT_ID, [titleLine, dateLine, `👤 Host: ${escapeHtml(e.host)}`].join('\n'), { parse_mode: 'HTML' });
+      } else {
+        const titleLine = `${num} <b><a href="${tabUrl(e.gid)}">${escapeHtml(e.title)}</a></b>`;
+        await sendCard(bot, TEST_GROUP_CHAT_ID, { titleLine, dateLine });
+      }
+    }
+    console.log(`[real-card-test3] отправлено в тестовую группу ${TEST_GROUP_CHAT_ID}: сообщений=${events.length + 1}`);
+  } catch (err) {
+    console.error('[real-card-test3] ошибка отправки:', err.message);
+    try {
+      fs.unlinkSync(markerPath);
+    } catch {}
+  }
+})();
 
 // ===== Напоминание за 2 дня до эфира без хоста + счётчик "❌ Не могу" =====
 // Отдельная от воскресного анонса проверка (см. hostReminder.js). Цель —
@@ -2411,6 +2481,9 @@ bot.onText(/^\/габариты(?:@\S+)?$/, (msg) => {
 
 bot.on('photo', async (msg) => {
   const chatId = msg.chat.id;
+
+  // /габариты — личный 1:1 сценарий; в группах бот на фото не реагирует.
+  if (msg.chat.type !== 'private') return;
 
   if (!gabarityConfigured) {
     await bot.sendMessage(chatId, 'Распознавание фото пока не настроено (нет ANTHROPIC_API_KEY) 😔');

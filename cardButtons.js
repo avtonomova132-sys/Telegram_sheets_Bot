@@ -31,6 +31,18 @@ const TAKEN_EXPIRE_MS = Number(process.env.CARD_TAKEN_EXPIRE_MS) || 3 * 60 * 60 
 const TAKE_CALLBACK = 'card:take';
 const PASS_CALLBACK = 'card:pass';
 
+// The 10 real host candidates the "Не могут (N из M)" counter is measured
+// against (M = this list's length). Deliberately separate from
+// community-tags.json (the 5 @mentions closing /check, /weekly and the
+// Sunday announce, capped at 5 for notification reliability) — every name
+// here is listed in "Ещё не отметились" as-is, even past Telegram's
+// ~5-mention notification limit, because Elena wants the full list visible.
+const CANDIDATES_PATH = path.join(__dirname, 'host-candidates.json');
+
+function loadHostCandidates() {
+  return JSON.parse(fs.readFileSync(CANDIDATES_PATH, 'utf8'));
+}
+
 function readJson(fallback) {
   try {
     return JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
@@ -88,7 +100,7 @@ function cardKeyboard(record) {
 // titleLine/dateLine приходят уже готовыми HTML-строками (жирные даты,
 // ссылка на вкладку в названии и т.д. собираются в вызывающем коде — этот
 // модуль только хранит состояние и отрисовывает статус/кнопки под ними).
-async function sendCard(bot, chatId, { titleLine, dateLine, candidateTags }) {
+async function sendCard(bot, chatId, { titleLine, dateLine, candidateTags = loadHostCandidates() }) {
   const record = { titleLine, dateLine, candidateTags, refusers: [], takenBy: null };
   const sent = await bot.sendMessage(chatId, cardText(record), {
     parse_mode: 'HTML',
