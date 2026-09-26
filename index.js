@@ -16,7 +16,7 @@ const {
   handleReminderCallback,
   CALLBACK_PREFIX: HOST_REMINDER_CALLBACK_PREFIX,
 } = require('./hostReminder');
-const { sendWeekCards, postWeekCards, handleCardCallback, checkCardExpiry, TAKE_CALLBACK: CARD_TAKE_CALLBACK, PASS_CALLBACK: CARD_PASS_CALLBACK } = require('./cardButtons');
+const { sendWeekCards, handleCardCallback, checkCardExpiry, TAKE_CALLBACK: CARD_TAKE_CALLBACK, PASS_CALLBACK: CARD_PASS_CALLBACK } = require('./cardButtons');
 const { generateAssistanceReport } = require('./assistance');
 const { generateSeriesCheckReport } = require('./assistantsSeries');
 const {
@@ -918,48 +918,6 @@ if (!hostReminderEnabled) {
     }
   });
 }
-
-// ВРЕМЕННО: одноразовая проверка новой шапки в ТЕСТОВОЙ группе "Дебаты" на
-// живых данных следующей недели, но с 4 эфирами БЕЗ хоста (по просьбе Elena,
-// чтобы лучше видеть список из нескольких карточек): к 2 реально открытым
-// эфирам искусственно "открываются" ещё первые эфиры с хостом. ТОЛЬКО для
-// этого теста — ничего в таблице не меняется. Маркер пишется ДО отправки —
-// рестарт не повторит. Удалить после проверки.
-(async () => {
-  const TEST_GROUP_CHAT_ID = -5172293748;
-  const WANTED_OPEN = 4;
-  const fs = require('fs');
-  const markerPath = process.env.WEEK_CARDS_TEST3_MARKER_PATH || '/data/week_cards_test3_sent.json';
-  if (fs.existsSync(markerPath)) return;
-  try {
-    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
-  } catch (err) {
-    console.error('[week-cards-test3] не удалось записать маркер, тест не отправлен:', err.message);
-    return;
-  }
-  try {
-    const { getNextWeekRange, collectWeekEvents } = require('./report');
-    const range = getNextWeekRange();
-    const { events, failedTabs } = await collectWeekEvents(range);
-    if (failedTabs.length > 0) throw new Error(`не загрузились вкладки: ${failedTabs.join('; ')}`);
-    let open = events.filter((e) => !e.hasHost).length;
-    // Открываем недостающее число эфиров с хостом (по порядку в расписании).
-    const forced = events.map((e) => {
-      if (e.hasHost && open < WANTED_OPEN) {
-        open++;
-        return { ...e, hasHost: false, host: '' };
-      }
-      return e;
-    });
-    const result = await postWeekCards(bot, TEST_GROUP_CHAT_ID, forced, range, failedTabs);
-    console.log(`[week-cards-test3] в тестовую группу: aborted=${result.aborted}, без хоста в тесте=${result.open}, сообщений=${result.sent}`);
-  } catch (err) {
-    console.error(`[week-cards-test3] ошибка отправки (отправлено до ошибки: ${err.sentSoFar ?? 0}):`, err.message);
-    try {
-      fs.unlinkSync(markerPath);
-    } catch {}
-  }
-})();
 
 // ===== Воскресная авторассылка =====
 // Каждое воскресенье в WEEKLY_ANNOUNCE_HOUR (по умолчанию 10:00) по Бали бот
