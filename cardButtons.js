@@ -192,6 +192,12 @@ async function postWeekCards(bot, chatId, events, range, failedTabs = []) {
     await sleep(gapMs);
     await withRetry(() => bot.sendMessage(chatId, closing));
     sent++;
+    await sleep(gapMs);
+    const tagLine = loadHostCandidates()
+      .map((t) => escapeHtml(formatCommunityTag(t)))
+      .join(' ');
+    await withRetry(() => bot.sendMessage(chatId, tagLine, { parse_mode: 'HTML' }));
+    sent++;
   } catch (err) {
     err.sentSoFar = sent;
     throw err;
