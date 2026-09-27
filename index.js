@@ -338,7 +338,8 @@ bot.on('callback_query', async (query) => {
 // Временная диагностическая команда — узнать chat_id текущего чата (например,
 // чтобы прописать его в WATCHED_GROUP_IDS). Доступна всем, без ограничений.
 bot.onText(/^\/chatid(?:@\S+)?$/, (msg) => {
-  bot.sendMessage(msg.chat.id, `ID этого чата: ${msg.chat.id}`);
+  const thread = msg.message_thread_id != null ? `\nНомер темы (message_thread_id): ${msg.message_thread_id}` : '\nТема: нет message_thread_id (обычный чат или тема General)';
+  bot.sendMessage(msg.chat.id, `ID этого чата: ${msg.chat.id}${thread}`, msg.message_thread_id != null ? { message_thread_id: msg.message_thread_id } : {});
 });
 
 // ===== Напоминания =====
@@ -1023,7 +1024,7 @@ if (myChatId) {
     const chat = await bot.getChat(groupId);
     const member = await bot.getChatMember(groupId, me.id);
     const cannotWrite = member.status === 'left' || member.status === 'kicked' || member.can_send_messages === false;
-    console.log(`[weekly-announce] цель воскресной рассылки: группа "${chat.title}" (${chat.type}, id ${groupId}), статус бота: ${member.status}${cannotWrite ? ' — ПИСАТЬ НЕЛЬЗЯ' : ''}`);
+    console.log(`[weekly-announce] цель воскресной рассылки: группа "${chat.title}" (${chat.type}, id ${groupId}, форум с темами: ${chat.is_forum ? 'да' : 'нет'}), статус бота: ${member.status}${cannotWrite ? ' — ПИСАТЬ НЕЛЬЗЯ' : ''}`);
     if (cannotWrite) {
       notifyElena(`⚠️ Воскресная рассылка настроена на группу "${chat.title}", но бот там не может писать (статус: ${member.status}). Проверь права бота в группе.`);
     }
@@ -1079,8 +1080,12 @@ cron.schedule('* * * * *', async () => {
       );
       return;
     }
-    console.log(`[wvp-oneshot] отправлено в группу ${WVP_ONESHOT.chatId}: эфиров без хоста=${result.open}, сообщений=${result.sent}`);
-    notifyElena(`✅ Тестовый Анонс отправлен в WorldView Productions: эфиров без хоста ${result.open}, сообщений ${result.sent}.`);
+    // General — это message_thread_id 1 (или его отсутствие); любое другое
+    // число значит, что сообщение попало в другую тему.
+    const inGeneral = result.threadId === null || result.threadId === 1;
+    const topicNote = inGeneral ? 'тема General' : `ВНИМАНИЕ: тема с id ${result.threadId} (не General)`;
+    console.log(`[wvp-oneshot] отправлено в группу ${WVP_ONESHOT.chatId}: эфиров без хоста=${result.open}, сообщений=${result.sent}, message_thread_id=${result.threadId} (${topicNote})`);
+    notifyElena(`✅ Тестовый Анонс отправлен в WorldView Productions: эфиров без хоста ${result.open}, сообщений ${result.sent}. Куда: ${topicNote}.`);
   } catch (err) {
     console.error(`[wvp-oneshot] ошибка отправки (отправлено до ошибки: ${err.sentSoFar ?? 0}):`, err.message);
     notifyElena(`⚠️ Тестовая отправка Анонса в WorldView Productions упала: ${err.message}. Отправлено сообщений до ошибки: ${err.sentSoFar ?? 0}. Автоматически не повторяю.`);

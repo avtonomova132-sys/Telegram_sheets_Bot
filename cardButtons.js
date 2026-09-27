@@ -176,9 +176,13 @@ async function postWeekCards(bot, chatId, events, range, failedTabs = []) {
 
   const gapMs = chatId < 0 ? GROUP_GAP_MS : PRIVATE_GAP_MS;
   let sent = 0;
+  let headerMessage = null;
 
   try {
-    await withRetry(() => bot.sendMessage(chatId, header));
+    // No message_thread_id is ever set, so in a forum group everything lands
+    // in the default "General" topic; the header's reply is kept so callers
+    // can report which topic it actually landed in.
+    headerMessage = await withRetry(() => bot.sendMessage(chatId, header));
     sent++;
     for (const card of cards) {
       await sleep(gapMs);
@@ -193,7 +197,14 @@ async function postWeekCards(bot, chatId, events, range, failedTabs = []) {
     throw err;
   }
 
-  return { aborted: null, failedTabs, events: events.length, open: openCount, sent };
+  return {
+    aborted: null,
+    failedTabs,
+    events: events.length,
+    open: openCount,
+    sent,
+    threadId: headerMessage && headerMessage.message_thread_id != null ? headerMessage.message_thread_id : null,
+  };
 }
 
 async function redrawCard(bot, chatId, messageId, record) {
