@@ -1034,91 +1034,54 @@ if (myChatId) {
   }
 })();
 
-// ВРЕМЕННО: (1) удаляет сегодняшние тестовые сообщения Анонса из
-// "WorldView Productions", (2) пересобирает и шлёт заново уже с новым
-// эфиром из "ACI | V Houses SERIES" (Sep 30) — Elena нашла пропущенный
-// эфир без хоста и попросила и то, и другое сразу. Удаление: карточки
-// (✅/❌) знаем по message_id из card_buttons.json (это ЕГО собственные
-// сообщения — удалить их бот может без прав администратора); шапка/
-// закрывающая строка/теги нигде не сохранялись, поэтому их id вычислены по
-// соседству (шапка = id первой карточки минус 1, закрывающая = id
-// последней карточки плюс 1, теги — плюс 2 для второй отправки, где они
-// были). Если предположение неверно, Telegram просто откажет в удалении
-// чужого сообщения (у бота нет прав администратора) — ничего чужого не
-// пострадает. Итог — Елене в личку. Удалить после проверки.
+// ВРЕМЕННО: диагностический повтор удаления — первая попытка (см. историю
+// коммитов) удалила 0 из 9 сообщений, и настоящая причина ошибки нигде не
+// была видна (только "не удалось"). Здесь: (а) логируем РЕАЛЬНЫЙ текст
+// ошибки Telegram для каждого id, (б) не шлём новый Анонс повторно — он,
+// похоже, уже ушёл в прошлый раз (card_buttons.json заведён заново под эти
+// 9 id уже стёрт), это только диагностика + повторная попытка удаления.
+// Отдельная метка. Итог — Елене в личку и в лог. Удалить после проверки.
 (async () => {
   const chatId = -1001757671785;
   const fs = require('fs');
-  const markerPath = process.env.WVP_FIX_MARKER_PATH || '/data/wvp_fix_2026_09_27.json';
+  const markerPath = process.env.WVP_FIX2_MARKER_PATH || '/data/wvp_fix2_diag.json';
   if (fs.existsSync(markerPath)) return;
   try {
     fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
   } catch (err) {
-    console.error('[wvp-fix] не удалось записать маркер, отменено:', err.message);
+    console.error('[wvp-fix2] не удалось записать маркер, отменено:', err.message);
     return;
   }
 
+  const ids = [44182, 44183, 44184, 44185, 44186, 44187, 44188, 44189, 44190];
   const deleted = [];
-  const failed = [];
-  async function tryDelete(id) {
+  const reasons = [];
+  for (const id of ids) {
     try {
       await bot.deleteMessage(chatId, id);
       deleted.push(id);
     } catch (err) {
-      failed.push(id);
+      reasons.push(`${id}: ${err.message}`);
     }
+    await new Promise((r) => setTimeout(r, 400));
   }
+
+  console.log(`[wvp-fix2] удалено: ${deleted.length} (${deleted.join(', ')})`);
+  console.log(`[wvp-fix2] причины отказа:\n${reasons.join('\n')}`);
+  notifyElena(
+    `Повторная попытка удаления в WorldView Productions: удалено ${deleted.length} из ${ids.length}.${reasons.length ? `\nПричины отказа:\n${reasons.join('\n')}` : ''}`
+  );
 
   try {
     const cardStorePath = process.env.CARD_BUTTONS_STATE_PATH || '/data/card_buttons.json';
     const store = JSON.parse(fs.readFileSync(cardStorePath, 'utf8'));
     const ourCardIds = Object.keys(store.messages)
       .filter((k) => k.startsWith(`${chatId}:`))
-      .map((k) => Number(k.split(':')[1]))
-      .sort((a, b) => a - b);
-
-    console.log(`[wvp-fix] найдено карточек в card_buttons.json для этой группы: ${ourCardIds.length} (${ourCardIds.join(', ')})`);
-
-    for (const id of ourCardIds) {
-      await tryDelete(id);
-    }
-    if (ourCardIds.length === 4) {
-      const [a, b, c, d] = ourCardIds;
-      for (const id of [a - 1, b + 1, c - 1, d + 1, d + 2]) {
-        await tryDelete(id);
-      }
-    } else {
-      console.warn(`[wvp-fix] ожидалось 4 карточки (2 отправки по 2), найдено ${ourCardIds.length} — соседние (шапка/закрытие/теги) не удаляю, не на что опереться`);
-    }
-
-    for (const id of ourCardIds) {
-      delete store.messages[`${chatId}:${id}`];
-    }
-    const tmpPath = `${cardStorePath}.tmp`;
-    fs.writeFileSync(tmpPath, JSON.stringify(store, null, 2));
-    fs.renameSync(tmpPath, cardStorePath);
-
-    console.log(`[wvp-fix] удалено сообщений: ${deleted.length} (${deleted.join(', ')}), не удалось: ${failed.length} (${failed.join(', ')})`);
+      .sort();
+    console.log(`[wvp-fix2] текущие карточки в card_buttons.json для этой группы: ${ourCardIds.join(', ') || '(нет)'}`);
+    notifyElena(`Проверка: карточек этой группы в card_buttons.json сейчас — ${ourCardIds.length} (${ourCardIds.map((k) => k.split(':')[1]).join(', ') || 'нет'}). Если там 3 новых id — обновлённый Анонс уже ушёл, повторно слать не нужно.`);
   } catch (err) {
-    console.error('[wvp-fix] ошибка при удалении старых сообщений:', err.message);
-  }
-
-  try {
-    const result = await sendWeekCards(bot, chatId, { requireComplete: true });
-    if (result.aborted) {
-      notifyElena(
-        `Удалила старые тестовые сообщения Анонса из WorldView Productions (удалено: ${deleted.length}, не удалось: ${failed.length}). Новый Анонс не отправлен: ${result.aborted}.`
-      );
-      return;
-    }
-    notifyElena(
-      `Готово в WorldView Productions:\n— удалено старых сообщений: ${deleted.length}${failed.length ? `, не удалось удалить: ${failed.length} (id: ${failed.join(', ')})` : ''}\n— отправлен обновлённый Анонс: эфиров без хоста ${result.open}, сообщений ${result.sent}.\n\nДобавила вкладку "ACI | V Houses SERIES" (gid 24119706) в отслеживание — её раньше не было в списке вообще, поэтому её эфиры никогда не попадали ни в Анонс, ни в /check, ни в /weekly.`
-    );
-  } catch (err) {
-    console.error(`[wvp-fix] ошибка отправки нового Анонса (отправлено до ошибки: ${err.sentSoFar ?? 0}):`, err.message);
-    notifyElena(
-      `Удалила старые сообщения Анонса из WorldView Productions (удалено: ${deleted.length}, не удалось: ${failed.length}), но новый Анонс упал: ${err.message}. Отправлено сообщений до ошибки: ${err.sentSoFar ?? 0}.`
-    );
+    console.error('[wvp-fix2] не удалось прочитать card_buttons.json:', err.message);
   }
 })();
 
