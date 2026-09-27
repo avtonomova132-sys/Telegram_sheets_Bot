@@ -1034,46 +1034,6 @@ if (myChatId) {
   }
 })();
 
-// ВРЕМЕННО: НЕМЕДЛЕННЫЙ повторный тест Анонса в "WorldView Productions" —
-// Elena сочла первую отправку (14:00) "непонятной/неправильной" и попросила
-// пересобрать и отправить заново сразу же, на этот раз с тегом всех 10
-// хостов в конце (это и было добавлено — раньше теги были только в счётчике
-// под каждой карточкой). Данные проверены заново перед отправкой: живая
-// таблица на 06:03 UTC (тот же момент, что и первая отправка) даёт те же 2
-// эфира без хоста — оба "Xuanzang's Tower" на 03.10, у обоих в таблице
-// пустое поле названия сессии, так что это не баг форматирования, а
-// действительно пустая ячейка в источнике. Отдельная метка на volume — не
-// больше одной повторной отправки. Итог/ошибка — Елене в личку. Удалить
-// после проверки.
-(async () => {
-  const chatId = -1001757671785;
-  const fs = require('fs');
-  const markerPath = process.env.WVP_ONESHOT2_MARKER_PATH || '/data/wvp_oneshot2_resend.json';
-  if (fs.existsSync(markerPath)) return;
-  try {
-    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
-  } catch (err) {
-    console.error('[wvp-oneshot2] не удалось записать маркер, отправка отменена:', err.message);
-    return;
-  }
-
-  try {
-    const result = await sendWeekCards(bot, chatId, { requireComplete: true });
-    if (result.aborted) {
-      console.log(`[wvp-oneshot2] не отправлено: ${result.aborted}`);
-      notifyElena(`Повторная отправка Анонса в WorldView Productions не ушла: ${result.aborted}.`);
-      return;
-    }
-    const inGeneral = result.threadId === null || result.threadId === 1;
-    const topicNote = inGeneral ? 'тема General' : `ВНИМАНИЕ: тема с id ${result.threadId} (не General)`;
-    console.log(`[wvp-oneshot2] отправлено в группу ${chatId}: эфиров без хоста=${result.open}, сообщений=${result.sent}, message_thread_id=${result.threadId} (${topicNote})`);
-    notifyElena(`✅ Повторный Анонс (с тегами 10 хостов в конце) отправлен в WorldView Productions: эфиров без хоста ${result.open}, сообщений ${result.sent}. Куда: ${topicNote}.`);
-  } catch (err) {
-    console.error(`[wvp-oneshot2] ошибка отправки (отправлено до ошибки: ${err.sentSoFar ?? 0}):`, err.message);
-    notifyElena(`⚠️ Повторная отправка Анонса в WorldView Productions упала: ${err.message}. Отправлено сообщений до ошибки: ${err.sentSoFar ?? 0}.`);
-  }
-})();
-
 // ===== Ежедневная diff-проверка хостов =====
 // Раз в день (в 9:00 по Бали) сравнивает вкладки из daily-check-tabs.json с
 // тем, что было при прошлой проверке (снимок на Railway Volume), и пишет
