@@ -1034,57 +1034,6 @@ if (myChatId) {
   }
 })();
 
-// ВРЕМЕННО: диагностический повтор удаления — первая попытка (см. историю
-// коммитов) удалила 0 из 9 сообщений, и настоящая причина ошибки нигде не
-// была видна (только "не удалось"). Здесь: (а) логируем РЕАЛЬНЫЙ текст
-// ошибки Telegram для каждого id, (б) не шлём новый Анонс повторно — он,
-// похоже, уже ушёл в прошлый раз (card_buttons.json заведён заново под эти
-// 9 id уже стёрт), это только диагностика + повторная попытка удаления.
-// Отдельная метка. Итог — Елене в личку и в лог. Удалить после проверки.
-(async () => {
-  const chatId = -1001757671785;
-  const fs = require('fs');
-  const markerPath = process.env.WVP_FIX2_MARKER_PATH || '/data/wvp_fix2_diag.json';
-  if (fs.existsSync(markerPath)) return;
-  try {
-    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
-  } catch (err) {
-    console.error('[wvp-fix2] не удалось записать маркер, отменено:', err.message);
-    return;
-  }
-
-  const ids = [44182, 44183, 44184, 44185, 44186, 44187, 44188, 44189, 44190];
-  const deleted = [];
-  const reasons = [];
-  for (const id of ids) {
-    try {
-      await bot.deleteMessage(chatId, id);
-      deleted.push(id);
-    } catch (err) {
-      reasons.push(`${id}: ${err.message}`);
-    }
-    await new Promise((r) => setTimeout(r, 400));
-  }
-
-  console.log(`[wvp-fix2] удалено: ${deleted.length} (${deleted.join(', ')})`);
-  console.log(`[wvp-fix2] причины отказа:\n${reasons.join('\n')}`);
-  notifyElena(
-    `Повторная попытка удаления в WorldView Productions: удалено ${deleted.length} из ${ids.length}.${reasons.length ? `\nПричины отказа:\n${reasons.join('\n')}` : ''}`
-  );
-
-  try {
-    const cardStorePath = process.env.CARD_BUTTONS_STATE_PATH || '/data/card_buttons.json';
-    const store = JSON.parse(fs.readFileSync(cardStorePath, 'utf8'));
-    const ourCardIds = Object.keys(store.messages)
-      .filter((k) => k.startsWith(`${chatId}:`))
-      .sort();
-    console.log(`[wvp-fix2] текущие карточки в card_buttons.json для этой группы: ${ourCardIds.join(', ') || '(нет)'}`);
-    notifyElena(`Проверка: карточек этой группы в card_buttons.json сейчас — ${ourCardIds.length} (${ourCardIds.map((k) => k.split(':')[1]).join(', ') || 'нет'}). Если там 3 новых id — обновлённый Анонс уже ушёл, повторно слать не нужно.`);
-  } catch (err) {
-    console.error('[wvp-fix2] не удалось прочитать card_buttons.json:', err.message);
-  }
-})();
-
 // ===== Ежедневная diff-проверка хостов =====
 // Раз в день (в 9:00 по Бали) сравнивает вкладки из daily-check-tabs.json с
 // тем, что было при прошлой проверке (снимок на Railway Volume), и пишет
