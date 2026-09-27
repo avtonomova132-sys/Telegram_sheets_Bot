@@ -1033,6 +1033,60 @@ if (myChatId) {
   }
 })();
 
+// ВРЕМЕННО: РАЗОВАЯ тестовая отправка Анонса (sendWeekCards — только эфиры
+// без хоста, кнопки, счётчик) в основную группу "WorldView Productions"
+// СЕГОДНЯ 2026-09-27 в 14:00 по Бали, по просьбе Elena. Срабатывает только в
+// окне 14:00–16:00 по Бали этого одного дня (после рестарта в окне —
+// догоняет, в другой день — никогда). Маркер на volume пишется ДО отправки:
+// не больше одной отправки. Итог/ошибка — Елене в личку. Удалить после
+// отправки.
+const WVP_ONESHOT = { chatId: -1001757671785, baliDate: '2026-09-27', fromHour: 14, toHour: 16 };
+let wvpOneshotNextTryAt = 0;
+
+cron.schedule('* * * * *', async () => {
+  if (baliDateString() !== WVP_ONESHOT.baliDate) return;
+  const hour = baliHour();
+  if (hour < WVP_ONESHOT.fromHour || hour >= WVP_ONESHOT.toHour) return;
+  if (Date.now() < wvpOneshotNextTryAt) return;
+
+  const fs = require('fs');
+  const markerPath = process.env.WVP_ONESHOT_MARKER_PATH || `/data/wvp_oneshot_${WVP_ONESHOT.baliDate}.json`;
+  if (fs.existsSync(markerPath)) return;
+  try {
+    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
+  } catch (err) {
+    console.error('[wvp-oneshot] не удалось записать маркер, отправка отменена:', err.message);
+    return;
+  }
+
+  try {
+    const result = await sendWeekCards(bot, WVP_ONESHOT.chatId, { requireComplete: true });
+    if (result.aborted === 'failedTabs') {
+      // Ничего не опубликовано — снимаем маркер и пробуем снова через 10 минут.
+      try {
+        fs.unlinkSync(markerPath);
+      } catch {}
+      wvpOneshotNextTryAt = Date.now() + 10 * 60 * 1000;
+      console.warn(`[wvp-oneshot] часть вкладок не загрузилась, повтор через 10 минут: ${result.failedTabs.join('; ')}`);
+      return;
+    }
+    if (result.aborted) {
+      console.log(`[wvp-oneshot] не отправлено: ${result.aborted}`);
+      notifyElena(
+        result.aborted === 'allCovered'
+          ? 'Тестовая отправка Анонса в WorldView Productions: у всех эфиров следующей недели уже есть хост — отправлять нечего, в группу ничего не ушло.'
+          : 'Тестовая отправка Анонса в WorldView Productions: на следующей неделе нет запланированных эфиров — в группу ничего не ушло.'
+      );
+      return;
+    }
+    console.log(`[wvp-oneshot] отправлено в группу ${WVP_ONESHOT.chatId}: эфиров без хоста=${result.open}, сообщений=${result.sent}`);
+    notifyElena(`✅ Тестовый Анонс отправлен в WorldView Productions: эфиров без хоста ${result.open}, сообщений ${result.sent}.`);
+  } catch (err) {
+    console.error(`[wvp-oneshot] ошибка отправки (отправлено до ошибки: ${err.sentSoFar ?? 0}):`, err.message);
+    notifyElena(`⚠️ Тестовая отправка Анонса в WorldView Productions упала: ${err.message}. Отправлено сообщений до ошибки: ${err.sentSoFar ?? 0}. Автоматически не повторяю.`);
+  }
+});
+
 // ===== Ежедневная diff-проверка хостов =====
 // Раз в день (в 9:00 по Бали) сравнивает вкладки из daily-check-tabs.json с
 // тем, что было при прошлой проверке (снимок на Railway Volume), и пишет
