@@ -1098,6 +1098,8 @@ function buildWeekCardParts(events, range) {
     dateLine: weekCardDateLine(e),
     tabUrl: e.tabUrl || null,
     when: sundayButtonWhen(e),
+    // Identifies the sheet row again later (cardButtons.js: syncCardsWithSheet).
+    event: { tabUrl: e.tabUrl || null, dateIso: e.date.toISOString(), azStartMin: e.azStartMin },
   }));
 
   const closing = '🙏 Thank you for your service / Спасибо за ваше служение 🌿';

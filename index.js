@@ -16,7 +16,14 @@ const {
   handleReminderCallback,
   CALLBACK_PREFIX: HOST_REMINDER_CALLBACK_PREFIX,
 } = require('./hostReminder');
-const { sendWeekCards, handleCardCallback, checkCardExpiry, TAKE_CALLBACK: CARD_TAKE_CALLBACK, PASS_CALLBACK: CARD_PASS_CALLBACK } = require('./cardButtons');
+const {
+  sendWeekCards,
+  handleCardCallback,
+  syncCardsWithSheet,
+  TAKE_CALLBACK: CARD_TAKE_CALLBACK,
+  PASS_CALLBACK: CARD_PASS_CALLBACK,
+  UNDO_CALLBACK: CARD_UNDO_CALLBACK,
+} = require('./cardButtons');
 const { generateAssistanceReport } = require('./assistance');
 const { generateSeriesCheckReport } = require('./assistantsSeries');
 const {
@@ -874,21 +881,14 @@ bot.onText(/^\/(следующая_неделя|next_week)(?:@\S+)?$/, (msg) => 
   execNextWeek(msg.chat.id, { inGroup });
 });
 
-// ===== "Одна карточка — одно сообщение" кнопки ✅ Беру / ❌ Не могу =====
-// Так устроены воскресная рассылка и /next_week (sendWeekCards). Подробности
-// и ограничение платформы (URL-кнопки не шлют боту событий, поэтому "Беру" —
-// callback, не url) — см. cardButtons.js.
+// ===== "Одна карточка — одно сообщение": ✅ I'll take it / ❌ Can't do it / Undo =====
+// Так устроены воскресная рассылка и /next_week (sendWeekCards). Нажимать
+// могут только хосты; правила резерва, ограничения платформы и сверка с
+// таблицей (syncCardsWithSheet, ниже рядом с периодической проверкой хостов)
+// — см. cardButtons.js.
 bot.on('callback_query', (query) => {
-  if (query.data !== CARD_TAKE_CALLBACK && query.data !== CARD_PASS_CALLBACK) return;
+  if (query.data !== CARD_TAKE_CALLBACK && query.data !== CARD_PASS_CALLBACK && query.data !== CARD_UNDO_CALLBACK) return;
   handleCardCallback(bot, query);
-});
-
-cron.schedule('*/5 * * * *', async () => {
-  try {
-    await checkCardExpiry(bot);
-  } catch (err) {
-    console.error('[card-buttons] ошибка проверки истёкших "Беру":', err.message);
-  }
 });
 
 // ===== Напоминание за 2 дня до эфира без хоста + счётчик "❌ Не могу" =====
@@ -919,6 +919,33 @@ if (!hostReminderEnabled) {
     }
   });
 }
+
+// ВРЕМЕННО: одноразовый тест новых правил карточек (только хосты нажимают,
+// резерв ✅ → "Open the sheet"/"Undo", двуязычные тексты) в ТЕСТОВОЙ группе
+// "Дебаты" на живых данных следующей недели. Только в тестовую группу — в
+// WorldView Productions ничего не отправляется. Маркер пишется ДО отправки —
+// рестарт не повторит. Удалить после проверки.
+(async () => {
+  const TEST_GROUP_CHAT_ID = -5172293748;
+  const fs = require('fs');
+  const markerPath = process.env.CARD_FLOW_TEST_MARKER_PATH || '/data/card_flow_test_2026_09_29.json';
+  if (fs.existsSync(markerPath)) return;
+  try {
+    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
+  } catch (err) {
+    console.error('[card-flow-test] не удалось записать маркер, тест не отправлен:', err.message);
+    return;
+  }
+  try {
+    const result = await sendWeekCards(bot, TEST_GROUP_CHAT_ID, { requireComplete: true });
+    console.log(`[card-flow-test] в тестовую группу: aborted=${result.aborted}, без хоста=${result.open}, сообщений=${result.sent}`);
+  } catch (err) {
+    console.error(`[card-flow-test] ошибка отправки (отправлено до ошибки: ${err.sentSoFar ?? 0}):`, err.message);
+    try {
+      fs.unlinkSync(markerPath);
+    } catch {}
+  }
+})();
 
 // ===== Воскресная авторассылка =====
 // Каждое воскресенье в WEEKLY_ANNOUNCE_HOUR (по умолчанию 10:00) по Бали бот
@@ -1232,6 +1259,21 @@ async function runPeriodicHostDiffCheck() {
 if (myChatId) {
   cron.schedule(buildIntervalCronExpression(HOST_DIFF_CHECK_INTERVAL_MINUTES), runPeriodicHostDiffCheck);
 }
+
+// Карточки анонса (cardButtons.js): когда хост реально вписан в таблицу —
+// резерв/кнопки заменяются постоянной строкой "👤 Host / Хост: Имя". Тот же
+// интервал, что у проверки хостов; без карточек, ждущих хоста, запросов к
+// таблице не делает. Один прогон через 30 секунд после старта — чтобы после
+// перезапуска не ждать до следующего тика.
+async function runCardSheetSync() {
+  try {
+    await syncCardsWithSheet(bot);
+  } catch (err) {
+    console.error('[card-buttons] ошибка синхронизации карточек с таблицей:', err.message);
+  }
+}
+cron.schedule(buildIntervalCronExpression(HOST_DIFF_CHECK_INTERVAL_MINUTES), runCardSheetSync);
+setTimeout(runCardSheetSync, 30 * 1000);
 
 // ===== Изречения =====
 async function sendVerseImage(chatId, verseNumber) {

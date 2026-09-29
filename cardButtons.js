@@ -1,23 +1,31 @@
-// "Одна карточка — одно сообщение" кнопки "✅ Беру" / "❌ Не могу" для
-// воскресного анонса и /next_week (см. index.js/report.js — пока живьём
-// проверяется в тестовой группе, в реальную рассылку ещё не подключено).
+// "Одна карточка — одно сообщение": кнопки ✅ / ❌ под каждым эфиром без
+// хоста (воскресный анонс и /next_week). Правила, которыми Elena определила
+// поведение:
 //
-// Почему "Беру" — callback-кнопка, а не URL-кнопка, хотя ссылку на вкладку
-// таблицы всё равно нужно открыть: Telegram НЕ шлёт боту никакого события,
-// когда нажимают URL-кнопку — про такое нажатие узнать невозможно в
-// принципе, это ограничение платформы, не наше. Поэтому "I'll take it" —
-// обычная callback-кнопка: по нажатию бот узнаёт, кто нажал, сразу убирает
-// обе кнопки с ЭТОЙ карточки и показывает "✅ Взял(а): @имя", а вместо них
-// появляется одна URL-кнопка "Open the schedule tab" — название эфира по
-// формату Михаила больше не ссылка, ссылка живёт только в кнопках.
+// 1. Нажимать могут ТОЛЬКО хосты (host-candidates.json, сверка по username).
+//    Любое нажатие не-хоста молча игнорируется: карточка не меняется, ничего
+//    не пишется, никакой всплывашки. (Telegram требует ответить на нажатие,
+//    чтобы у кнопки не крутился индикатор — отвечаем пустым answerCallbackQuery,
+//    он ничего не показывает.)
+// 2. ✅ ("I'll take it") — резерв за этим хостом: обе кнопки заменяются на
+//    "🔗 Open the sheet" (прямая ссылка на вкладку) и "↩️ Undo". Пока резерв
+//    висит, другие хосты взять эфир не могут (кнопок для них нет). Undo может
+//    нажать только тот же хост — карточка возвращается в исходный вид.
+// 3. ❌ ("Can't do it") — считается в счётчике; если тот же хост потом нажмёт
+//    ✅ — снимается из "не могут".
+// 4. syncCardsWithSheet (по расписанию периодической проверки хостов): как
+//    только хост реально вписан в таблицу, резерв/кнопки заменяются постоянной
+//    строкой "👤 Host / Хост: Имя".
+// 5. Резерв, который долго висит без записи в таблице, пока НЕ трогаем (решение
+//    Elena — вернёмся позже): никакого автоматического отката по времени.
 //
-// Подтверждение "хост реально появился в таблице" СЮДА НЕ подключено —
-// это отдельная, более крупная задача (связать с ежедневной diff-проверкой
-// хостов), намеренно отложена по слову Elena. Вместо этого — простой
-// откат по времени: если после "Беру" прошло больше TAKEN_EXPIRE_MS, а
-// карточка с тех пор не была вручную подтверждена/сброшена, кнопки
-// возвращаются сами (см. checkCardExpiry), чтобы слот не завис "как бы
-// занятым" навсегда.
+// Почему "I'll take it" — callback-кнопка, а не ссылка: Telegram не сообщает
+// боту о нажатии на URL-кнопку, поэтому иначе невозможно узнать, кто именно
+// нажал. Ссылку на таблицу показывает уже вторая кнопка после резерва —
+// технически её видят все, кто видит сообщение (URL-кнопку нельзя показать
+// избранным), защита в том, что запустить резерв может только хост.
+//
+// Все тексты карточки и всплывающие подсказки — на английском и русском вместе.
 
 const fs = require('fs');
 const path = require('path');
@@ -45,17 +53,14 @@ async function withRetry(fn) {
 
 const STATE_PATH = process.env.CARD_BUTTONS_STATE_PATH || '/data/card_buttons.json';
 const KEEP_MS = 30 * 24 * 60 * 60 * 1000;
-const TAKEN_EXPIRE_MS = Number(process.env.CARD_TAKEN_EXPIRE_MS) || 3 * 60 * 60 * 1000;
 
 const TAKE_CALLBACK = 'card:take';
 const PASS_CALLBACK = 'card:pass';
+const UNDO_CALLBACK = 'card:undo';
 
-// The 10 real host candidates the "Не могут (N из M)" counter is measured
-// against (M = this list's length). Deliberately separate from
-// community-tags.json (the 5 @mentions closing /check, /weekly and the
-// Sunday announce, capped at 5 for notification reliability) — every name
-// here is listed in "Ещё не отметились" as-is, even past Telegram's
-// ~5-mention notification limit, because Elena wants the full list visible.
+// The 10 real hosts: both the people allowed to press the buttons and the
+// denominator of the "N of M" counter. Deliberately separate from
+// community-tags.json (the 5 @mentions closing /check, /weekly).
 const CANDIDATES_PATH = path.join(__dirname, 'host-candidates.json');
 
 function loadHostCandidates() {
@@ -77,50 +82,64 @@ function writeJsonAtomic(data) {
   fs.renameSync(tmpPath, STATE_PATH);
 }
 
+const normUser = (s) => String(s).replace(/^@/, '').toLowerCase();
+
+function isHost(user, candidateTags) {
+  return Boolean(user && user.username) && candidateTags.some((t) => normUser(t) === normUser(user.username));
+}
+
 function displayName(user) {
   return user.username ? `@${user.username}` : [user.first_name, user.last_name].filter(Boolean).join(' ') || 'участник';
 }
 
-// "❌ Не могут (N из M): ..." / "Ещё не отметились: ..." — знаменатель это
-// список кандидатов-хостов (candidateTags), не все участники чата.
+// Older cards (before the reserve flow) stored the taker as `takenBy`.
+function normalizeRecord(record) {
+  if (record.takenBy && !record.reservedBy) record.reservedBy = record.takenBy;
+  delete record.takenBy;
+  return record;
+}
+
+// "❌ Can't do it / Не могут (N of M / из M): ..." and "Haven't responded yet
+// / Ещё не отметились: ..." — only hosts count, M is the size of the host list.
 function refusalCounterBlock(refusers, candidateTags) {
-  if (!refusers || refusers.length === 0) return null;
-  const norm = (s) => String(s).replace(/^@/, '').toLowerCase();
-  const tagNorms = candidateTags.map(norm);
-  const matched = refusers.filter((r) => r.username && tagNorms.includes(norm(r.username)));
-  const rest = candidateTags.filter((t) => !matched.some((r) => norm(r.username) === norm(t)));
-  const others = refusers.filter((r) => !r.username || !tagNorms.includes(norm(r.username)));
+  const hostRefusers = (refusers || []).filter((r) => isHost(r, candidateTags));
+  if (hostRefusers.length === 0) return null;
+  const refusedNames = new Set(hostRefusers.map((r) => normUser(r.username)));
+  const rest = candidateTags.filter((t) => !refusedNames.has(normUser(t)));
+  const m = candidateTags.length;
   const lines = [
-    `❌ Не могут (${matched.length + others.length} из ${candidateTags.length}): ${[...matched.map((r) => `@${r.username}`), ...others.map((r) => escapeHtml(displayName(r)))].join(', ') || '—'}`,
+    `❌ <b>Can't do it / Не могут (${hostRefusers.length} of ${m} / из ${m}):</b> ${hostRefusers.map((r) => `@${r.username}`).join(', ')}`,
   ];
-  if (rest.length > 0) lines.push(`Ещё не отметились: ${rest.map((t) => escapeHtml(formatCommunityTag(t))).join(', ')}`);
+  if (rest.length > 0) {
+    lines.push(`<b>Haven't responded yet / Ещё не отметились:</b> ${rest.map((t) => escapeHtml(formatCommunityTag(t))).join(', ')}`);
+  }
   return lines.join('\n');
 }
 
 function cardText(record) {
   const lines = [record.titleLine, record.dateLine];
-  if (record.takenBy) {
-    lines.push(`✅ Взял(а): ${escapeHtml(displayName(record.takenBy))} (только что)`);
+  if (record.hosted) {
+    lines.push(`👤 <b>Host / Хост:</b> ${escapeHtml(record.hosted.name)}`);
+  } else if (record.reservedBy) {
+    lines.push(`⏳ <b>Reserved by / Зарезервировал(а):</b> ${escapeHtml(displayName(record.reservedBy))}`);
   } else {
     const counter = refusalCounterBlock(record.refusers, record.candidateTags);
     // Blank line + a small bold header separates the volunteer-response
-    // status from the date/title above it — without this it read as one
-    // run-on block and was easy to miss.
-    if (counter) lines.push('', '📊 <b>Статус ответов:</b>', counter);
+    // status from the date/title above it.
+    if (counter) lines.push('', '📊 <b>Response status / Статус ответов:</b>', counter);
   }
   return lines.join('\n');
 }
 
-// English labels (Mikhail's format), each carrying the event's AZ/MCK
-// date+time so a button is unambiguous on its own. The link to the event's
-// tab lives ONLY on buttons, never in the title: once someone takes the
-// slot, the two answer buttons are replaced by a single URL button to the
-// tab so they can still open the sheet and add themselves. (A tap on a URL
-// button is never reported to the bot, so "I'll take it" itself has to be a
-// callback button — hence the extra tap to open the tab.)
+// Buttons stay English; the AZ/MCK date+time in their labels keeps each one
+// unambiguous on its own.
 function cardKeyboard(record) {
-  if (record.takenBy) {
-    return record.tabUrl ? [[{ text: '📄 Open the schedule tab', url: record.tabUrl }]] : [];
+  if (record.hosted) return [];
+  if (record.reservedBy) {
+    const rows = [];
+    if (record.tabUrl) rows.push([{ text: '🔗 Open the sheet / Открыть таблицу', url: record.tabUrl }]);
+    rows.push([{ text: '↩️ Undo / Отменить', callback_data: UNDO_CALLBACK }]);
+    return rows;
   }
   const suffix = record.when ? ` · ${record.when}` : '';
   return [
@@ -129,11 +148,10 @@ function cardKeyboard(record) {
   ];
 }
 
-// titleLine/dateLine приходят уже готовыми HTML-строками (жирные даты,
-// ссылка на вкладку в названии и т.д. собираются в вызывающем коде — этот
-// модуль только хранит состояние и отрисовывает статус/кнопки под ними).
-async function sendCard(bot, chatId, { titleLine, dateLine, tabUrl = null, when = null, candidateTags = loadHostCandidates() }) {
-  const record = { titleLine, dateLine, tabUrl, when, candidateTags, refusers: [], takenBy: null };
+// titleLine/dateLine arrive as ready HTML strings; `event` identifies the
+// sheet row (tab + date + AZ start) so the periodic sync can find it again.
+async function sendCard(bot, chatId, { titleLine, dateLine, tabUrl = null, when = null, event = null, candidateTags = loadHostCandidates() }) {
+  const record = { titleLine, dateLine, tabUrl, when, event, candidateTags, refusers: [], reservedBy: null, hosted: null };
   const sent = await withRetry(() =>
     bot.sendMessage(chatId, cardText(record), {
       parse_mode: 'HTML',
@@ -186,7 +204,13 @@ async function postWeekCards(bot, chatId, events, range, failedTabs = []) {
     sent++;
     for (const card of cards) {
       await sleep(gapMs);
-      await sendCard(bot, chatId, { titleLine: card.titleLine, dateLine: card.dateLine, tabUrl: card.tabUrl, when: card.when });
+      await sendCard(bot, chatId, {
+        titleLine: card.titleLine,
+        dateLine: card.dateLine,
+        tabUrl: card.tabUrl,
+        when: card.when,
+        event: card.event,
+      });
       sent++;
     }
     await sleep(gapMs);
@@ -231,33 +255,53 @@ async function processCardCallback(bot, query) {
   const key = `${message.chat.id}:${message.message_id}`;
   const store = readJson({ messages: {} });
   const record = store.messages[key];
+  const user = query.from;
+  const ack = (text) => bot.answerCallbackQuery(query.id, text ? { text } : {});
 
-  if (!record) {
-    await bot.answerCallbackQuery(query.id, { text: 'Эта карточка уже неактуальна' });
+  // Only hosts may act. Anyone else: no toast, no edit, nothing.
+  const candidates = record ? record.candidateTags : loadHostCandidates();
+  if (!isHost(user, candidates)) {
+    await ack();
     return;
   }
 
-  const user = query.from;
+  if (!record) {
+    await ack('This card is no longer active / Эта карточка уже неактуальна');
+    return;
+  }
+  normalizeRecord(record);
 
-  if (query.data === TAKE_CALLBACK) {
-    if (record.takenBy && record.takenBy.id !== user.id) {
-      await bot.answerCallbackQuery(query.id, { text: `Уже взял(а): ${displayName(record.takenBy)}` });
-      return;
-    }
-    record.takenBy = { id: user.id, username: user.username || null, first_name: user.first_name, last_name: user.last_name, at: Date.now() };
-    record.refusers = (record.refusers || []).filter((r) => r.id !== user.id);
+  if (record.hosted) {
+    await ack('This session already has a host / У этого эфира уже есть хост');
+    return;
+  }
+
+  const reserver = record.reservedBy;
+  const save = async () => {
     store.messages[key] = record;
     writeJsonAtomic(store);
     await redrawCard(bot, message.chat.id, message.message_id, record);
-    await bot.answerCallbackQuery(query.id, {
-      text: 'Recorded! Open the tab with the button below and add yourself / Записано! Откройте вкладку кнопкой ниже и впишите себя 🙏',
-    });
+  };
+
+  if (query.data === TAKE_CALLBACK) {
+    if (reserver) {
+      await ack(
+        reserver.id === user.id
+          ? 'You already reserved this session / Вы уже зарезервировали этот эфир'
+          : `Already reserved by ${displayName(reserver)} / Уже зарезервировал(а): ${displayName(reserver)}`
+      );
+      return;
+    }
+    record.reservedBy = { id: user.id, username: user.username, first_name: user.first_name, last_name: user.last_name, at: Date.now() };
+    record.refusers = (record.refusers || []).filter((r) => r.id !== user.id);
+    await save();
+    await ack('Reserved for you. Tap "Open the sheet" and add yourself / Зарезервировано за вами. Нажмите «Открыть таблицу» и впишите себя 🙏');
     return;
   }
 
   if (query.data === PASS_CALLBACK) {
-    if (record.takenBy) {
-      await bot.answerCallbackQuery(query.id, { text: `Эфир уже взял(а) ${displayName(record.takenBy)}` });
+    if (reserver) {
+      await ack(`Already reserved by ${displayName(reserver)} / Уже зарезервировал(а): ${displayName(reserver)}`);
       return;
     }
     record.refusers = record.refusers || [];
@@ -267,29 +311,36 @@ async function processCardCallback(bot, query) {
       record.refusers.splice(at, 1);
       added = false;
     } else {
-      record.refusers.push({ id: user.id, username: user.username || null, first_name: user.first_name, last_name: user.last_name });
+      record.refusers.push({ id: user.id, username: user.username, first_name: user.first_name, last_name: user.last_name });
       added = true;
     }
-    store.messages[key] = record;
-    writeJsonAtomic(store);
-    await redrawCard(bot, message.chat.id, message.message_id, record);
-    await bot.answerCallbackQuery(query.id, { text: added ? 'Записано: не можешь 🙏' : 'Отметка снята' });
+    await save();
+    await ack(added ? "Noted: you can't do it / Записано: вы не можете 🙏" : 'Mark removed / Отметка снята');
     return;
+  }
+
+  if (query.data === UNDO_CALLBACK) {
+    if (!reserver) {
+      await ack('Nothing to cancel / Нечего отменять');
+      return;
+    }
+    if (reserver.id !== user.id) {
+      await ack(`Only ${displayName(reserver)} can cancel this reservation / Отменить резерв может только ${displayName(reserver)}`);
+      return;
+    }
+    record.reservedBy = null;
+    await save();
+    await ack('Reservation cancelled / Резерв отменён');
   }
 }
 
-// Нажатия на одну и ту же карточку — строго по очереди, иначе два быстрых
-// клика могут дойти до Telegram в обратном порядке и показать устаревший
-// счётчик (тот же приём, что в hostReminder.js).
+// Presses (and the sheet sync) on one and the same card run strictly one
+// after another — two quick taps could otherwise reach Telegram out of order
+// and leave a stale card.
 const queues = new Map();
 
-function handleCardCallback(bot, query) {
-  const message = query.message;
-  if (!message) return bot.answerCallbackQuery(query.id, { text: 'Сообщение недоступно' }).catch(() => {});
-  const key = `${message.chat.id}:${message.message_id}`;
-  const next = (queues.get(key) || Promise.resolve())
-    .then(() => processCardCallback(bot, query))
-    .catch((err) => console.error('[card-buttons] ошибка обработки нажатия:', err.message));
+function runQueued(key, fn) {
+  const next = (queues.get(key) || Promise.resolve()).then(fn).catch((err) => console.error('[card-buttons] ошибка:', err.message));
   queues.set(key, next);
   next.finally(() => {
     if (queues.get(key) === next) queues.delete(key);
@@ -297,26 +348,76 @@ function handleCardCallback(bot, query) {
   return next;
 }
 
-// Раз в 5 минут (вызывается из того же cron-тика, что и остальные
-// периодические проверки) — если "Беру" нажали больше TAKEN_EXPIRE_MS назад
-// и карточку с тех пор никто не тронул, возвращает кнопки: см. комментарий
-// в шапке файла, почему здесь нет проверки реальной таблицы.
-async function checkCardExpiry(bot) {
-  const store = readJson({ messages: {} });
-  const cutoff = Date.now() - TAKEN_EXPIRE_MS;
-  let changed = false;
-  for (const [key, record] of Object.entries(store.messages)) {
-    if (!record.takenBy || record.takenBy.at > cutoff) continue;
-    const [chatId, messageId] = key.split(':');
-    record.takenBy = null;
-    changed = true;
+function handleCardCallback(bot, query) {
+  const message = query.message;
+  // Message no longer accessible — nothing to act on; just stop the spinner.
+  if (!message) return bot.answerCallbackQuery(query.id).catch(() => {});
+  const key = `${message.chat.id}:${message.message_id}`;
+  return runQueued(key, async () => {
     try {
-      await redrawCard(bot, Number(chatId), Number(messageId), record);
+      await processCardCallback(bot, query);
     } catch (err) {
-      console.error(`[card-buttons] не удалось вернуть кнопки на ${key}:`, err.message);
+      console.error('[card-buttons] ошибка обработки нажатия:', err.message);
+      bot.answerCallbackQuery(query.id).catch(() => {});
     }
-  }
-  if (changed) writeJsonAtomic(store);
+  });
 }
 
-module.exports = { sendCard, sendWeekCards, postWeekCards, handleCardCallback, checkCardExpiry, TAKE_CALLBACK, PASS_CALLBACK };
+// Periodic check (same cadence as the host diff check): any card not yet
+// showing a host is matched to its sheet row; if the sheet now has a host
+// there — whether typed in after a reservation or directly — the card becomes
+// the permanent "👤 Host / Хост: Name" line without buttons. Does nothing (and
+// makes no Sheets requests) when there are no such cards. If any tab fails to
+// load the run is skipped, since "no host found" would be unreliable.
+async function syncCardsWithSheet(bot) {
+  const store = readJson({ messages: {} });
+  const pending = Object.entries(store.messages).filter(([, r]) => r.event && !r.hosted);
+  if (pending.length === 0) return { checked: 0, updated: 0 };
+
+  const times = pending.map(([, r]) => new Date(r.event.dateIso).getTime());
+  const { events, failedTabs } = await collectWeekEvents({ start: new Date(Math.min(...times)), end: new Date(Math.max(...times)) });
+  if (failedTabs.length > 0) {
+    console.warn(`[card-buttons] синхронизация с таблицей пропущена, вкладки не загрузились: ${failedTabs.join('; ')}`);
+    return { checked: pending.length, updated: 0, skipped: 'failedTabs' };
+  }
+
+  let updated = 0;
+  for (const [key, record] of pending) {
+    const match = events.find(
+      (e) => e.tabUrl === record.event.tabUrl && e.date.toISOString() === record.event.dateIso && e.azStartMin === record.event.azStartMin
+    );
+    if (!match || !match.hasHost) continue;
+
+    await runQueued(key, async () => {
+      const fresh = readJson({ messages: {} });
+      const rec = fresh.messages[key];
+      if (!rec || rec.hosted) return;
+      normalizeRecord(rec);
+      rec.hosted = { name: match.host, at: Date.now() };
+      rec.reservedBy = null;
+      fresh.messages[key] = rec;
+      writeJsonAtomic(fresh);
+      updated++;
+      const [chatId, messageId] = key.split(':');
+      try {
+        await redrawCard(bot, Number(chatId), Number(messageId), rec);
+      } catch (err) {
+        console.error(`[card-buttons] не удалось обновить карточку ${key}:`, err.message);
+      }
+    });
+  }
+
+  console.log(`[card-buttons] синхронизация с таблицей: карточек проверено ${pending.length}, стало "хост назначен" ${updated}`);
+  return { checked: pending.length, updated };
+}
+
+module.exports = {
+  sendCard,
+  sendWeekCards,
+  postWeekCards,
+  handleCardCallback,
+  syncCardsWithSheet,
+  TAKE_CALLBACK,
+  PASS_CALLBACK,
+  UNDO_CALLBACK,
+};
