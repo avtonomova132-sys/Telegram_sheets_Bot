@@ -920,33 +920,6 @@ if (!hostReminderEnabled) {
   });
 }
 
-// ВРЕМЕННО: одноразовый тест новых правил карточек (только хосты нажимают,
-// резерв ✅ → "Open the sheet"/"Undo", двуязычные тексты) в ТЕСТОВОЙ группе
-// "Дебаты" на живых данных следующей недели. Только в тестовую группу — в
-// WorldView Productions ничего не отправляется. Маркер пишется ДО отправки —
-// рестарт не повторит. Удалить после проверки.
-(async () => {
-  const TEST_GROUP_CHAT_ID = -5172293748;
-  const fs = require('fs');
-  const markerPath = process.env.CARD_FLOW_TEST_MARKER_PATH || '/data/card_flow_test_2026_09_29.json';
-  if (fs.existsSync(markerPath)) return;
-  try {
-    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
-  } catch (err) {
-    console.error('[card-flow-test] не удалось записать маркер, тест не отправлен:', err.message);
-    return;
-  }
-  try {
-    const result = await sendWeekCards(bot, TEST_GROUP_CHAT_ID, { requireComplete: true });
-    console.log(`[card-flow-test] в тестовую группу: aborted=${result.aborted}, без хоста=${result.open}, сообщений=${result.sent}`);
-  } catch (err) {
-    console.error(`[card-flow-test] ошибка отправки (отправлено до ошибки: ${err.sentSoFar ?? 0}):`, err.message);
-    try {
-      fs.unlinkSync(markerPath);
-    } catch {}
-  }
-})();
-
 // ===== Воскресная авторассылка =====
 // Каждое воскресенье в WEEKLY_ANNOUNCE_HOUR (по умолчанию 10:00) по Бали бот
 // сам отправляет расписание на следующую неделю карточками (шапка + одно
