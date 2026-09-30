@@ -20,6 +20,8 @@ const {
   sendWeekCards,
   handleCardCallback,
   syncCardsWithSheet,
+  checkAndSendAnnounceReminders,
+  sendReminderNow,
   TAKE_CALLBACK: CARD_TAKE_CALLBACK,
   PASS_CALLBACK: CARD_PASS_CALLBACK,
   UNDO_CALLBACK: CARD_UNDO_CALLBACK,
@@ -920,6 +922,36 @@ if (!hostReminderEnabled) {
   });
 }
 
+// ВРЕМЕННО: пример напоминания в ТЕСТОВОЙ группе "Дебаты": сначала свежий
+// Анонс туда (чтобы он был записан для напоминаний — вчерашние тестовые
+// карточки записаны не были), затем сразу такое же напоминание, как даёт
+// /remind_test. Только в тестовую группу. Маркер пишется ДО отправки —
+// рестарт не повторит. Удалить после проверки.
+(async () => {
+  const testGroup = -5172293748;
+  const fs = require('fs');
+  const markerPath = process.env.REMINDER_EXAMPLE_MARKER_PATH || '/data/reminder_example_2026_09_30.json';
+  if (fs.existsSync(markerPath)) return;
+  try {
+    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
+  } catch (err) {
+    console.error('[reminder-example] не удалось записать маркер, пример не отправлен:', err.message);
+    return;
+  }
+  try {
+    const result = await sendWeekCards(bot, testGroup, { requireComplete: true });
+    console.log(`[reminder-example] Анонс в тестовую группу: aborted=${result.aborted}, без хоста=${result.open}, сообщений=${result.sent}`);
+    if (result.aborted) return;
+    const r = await sendReminderNow(bot, testGroup);
+    console.log(`[reminder-example] напоминание: ${JSON.stringify(r)}`);
+  } catch (err) {
+    console.error(`[reminder-example] ошибка (отправлено до ошибки: ${err.sentSoFar ?? 0}):`, err.message);
+    try {
+      fs.unlinkSync(markerPath);
+    } catch {}
+  }
+})();
+
 // ===== Воскресная авторассылка =====
 // Каждое воскресенье в WEEKLY_ANNOUNCE_HOUR (по умолчанию 10:00) по Бали бот
 // сам отправляет расписание на следующую неделю карточками (шапка + одно
@@ -1247,6 +1279,49 @@ async function runCardSheetSync() {
 }
 cron.schedule(buildIntervalCronExpression(HOST_DIFF_CHECK_INTERVAL_MINUTES), runCardSheetSync);
 setTimeout(runCardSheetSync, 30 * 1000);
+
+// Одно напоминание хостам, не отметившимся под карточками, через 24 часа после
+// Анонса (любого, отправленного ботом в группу: воскресная рассылка или
+// вручную) — ответом на шапку Анонса. Подробности — cardButtons.js. Проверка
+// раз в 5 минут (catch-up: пропущенный тик или рестарт не теряют напоминание,
+// а метка "уже напомнили" ставится ДО отправки, так что повторов нет).
+cron.schedule('*/5 * * * *', async () => {
+  try {
+    const { errors } = await checkAndSendAnnounceReminders(bot);
+    for (const e of errors) {
+      notifyElena(`⚠️ Напоминание хостам в группе ${e.chatId} не отправилось: ${e.message}. Повторно автоматически не отправляю.`);
+    }
+  } catch (err) {
+    console.error('[announce-reminder] ошибка проверки:', err.message);
+  }
+});
+
+// /remind_test — сразу отправить такое же напоминание в тестовую группу
+// "Дебаты" по последнему Анонсу, отправленному туда ботом. Только для Elena
+// (MY_CHAT_ID), из личного чата или из самой тестовой группы; из любого
+// другого места молча игнорируется. Реальное 24-часовое напоминание по этому
+// Анонсу от теста не отменяется.
+const TEST_GROUP_CHAT_ID = Number(process.env.TEST_GROUP_CHAT_ID) || -5172293748;
+const REMIND_TEST_REASONS = {
+  'no-announce': 'В «Дебатах» нет Анонса, отправленного ботом после включения напоминаний — сначала отправь Анонс туда.',
+  'no-free': 'Напоминание не нужно: свободных эфиров не осталось (все зарезервированы, взяты или уже начались).',
+  'all-responded': 'Напоминание не нужно: все хосты уже отметились под свободными эфирами.',
+};
+bot.onText(/^\/remind_test(?:@\S+)?$/, async (msg) => {
+  if (!myChatId || String(msg.from?.id) !== String(myChatId)) return;
+  if (msg.chat.type !== 'private' && msg.chat.id !== TEST_GROUP_CHAT_ID) return;
+  try {
+    const r = await sendReminderNow(bot, TEST_GROUP_CHAT_ID);
+    if (!r.sent) {
+      await bot.sendMessage(msg.chat.id, REMIND_TEST_REASONS[r.reason] || `Напоминание не отправлено (${r.reason}).`);
+    } else if (msg.chat.type === 'private') {
+      await bot.sendMessage(msg.chat.id, `✅ Тестовое напоминание отправлено в «Дебаты»: свободных эфиров ${r.n}, отмечено хостов ${r.tagged}.`);
+    }
+  } catch (err) {
+    console.error('[remind-test] ошибка:', err.message);
+    bot.sendMessage(msg.chat.id, `Не получилось отправить тестовое напоминание 😔 ${err.message}`).catch(() => {});
+  }
+});
 
 // ===== Изречения =====
 async function sendVerseImage(chatId, verseNumber) {

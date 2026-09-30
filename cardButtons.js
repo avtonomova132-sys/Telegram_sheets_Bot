@@ -195,24 +195,31 @@ async function postWeekCards(bot, chatId, events, range, failedTabs = []) {
   const gapMs = chatId < 0 ? GROUP_GAP_MS : PRIVATE_GAP_MS;
   let sent = 0;
   let headerMessage = null;
+  const cardKeys = [];
 
   try {
     // No message_thread_id is ever set, so in a forum group everything lands
     // in the default "General" topic; the header's reply is kept so callers
     // can report which topic it actually landed in.
     headerMessage = await withRetry(() => bot.sendMessage(chatId, header));
+    const headerSentAt = Date.now();
     sent++;
     for (const card of cards) {
       await sleep(gapMs);
-      await sendCard(bot, chatId, {
+      const cardMessage = await sendCard(bot, chatId, {
         titleLine: card.titleLine,
         dateLine: card.dateLine,
         tabUrl: card.tabUrl,
         when: card.when,
         event: card.event,
       });
+      cardKeys.push(`${chatId}:${cardMessage.message_id}`);
       sent++;
     }
+    // Remember this announce so the 24h reminder can find it — groups only
+    // (in a private preview there is nobody to remind), whoever triggered it
+    // (Sunday auto-send or a manual command).
+    if (chatId < 0) recordBatch(chatId, headerMessage.message_id, cardKeys, headerSentAt);
     await sleep(gapMs);
     await withRetry(() => bot.sendMessage(chatId, closing));
     sent++;
@@ -411,12 +418,125 @@ async function syncCardsWithSheet(bot) {
   return { checked: pending.length, updated };
 }
 
+// ---- One reminder, 24h after an announce, to hosts who haven't responded ----
+//
+// Every announce posted to a group (Sunday auto-send or a manual command) is
+// remembered as a "batch" (header message + its cards). REMINDER_DELAY_MS
+// after it went out, a single reply to the header tags the hosts who still
+// haven't tapped ✅ or ❌ under at least one still-free session. Sessions
+// that are reserved, already hosted, or already started don't count; if none
+// are left or every host has responded, nothing is sent. A batch is marked
+// done BEFORE sending, so a failure never turns into a second reminder.
+// If a newer announce went to the same chat first, the older batch is
+// skipped (its cards are superseded).
+
+const REMINDER_DELAY_MS = 24 * 60 * 60 * 1000;
+
+function recordBatch(chatId, headerMessageId, cardKeys, sentAt) {
+  const store = readJson({ messages: {} });
+  store.batches = (store.batches || []).filter((b) => (b.sentAt || 0) > Date.now() - KEEP_MS);
+  store.batches.push({ chatId, headerMessageId, sentAt, cardKeys, remindedAt: null, outcome: null });
+  writeJsonAtomic(store);
+}
+
+// Event start = AZ date (UTC-7, no DST) + AZ start minute.
+function eventStartMs(event) {
+  return Date.parse(event.dateIso) + event.azStartMin * 60000 + 7 * 3600000;
+}
+
+const refusedBy = (record, tag) => (record.refusers || []).some((r) => r.username && normUser(r.username) === normUser(tag));
+
+// After "Для" the count takes the genitive: 1 эфира, 2/5/… эфиров, 21 эфира.
+function reminderText(n, names) {
+  const en = n === 1 ? '<b>1</b> session still needs a host.' : `<b>${n}</b> sessions still need a host.`;
+  const ruOne = n % 10 === 1 && n % 100 !== 11;
+  const ru = `Для <b>${n}</b> ${ruOne ? 'эфира' : 'эфиров'} всё ещё нужен хост.`;
+  return [
+    '🔔 <b>Reminder</b>',
+    `${en} Please tap ✅ or ❌ under the cards above — it takes just a few seconds and helps us plan. 🙏`,
+    '',
+    '🔔 <b>Напоминание</b>',
+    `${ru} Пожалуйста, нажмите ✅ или ❌ под карточками выше — это займёт пару секунд и очень поможет с планированием. 🙏`,
+    '',
+    `<b>Haven't responded yet / Ещё не отметились:</b> ${names.map((t) => escapeHtml(formatCommunityTag(t))).join(', ')}`,
+  ].join('\n');
+}
+
+function planReminder(store, batch, now = Date.now()) {
+  const records = batch.cardKeys.map((k) => store.messages[k]).filter(Boolean);
+  records.forEach((r) => normalizeRecord(r));
+  const free = records.filter((r) => !r.hosted && !r.reservedBy && !(r.event && eventStartMs(r.event) <= now));
+  if (free.length === 0) return { skip: 'no-free' };
+  const hosts = free[0].candidateTags;
+  const unresponded = hosts.filter((t) => free.some((r) => !refusedBy(r, t)));
+  if (unresponded.length === 0) return { skip: 'all-responded' };
+  return { n: free.length, unresponded, text: reminderText(free.length, unresponded) };
+}
+
+const replyOptions = (batch) => ({ parse_mode: 'HTML', reply_to_message_id: batch.headerMessageId, allow_sending_without_reply: true });
+
+const batchId = (b) => `${b.chatId}:${b.headerMessageId}`;
+
+// Called every few minutes (catch-up style: a missed tick or a restart just
+// sends it on the next one). Returns any send errors so the caller can tell
+// Elena; an ordinary "nothing to remind about" is not an error.
+async function checkAndSendAnnounceReminders(bot, now = Date.now()) {
+  const errors = [];
+  const dueIds = (readJson({ messages: {} }).batches || [])
+    .filter((b) => !b.remindedAt && now >= b.sentAt + REMINDER_DELAY_MS)
+    .map(batchId);
+
+  for (const id of dueIds) {
+    const store = readJson({ messages: {} });
+    const batch = (store.batches || []).find((b) => batchId(b) === id);
+    if (!batch || batch.remindedAt) continue;
+
+    const superseded = store.batches.some((b) => b.chatId === batch.chatId && b.sentAt > batch.sentAt);
+    const plan = superseded ? { skip: 'superseded' } : planReminder(store, batch, now);
+    batch.remindedAt = now;
+    batch.outcome = plan.skip || 'sent';
+    writeJsonAtomic(store);
+
+    if (plan.skip) {
+      console.log(`[announce-reminder] ${id}: напоминание не нужно (${plan.skip})`);
+      continue;
+    }
+    try {
+      await withRetry(() => bot.sendMessage(batch.chatId, plan.text, replyOptions(batch)));
+      console.log(`[announce-reminder] ${id}: отправлено, свободных эфиров ${plan.n}, отмечено хостов ${plan.unresponded.length}`);
+    } catch (err) {
+      errors.push({ chatId: batch.chatId, message: err.message });
+      const after = readJson({ messages: {} });
+      const b = (after.batches || []).find((x) => batchId(x) === id);
+      if (b) {
+        b.outcome = `failed: ${err.message}`;
+        writeJsonAtomic(after);
+      }
+    }
+  }
+  return { errors };
+}
+
+// Manual test: the same reminder for the latest announce in `chatId`, sent
+// right away. Does NOT mark the batch, so its real 24h reminder still happens.
+async function sendReminderNow(bot, chatId) {
+  const store = readJson({ messages: {} });
+  const batch = (store.batches || []).filter((b) => b.chatId === chatId).sort((a, b) => b.sentAt - a.sentAt)[0];
+  if (!batch) return { sent: false, reason: 'no-announce' };
+  const plan = planReminder(store, batch);
+  if (plan.skip) return { sent: false, reason: plan.skip };
+  await withRetry(() => bot.sendMessage(chatId, plan.text, replyOptions(batch)));
+  return { sent: true, n: plan.n, tagged: plan.unresponded.length };
+}
+
 module.exports = {
   sendCard,
   sendWeekCards,
   postWeekCards,
   handleCardCallback,
   syncCardsWithSheet,
+  checkAndSendAnnounceReminders,
+  sendReminderNow,
   TAKE_CALLBACK,
   PASS_CALLBACK,
   UNDO_CALLBACK,
