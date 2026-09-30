@@ -922,36 +922,6 @@ if (!hostReminderEnabled) {
   });
 }
 
-// ВРЕМЕННО: пример напоминания в ТЕСТОВОЙ группе "Дебаты": сначала свежий
-// Анонс туда (чтобы он был записан для напоминаний — вчерашние тестовые
-// карточки записаны не были), затем сразу такое же напоминание, как даёт
-// /remind_test. Только в тестовую группу. Маркер пишется ДО отправки —
-// рестарт не повторит. Удалить после проверки.
-(async () => {
-  const testGroup = -5172293748;
-  const fs = require('fs');
-  const markerPath = process.env.REMINDER_EXAMPLE_MARKER_PATH || '/data/reminder_example_2026_09_30.json';
-  if (fs.existsSync(markerPath)) return;
-  try {
-    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
-  } catch (err) {
-    console.error('[reminder-example] не удалось записать маркер, пример не отправлен:', err.message);
-    return;
-  }
-  try {
-    const result = await sendWeekCards(bot, testGroup, { requireComplete: true });
-    console.log(`[reminder-example] Анонс в тестовую группу: aborted=${result.aborted}, без хоста=${result.open}, сообщений=${result.sent}`);
-    if (result.aborted) return;
-    const r = await sendReminderNow(bot, testGroup);
-    console.log(`[reminder-example] напоминание: ${JSON.stringify(r)}`);
-  } catch (err) {
-    console.error(`[reminder-example] ошибка (отправлено до ошибки: ${err.sentSoFar ?? 0}):`, err.message);
-    try {
-      fs.unlinkSync(markerPath);
-    } catch {}
-  }
-})();
-
 // ===== Воскресная авторассылка =====
 // Каждое воскресенье в WEEKLY_ANNOUNCE_HOUR (по умолчанию 10:00) по Бали бот
 // сам отправляет расписание на следующую неделю карточками (шапка + одно
