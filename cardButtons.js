@@ -18,6 +18,10 @@
 //    строкой "👤 Host / Хост: Имя".
 // 5. Резерв, который долго висит без записи в таблице, пока НЕ трогаем (решение
 //    Elena — вернёмся позже): никакого автоматического отката по времени.
+// 6. Напоминание через 24 часа после Анонса (внизу файла) — "живое": со
+//    списком ещё свободных эфиров и теми же кнопками ✅/❌. Оно и карточки —
+//    одно целое: нажатие в любом из них меняет запись карточки и перерисовывает
+//    и карточку, и напоминание.
 //
 // Почему "I'll take it" — callback-кнопка, а не ссылка: Telegram не сообщает
 // боту о нажатии на URL-кнопку, поэтому иначе невозможно узнать, кто именно
@@ -65,6 +69,19 @@ const CANDIDATES_PATH = path.join(__dirname, 'host-candidates.json');
 
 function loadHostCandidates() {
   return JSON.parse(fs.readFileSync(CANDIDATES_PATH, 'utf8'));
+}
+
+// TEMPORARY test mode, per Elena: in the test group "Дебаты" ONLY, she is
+// treated as a host (can press the buttons, is counted in "N of M" and tagged
+// in the reminder) — the group has just one real host, Mikhail. Applies only
+// to cards sent after this was added; to switch it off, empty this object
+// (cards already sent keep the list they were created with).
+const TEMP_EXTRA_HOSTS = { '-5172293748': ['@Elena_NangTong_Bali'] };
+
+function candidatesFor(chatId) {
+  const base = loadHostCandidates();
+  const extra = (TEMP_EXTRA_HOSTS[String(chatId)] || []).filter((t) => !base.some((b) => normUser(b) === normUser(t)));
+  return [...base, ...extra];
 }
 
 function readJson(fallback) {
@@ -150,7 +167,7 @@ function cardKeyboard(record) {
 
 // titleLine/dateLine arrive as ready HTML strings; `event` identifies the
 // sheet row (tab + date + AZ start) so the periodic sync can find it again.
-async function sendCard(bot, chatId, { titleLine, dateLine, tabUrl = null, when = null, event = null, candidateTags = loadHostCandidates() }) {
+async function sendCard(bot, chatId, { titleLine, dateLine, tabUrl = null, when = null, event = null, candidateTags = candidatesFor(chatId) }) {
   const record = { titleLine, dateLine, tabUrl, when, event, candidateTags, refusers: [], reservedBy: null, hosted: null };
   const sent = await withRetry(() =>
     bot.sendMessage(chatId, cardText(record), {
@@ -224,7 +241,7 @@ async function postWeekCards(bot, chatId, events, range, failedTabs = []) {
     await withRetry(() => bot.sendMessage(chatId, closing));
     sent++;
     await sleep(gapMs);
-    const tagLine = loadHostCandidates()
+    const tagLine = candidatesFor(chatId)
       .map((t) => escapeHtml(formatCommunityTag(t)))
       .join(' ');
     await withRetry(() => bot.sendMessage(chatId, tagLine, { parse_mode: 'HTML' }));
@@ -257,114 +274,189 @@ async function redrawCard(bot, chatId, messageId, record) {
   }
 }
 
+const GONE_TOAST = 'This card is no longer active / Эта карточка уже неактуальна';
+
+// The shared rules for what a host's press does to a card, used both by the
+// card's own buttons and by the buttons in the reminder (so the two stay one
+// whole). Mutates `record`; returns the toast to show and whether the card
+// changed. `source` only changes the wording of the "reserved" toast: from the
+// reminder the sheet button lives on the session's card, not on the reminder.
+function applyHostAction(record, user, action, source) {
+  if (record.hosted) return { toast: 'This session already has a host / У этого эфира уже есть хост', changed: false };
+
+  const reserver = record.reservedBy;
+  const reservedByOther = reserver ? `Already reserved by ${displayName(reserver)} / Уже зарезервировал(а): ${displayName(reserver)}` : null;
+
+  if (action === 'take') {
+    if (reserver) {
+      return {
+        toast: reserver.id === user.id ? 'You already reserved this session / Вы уже зарезервировали этот эфир' : reservedByOther,
+        changed: false,
+      };
+    }
+    record.reservedBy = { id: user.id, username: user.username, first_name: user.first_name, last_name: user.last_name, at: Date.now() };
+    record.refusers = (record.refusers || []).filter((r) => r.id !== user.id);
+    return {
+      toast:
+        source === 'reminder'
+          ? 'Reserved for you. Open the sheet with the button on that session\'s card above / Зарезервировано за вами. Откройте таблицу кнопкой на карточке этого эфира выше 🙏'
+          : 'Reserved for you. Tap "Open the sheet" and add yourself / Зарезервировано за вами. Нажмите «Открыть таблицу» и впишите себя 🙏',
+      changed: true,
+    };
+  }
+
+  if (action === 'pass') {
+    if (reserver) return { toast: reservedByOther, changed: false };
+    record.refusers = record.refusers || [];
+    const at = record.refusers.findIndex((r) => r.id === user.id);
+    if (at >= 0) {
+      record.refusers.splice(at, 1);
+      return { toast: 'Mark removed / Отметка снята', changed: true };
+    }
+    record.refusers.push({ id: user.id, username: user.username, first_name: user.first_name, last_name: user.last_name });
+    return { toast: "Noted: you can't do it / Записано: вы не можете 🙏", changed: true };
+  }
+
+  if (action === 'undo') {
+    if (!reserver) return { toast: 'Nothing to cancel / Нечего отменять', changed: false };
+    if (reserver.id !== user.id) {
+      return { toast: `Only ${displayName(reserver)} can cancel this reservation / Отменить резерв может только ${displayName(reserver)}`, changed: false };
+    }
+    record.reservedBy = null;
+    return { toast: 'Reservation cancelled / Резерв отменён', changed: true };
+  }
+
+  return { toast: null, changed: false };
+}
+
+// Answering never blocks the follow-up edits: a stale/expired query must not
+// leave the card un-redrawn.
+async function safeAck(bot, query, text) {
+  try {
+    await bot.answerCallbackQuery(query.id, text ? { text } : {});
+  } catch (err) {
+    console.error('[card-buttons] не удалось ответить на нажатие:', err.message);
+  }
+}
+
 async function processCardCallback(bot, query) {
   const message = query.message;
   const key = `${message.chat.id}:${message.message_id}`;
   const store = readJson({ messages: {} });
   const record = store.messages[key];
   const user = query.from;
-  const ack = (text) => bot.answerCallbackQuery(query.id, text ? { text } : {});
 
   // Only hosts may act. Anyone else: no toast, no edit, nothing.
   const candidates = record ? record.candidateTags : loadHostCandidates();
   if (!isHost(user, candidates)) {
-    await ack();
+    await safeAck(bot, query);
     return;
   }
 
   if (!record) {
-    await ack('This card is no longer active / Эта карточка уже неактуальна');
+    await safeAck(bot, query, GONE_TOAST);
     return;
   }
   normalizeRecord(record);
 
-  if (record.hosted) {
-    await ack('This session already has a host / У этого эфира уже есть хост');
-    return;
-  }
+  const action = { [TAKE_CALLBACK]: 'take', [PASS_CALLBACK]: 'pass', [UNDO_CALLBACK]: 'undo' }[query.data];
+  const result = action ? applyHostAction(record, user, action, 'card') : { toast: null, changed: false };
 
-  const reserver = record.reservedBy;
-  const save = async () => {
+  if (result.changed) {
     store.messages[key] = record;
     writeJsonAtomic(store);
+  }
+  await safeAck(bot, query, result.toast);
+
+  if (result.changed) {
     await redrawCard(bot, message.chat.id, message.message_id, record);
-  };
-
-  if (query.data === TAKE_CALLBACK) {
-    if (reserver) {
-      await ack(
-        reserver.id === user.id
-          ? 'You already reserved this session / Вы уже зарезервировали этот эфир'
-          : `Already reserved by ${displayName(reserver)} / Уже зарезервировал(а): ${displayName(reserver)}`
-      );
-      return;
-    }
-    record.reservedBy = { id: user.id, username: user.username, first_name: user.first_name, last_name: user.last_name, at: Date.now() };
-    record.refusers = (record.refusers || []).filter((r) => r.id !== user.id);
-    await save();
-    await ack('Reserved for you. Tap "Open the sheet" and add yourself / Зарезервировано за вами. Нажмите «Открыть таблицу» и впишите себя 🙏');
-    return;
-  }
-
-  if (query.data === PASS_CALLBACK) {
-    if (reserver) {
-      await ack(`Already reserved by ${displayName(reserver)} / Уже зарезервировал(а): ${displayName(reserver)}`);
-      return;
-    }
-    record.refusers = record.refusers || [];
-    const at = record.refusers.findIndex((r) => r.id === user.id);
-    let added;
-    if (at >= 0) {
-      record.refusers.splice(at, 1);
-      added = false;
-    } else {
-      record.refusers.push({ id: user.id, username: user.username, first_name: user.first_name, last_name: user.last_name });
-      added = true;
-    }
-    await save();
-    await ack(added ? "Noted: you can't do it / Записано: вы не можете 🙏" : 'Mark removed / Отметка снята');
-    return;
-  }
-
-  if (query.data === UNDO_CALLBACK) {
-    if (!reserver) {
-      await ack('Nothing to cancel / Нечего отменять');
-      return;
-    }
-    if (reserver.id !== user.id) {
-      await ack(`Only ${displayName(reserver)} can cancel this reservation / Отменить резерв может только ${displayName(reserver)}`);
-      return;
-    }
-    record.reservedBy = null;
-    await save();
-    await ack('Reservation cancelled / Резерв отменён');
+    await refreshRemindersForCard(bot, store, key);
   }
 }
 
-// Presses (and the sheet sync) on one and the same card run strictly one
-// after another — two quick taps could otherwise reach Telegram out of order
-// and leave a stale card.
-const queues = new Map();
+// Presses on the reminder's buttons: same host rule and same state change as
+// on the card itself (applyHostAction), then BOTH the card and the reminder
+// are redrawn so they always agree.
+async function processReminderCallback(bot, query) {
+  const message = query.message;
+  const key = `${message.chat.id}:${message.message_id}`;
+  const store = readJson({ messages: {} });
+  const batch = findBatchByReminder(store, key);
+  const user = query.from;
 
-function runQueued(key, fn) {
-  const next = (queues.get(key) || Promise.resolve()).then(fn).catch((err) => console.error('[card-buttons] ошибка:', err.message));
-  queues.set(key, next);
-  next.finally(() => {
-    if (queues.get(key) === next) queues.delete(key);
-  });
+  const [, action, idxText] = String(query.data).split(':');
+  const cardKey = batch ? batch.cardKeys[Number(idxText)] : null;
+  const record = cardKey ? store.messages[cardKey] : null;
+
+  const candidates = record ? record.candidateTags : loadHostCandidates();
+  if (!isHost(user, candidates)) {
+    await safeAck(bot, query);
+    return;
+  }
+
+  if (!record || (action !== 'take' && action !== 'pass')) {
+    await safeAck(bot, query, GONE_TOAST);
+    return;
+  }
+  normalizeRecord(record);
+
+  const result = applyHostAction(record, user, action, 'reminder');
+  if (result.changed) {
+    store.messages[cardKey] = record;
+    writeJsonAtomic(store);
+  }
+  await safeAck(bot, query, result.toast);
+
+  if (result.changed) {
+    const [cardChatId, cardMessageId] = cardKey.split(':');
+    await redrawCard(bot, Number(cardChatId), Number(cardMessageId), record);
+  }
+  // Even when nothing changed (e.g. someone else already reserved it) the
+  // reminder is redrawn, so a stale row disappears.
+  await refreshReminders(bot, store, batch);
+}
+
+// ALL card/reminder work (presses, sheet sync) runs strictly one after
+// another: each is a read-modify-write of one state file plus Telegram edits,
+// and two quick taps could otherwise leave a card or a reminder showing stale
+// state. Volume is tiny, so one queue is plenty.
+let serialChain = Promise.resolve();
+
+function runSerial(fn) {
+  const next = serialChain.then(fn).catch((err) => console.error('[card-buttons] ошибка:', err.message));
+  serialChain = next;
   return next;
+}
+
+// Same queue, but the caller gets the result — or the error — back.
+function runSerialStrict(fn) {
+  const run = serialChain.then(fn);
+  serialChain = run.catch((err) => console.error('[card-buttons] ошибка:', err.message));
+  return run;
 }
 
 function handleCardCallback(bot, query) {
   const message = query.message;
   // Message no longer accessible — nothing to act on; just stop the spinner.
   if (!message) return bot.answerCallbackQuery(query.id).catch(() => {});
-  const key = `${message.chat.id}:${message.message_id}`;
-  return runQueued(key, async () => {
+  return runSerial(async () => {
     try {
       await processCardCallback(bot, query);
     } catch (err) {
       console.error('[card-buttons] ошибка обработки нажатия:', err.message);
+      bot.answerCallbackQuery(query.id).catch(() => {});
+    }
+  });
+}
+
+function handleReminderCallback(bot, query) {
+  const message = query.message;
+  if (!message) return bot.answerCallbackQuery(query.id).catch(() => {});
+  return runSerial(async () => {
+    try {
+      await processReminderCallback(bot, query);
+    } catch (err) {
+      console.error('[card-buttons] ошибка обработки нажатия в напоминании:', err.message);
       bot.answerCallbackQuery(query.id).catch(() => {});
     }
   });
@@ -395,7 +487,7 @@ async function syncCardsWithSheet(bot) {
     );
     if (!match || !match.hasHost) continue;
 
-    await runQueued(key, async () => {
+    await runSerial(async () => {
       const fresh = readJson({ messages: {} });
       const rec = fresh.messages[key];
       if (!rec || rec.hosted) return;
@@ -411,6 +503,7 @@ async function syncCardsWithSheet(bot) {
       } catch (err) {
         console.error(`[card-buttons] не удалось обновить карточку ${key}:`, err.message);
       }
+      await refreshRemindersForCard(bot, fresh, key);
     });
   }
 
@@ -429,13 +522,24 @@ async function syncCardsWithSheet(bot) {
 // done BEFORE sending, so a failure never turns into a second reminder.
 // If a newer announce went to the same chat first, the older batch is
 // skipped (its cards are superseded).
+//
+// The reminder is a live view of the cards, not a separate state: it lists
+// the still-free sessions with their own ✅/❌ buttons (rem:<action>:<card
+// index in the batch>), and is re-rendered from the card records after every
+// change to any card — a press on a card, a press on the reminder, or the
+// sheet sync — while a press on the reminder redraws the card too. A session
+// that gets reserved or hosted drops out of the reminder, an Undo brings it
+// back, and when none are free the reminder turns into a thank-you line.
 
 const REMINDER_DELAY_MS = 24 * 60 * 60 * 1000;
+const REMINDER_CALLBACK_PREFIX = 'rem:';
+const COVERED_TEXT = '✅ All sessions are covered, thank you! / Все эфиры разобраны, спасибо! 🙏';
+const MAX_MESSAGE_CHARS = 3900; // Telegram's limit is 4096
 
 function recordBatch(chatId, headerMessageId, cardKeys, sentAt) {
   const store = readJson({ messages: {} });
   store.batches = (store.batches || []).filter((b) => (b.sentAt || 0) > Date.now() - KEEP_MS);
-  store.batches.push({ chatId, headerMessageId, sentAt, cardKeys, remindedAt: null, outcome: null });
+  store.batches.push({ chatId, headerMessageId, sentAt, cardKeys, remindedAt: null, outcome: null, reminders: [] });
   writeJsonAtomic(store);
 }
 
@@ -446,36 +550,123 @@ function eventStartMs(event) {
 
 const refusedBy = (record, tag) => (record.refusers || []).some((r) => r.username && normUser(r.username) === normUser(tag));
 
+const batchId = (b) => `${b.chatId}:${b.headerMessageId}`;
+
+function findBatchByReminder(store, key) {
+  return (store.batches || []).find((b) => (b.reminders || []).some((r) => `${b.chatId}:${r.messageId}` === key));
+}
+
+// Sessions of the batch that can still be asked for: not hosted, not
+// reserved, not started yet. `idx` is the card's position in the batch.
+function freeSessions(store, batch, now) {
+  const free = [];
+  batch.cardKeys.forEach((key, idx) => {
+    const record = store.messages[key];
+    if (!record) return;
+    normalizeRecord(record);
+    if (record.hosted || record.reservedBy) return;
+    if (record.event && eventStartMs(record.event) <= now) return;
+    free.push({ idx, key, record });
+  });
+  return free;
+}
+
 // After "Для" the count takes the genitive: 1 эфира, 2/5/… эфиров, 21 эфира.
-function reminderText(n, names) {
+function reminderText(n, blocks, names, hiddenCount = 0) {
   const en = n === 1 ? '<b>1</b> session still needs a host.' : `<b>${n}</b> sessions still need a host.`;
   const ruOne = n % 10 === 1 && n % 100 !== 11;
   const ru = `Для <b>${n}</b> ${ruOne ? 'эфира' : 'эфиров'} всё ещё нужен хост.`;
-  return [
+  const namesText = names.length > 0 ? names.map((t) => escapeHtml(formatCommunityTag(t))).join(', ') : '—';
+  const parts = [
     '🔔 <b>Reminder</b>',
-    `${en} Please tap ✅ or ❌ under the cards above — it takes just a few seconds and helps us plan. 🙏`,
+    `${en} Please tap ✅ or ❌ below — it takes just a few seconds and helps us plan. 🙏`,
     '',
     '🔔 <b>Напоминание</b>',
-    `${ru} Пожалуйста, нажмите ✅ или ❌ под карточками выше — это займёт пару секунд и очень поможет с планированием. 🙏`,
+    `${ru} Пожалуйста, нажмите ✅ или ❌ ниже — это займёт пару секунд и очень поможет с планированием. 🙏`,
     '',
-    `<b>Haven't responded yet / Ещё не отметились:</b> ${names.map((t) => escapeHtml(formatCommunityTag(t))).join(', ')}`,
-  ].join('\n');
+    blocks.join('\n\n'),
+  ];
+  if (hiddenCount > 0) parts.push(`… and ${hiddenCount} more / … и ещё ${hiddenCount}`);
+  parts.push('', `<b>Haven't responded yet / Ещё не отметились:</b> ${namesText}`);
+  return parts.join('\n');
+}
+
+// The reminder as it should look RIGHT NOW for this batch.
+function buildReminderView(store, batch, now = Date.now()) {
+  const free = freeSessions(store, batch, now);
+  if (free.length === 0) return { covered: true, text: COVERED_TEXT, keyboard: [], n: 0, unresponded: [] };
+
+  const hosts = free[0].record.candidateTags;
+  const unresponded = hosts.filter((t) => free.some((f) => !refusedBy(f.record, t)));
+
+  const keyboard = [];
+  for (const f of free) {
+    const suffix = f.record.when ? ` · ${f.record.when}` : '';
+    keyboard.push([{ text: `✅ I'll take it${suffix}`, callback_data: `${REMINDER_CALLBACK_PREFIX}take:${f.idx}` }]);
+    keyboard.push([{ text: `❌ Can't do it${suffix}`, callback_data: `${REMINDER_CALLBACK_PREFIX}pass:${f.idx}` }]);
+  }
+
+  // Full two-line blocks (title + date/time) first; if the message would be
+  // too long, one line per session, and as a last resort fewer sessions.
+  const full = free.map((f) => `${f.record.titleLine}\n${f.record.dateLine}`);
+  const compact = free.map((f) => `${f.record.titleLine}${f.record.when ? ` · ${f.record.when}` : ''}`);
+  let text = reminderText(free.length, full, unresponded);
+  if (text.length > MAX_MESSAGE_CHARS) text = reminderText(free.length, compact, unresponded);
+  for (let shown = free.length - 1; text.length > MAX_MESSAGE_CHARS && shown > 0; shown--) {
+    text = reminderText(free.length, compact.slice(0, shown), unresponded, free.length - shown);
+  }
+  return { covered: false, text, keyboard, n: free.length, unresponded };
 }
 
 function planReminder(store, batch, now = Date.now()) {
-  const records = batch.cardKeys.map((k) => store.messages[k]).filter(Boolean);
-  records.forEach((r) => normalizeRecord(r));
-  const free = records.filter((r) => !r.hosted && !r.reservedBy && !(r.event && eventStartMs(r.event) <= now));
-  if (free.length === 0) return { skip: 'no-free' };
-  const hosts = free[0].candidateTags;
-  const unresponded = hosts.filter((t) => free.some((r) => !refusedBy(r, t)));
-  if (unresponded.length === 0) return { skip: 'all-responded' };
-  return { n: free.length, unresponded, text: reminderText(free.length, unresponded) };
+  const view = buildReminderView(store, batch, now);
+  if (view.covered) return { skip: 'no-free' };
+  if (view.unresponded.length === 0) return { skip: 'all-responded' };
+  return view;
 }
 
-const replyOptions = (batch) => ({ parse_mode: 'HTML', reply_to_message_id: batch.headerMessageId, allow_sending_without_reply: true });
+const replyOptions = (batch, keyboard) => ({
+  parse_mode: 'HTML',
+  reply_to_message_id: batch.headerMessageId,
+  allow_sending_without_reply: true,
+  reply_markup: { inline_keyboard: keyboard },
+});
 
-const batchId = (b) => `${b.chatId}:${b.headerMessageId}`;
+// Remember the reminder message so presses on it (and later edits) can find
+// its batch. A batch can have several (the real 24h one plus /remind_test
+// ones); all are kept in step.
+function registerReminder(id, messageId) {
+  const store = readJson({ messages: {} });
+  const batch = (store.batches || []).find((b) => batchId(b) === id);
+  if (!batch) return;
+  batch.reminders = batch.reminders || [];
+  batch.reminders.push({ messageId, sentAt: Date.now() });
+  writeJsonAtomic(store);
+}
+
+async function refreshReminders(bot, store, batch) {
+  if (!batch) return;
+  for (const r of batch.reminders || []) {
+    const view = buildReminderView(store, batch);
+    try {
+      await bot.editMessageText(view.text, {
+        chat_id: batch.chatId,
+        message_id: r.messageId,
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: view.keyboard },
+      });
+    } catch (err) {
+      if (!/message is not modified/i.test(err.message)) {
+        console.error(`[announce-reminder] не удалось обновить напоминание ${batch.chatId}:${r.messageId}:`, err.message);
+      }
+    }
+  }
+}
+
+async function refreshRemindersForCard(bot, store, cardKey) {
+  const batch = (store.batches || []).find((b) => b.cardKeys.includes(cardKey));
+  await refreshReminders(bot, store, batch);
+}
 
 // Called every few minutes (catch-up style: a missed tick or a restart just
 // sends it on the next one). Returns any send errors so the caller can tell
@@ -487,46 +678,53 @@ async function checkAndSendAnnounceReminders(bot, now = Date.now()) {
     .map(batchId);
 
   for (const id of dueIds) {
-    const store = readJson({ messages: {} });
-    const batch = (store.batches || []).find((b) => batchId(b) === id);
-    if (!batch || batch.remindedAt) continue;
+    await runSerial(async () => {
+      const store = readJson({ messages: {} });
+      const batch = (store.batches || []).find((b) => batchId(b) === id);
+      if (!batch || batch.remindedAt) return;
 
-    const superseded = store.batches.some((b) => b.chatId === batch.chatId && b.sentAt > batch.sentAt);
-    const plan = superseded ? { skip: 'superseded' } : planReminder(store, batch, now);
-    batch.remindedAt = now;
-    batch.outcome = plan.skip || 'sent';
-    writeJsonAtomic(store);
+      const superseded = store.batches.some((b) => b.chatId === batch.chatId && b.sentAt > batch.sentAt);
+      const plan = superseded ? { skip: 'superseded' } : planReminder(store, batch, now);
+      batch.remindedAt = now;
+      batch.outcome = plan.skip || 'sent';
+      writeJsonAtomic(store);
 
-    if (plan.skip) {
-      console.log(`[announce-reminder] ${id}: напоминание не нужно (${plan.skip})`);
-      continue;
-    }
-    try {
-      await withRetry(() => bot.sendMessage(batch.chatId, plan.text, replyOptions(batch)));
-      console.log(`[announce-reminder] ${id}: отправлено, свободных эфиров ${plan.n}, отмечено хостов ${plan.unresponded.length}`);
-    } catch (err) {
-      errors.push({ chatId: batch.chatId, message: err.message });
-      const after = readJson({ messages: {} });
-      const b = (after.batches || []).find((x) => batchId(x) === id);
-      if (b) {
-        b.outcome = `failed: ${err.message}`;
-        writeJsonAtomic(after);
+      if (plan.skip) {
+        console.log(`[announce-reminder] ${id}: напоминание не нужно (${plan.skip})`);
+        return;
       }
-    }
+      try {
+        const sent = await withRetry(() => bot.sendMessage(batch.chatId, plan.text, replyOptions(batch, plan.keyboard)));
+        registerReminder(id, sent.message_id);
+        console.log(`[announce-reminder] ${id}: отправлено, свободных эфиров ${plan.n}, отмечено хостов ${plan.unresponded.length}`);
+      } catch (err) {
+        errors.push({ chatId: batch.chatId, message: err.message });
+        const after = readJson({ messages: {} });
+        const b = (after.batches || []).find((x) => batchId(x) === id);
+        if (b) {
+          b.outcome = `failed: ${err.message}`;
+          writeJsonAtomic(after);
+        }
+      }
+    });
   }
   return { errors };
 }
 
-// Manual test: the same reminder for the latest announce in `chatId`, sent
-// right away. Does NOT mark the batch, so its real 24h reminder still happens.
-async function sendReminderNow(bot, chatId) {
-  const store = readJson({ messages: {} });
-  const batch = (store.batches || []).filter((b) => b.chatId === chatId).sort((a, b) => b.sentAt - a.sentAt)[0];
-  if (!batch) return { sent: false, reason: 'no-announce' };
-  const plan = planReminder(store, batch);
-  if (plan.skip) return { sent: false, reason: plan.skip };
-  await withRetry(() => bot.sendMessage(chatId, plan.text, replyOptions(batch)));
-  return { sent: true, n: plan.n, tagged: plan.unresponded.length };
+// Manual test: the same reminder (with working buttons) for the latest
+// announce in `chatId`, sent right away. Does NOT mark the batch, so its real
+// 24h reminder still happens.
+function sendReminderNow(bot, chatId) {
+  return runSerialStrict(async () => {
+    const store = readJson({ messages: {} });
+    const batch = (store.batches || []).filter((b) => b.chatId === chatId).sort((a, b) => b.sentAt - a.sentAt)[0];
+    if (!batch) return { sent: false, reason: 'no-announce' };
+    const plan = planReminder(store, batch);
+    if (plan.skip) return { sent: false, reason: plan.skip };
+    const sent = await withRetry(() => bot.sendMessage(chatId, plan.text, replyOptions(batch, plan.keyboard)));
+    registerReminder(batchId(batch), sent.message_id);
+    return { sent: true, n: plan.n, tagged: plan.unresponded.length };
+  });
 }
 
 module.exports = {
@@ -534,10 +732,12 @@ module.exports = {
   sendWeekCards,
   postWeekCards,
   handleCardCallback,
+  handleReminderCallback,
   syncCardsWithSheet,
   checkAndSendAnnounceReminders,
   sendReminderNow,
   TAKE_CALLBACK,
   PASS_CALLBACK,
   UNDO_CALLBACK,
+  REMINDER_CALLBACK_PREFIX,
 };
