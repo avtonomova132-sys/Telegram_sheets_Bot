@@ -33,6 +33,7 @@ const {
   getProgramsWatchLastRunDate,
   markProgramsWatchChecked,
 } = require('./programsWatch');
+const nomenclature = require('./nomenclature');
 const { generateVerseImageBuffer } = require('./verse/generateVerseImage');
 const {
   getVerseCount,
@@ -1194,6 +1195,118 @@ async function checkAndRunProgramsWatch() {
 }
 
 cron.schedule('*/5 * * * *', checkAndRunProgramsWatch);
+
+// ===== Мониторинг таблицы «Номенклатура» =====
+// Отдельная фича (nomenclature.js): 2 раза в сутки (08:00 и 20:00 по Бали)
+// сверяет штрих-коды/габариты/вес/документы по артикулам со снимком на
+// Volume и шлёт Елене только новое. Тот же catch-up паттерн (poll раз в 5
+// минут), что у остальных регулярных задач.
+const NOMENCLATURE_SLOTS = [8, 20];
+const NOMENCLATURE_RETRY_MS = 60 * 60 * 1000;
+
+function nomenclatureRecipients() {
+  const extra = String(process.env.NOMENCLATURE_EXTRA_CHAT_IDS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return [...new Set([...(myChatId ? [String(myChatId)] : []), ...extra])];
+}
+
+async function sendNomenclature(chatIds, text) {
+  for (const chatId of chatIds) {
+    for (const chunk of chunkMessage(text)) {
+      try {
+        await bot.sendMessage(chatId, chunk, { disable_web_page_preview: true });
+      } catch (err) {
+        console.error('[nomenclature] не удалось отправить в', chatId, err.message);
+      }
+    }
+  }
+}
+
+async function runNomenclatureCheck({ weekly = false } = {}) {
+  const result = await nomenclature.runCheck({ save: true });
+  const to = nomenclatureRecipients();
+  for (const m of result.messages) await sendNomenclature(to, m);
+  if (weekly && !result.firstRun) {
+    const w = nomenclature.buildWeeklyMessage(result.items);
+    if (w) await sendNomenclature(to, w);
+  }
+  return result;
+}
+
+async function checkAndRunNomenclature() {
+  if (!myChatId) return;
+  const hour = baliHour();
+  const today = baliDateString();
+  const due = NOMENCLATURE_SLOTS.filter((h) => hour >= h).pop();
+  if (due === undefined) return;
+  const slotKey = `${today}#${due}`;
+  const state = nomenclature.readState();
+  if (state.lastSlot === slotKey) return;
+  if (state.lastErrorAt && Date.now() - state.lastErrorAt < NOMENCLATURE_RETRY_MS) return;
+
+  // Понедельник утром — недельная сводка «чего не хватает»
+  const baliDow = new Date(Date.now() + 8 * 3600 * 1000).getUTCDay();
+  const weekly = baliDow === 1 && due === NOMENCLATURE_SLOTS[0] && state.lastWeeklyDate !== today;
+  try {
+    await runNomenclatureCheck({ weekly });
+    nomenclature.patchState({
+      lastSlot: slotKey,
+      errorNotified: false,
+      lastErrorAt: null,
+      ...(weekly ? { lastWeeklyDate: today } : {}),
+    });
+  } catch (err) {
+    console.error('[nomenclature] ошибка проверки:', err.message);
+    const notify = !state.errorNotified;
+    nomenclature.patchState({ lastErrorAt: Date.now(), errorNotified: true });
+    if (notify) {
+      await sendNomenclature(
+        [String(myChatId)],
+        `⚠️ Номенклатура: не получилось проверить таблицу — ${err.message}\nПовторю молча раз в час, напишу снова только когда заработает и сломается опять.`
+      );
+    }
+  }
+}
+
+cron.schedule('*/5 * * * *', checkAndRunNomenclature);
+
+bot.onText(/^\/(номенклатура|nomenclature)(?:@\S+)?$/, async (msg) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  try {
+    const result = await runNomenclatureCheck();
+    nomenclature.patchState({ errorNotified: false, lastErrorAt: null });
+    if (result.firstRun) {
+      await bot.sendMessage(msg.chat.id, `Снимок таблицы сохранён (${result.count} артикулов). Со следующей проверки буду писать только новое.`);
+    } else if (!result.messages.length) {
+      await bot.sendMessage(msg.chat.id, 'Номенклатура: нового с прошлой проверки нет 🤫');
+    } else if (!nomenclatureRecipients().includes(String(msg.chat.id))) {
+      for (const m of result.messages) await sendNomenclature([msg.chat.id], m);
+    }
+  } catch (err) {
+    console.error('[nomenclature] ошибка ручной проверки:', err.message);
+    await bot.sendMessage(msg.chat.id, `Не получилось проверить «Номенклатуру» 😔 ${err.message}`);
+  }
+});
+
+// Отладка: показывает diff со снимком, ничего не сохраняя и никому не рассылая.
+bot.onText(/^\/(номенклатура_diff|nomenclature_diff)(?:@\S+)?$/, async (msg) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  try {
+    const result = await nomenclature.runCheck({ save: false });
+    if (result.firstRun) {
+      await bot.sendMessage(msg.chat.id, `Снимка ещё нет (в таблице ${result.count} артикулов) — первая проверка его создаст.`);
+    } else if (!result.messages.length) {
+      await bot.sendMessage(msg.chat.id, `Отличий от снимка нет (артикулов: ${result.count}).`);
+    } else {
+      await sendNomenclature([msg.chat.id], `🔧 Отладка, снимок НЕ обновлён:`);
+      for (const m of result.messages) await sendNomenclature([msg.chat.id], m);
+    }
+  } catch (err) {
+    await bot.sendMessage(msg.chat.id, `Ошибка: ${err.message}`);
+  }
+});
 
 // Было: once-per-day поллинг ("проверяем каждые 5 минут, наступило ли уже
 // 9:00 по Бали и проверяли ли мы уже сегодня"). Теперь честный периодический
