@@ -1212,9 +1212,34 @@ function nomenclatureRecipients() {
   return [...new Set([...(myChatId ? [String(myChatId)] : []), ...extra])];
 }
 
+// chunkMessage режет только по пустым строкам; список артикулов — один
+// абзац из сотен строк, поэтому дорезаем длинные куски по строкам (лимит
+// Telegram 4096 символов).
+function splitNomenclatureText(text, maxLen = 3500) {
+  const out = [];
+  for (const chunk of chunkMessage(text, maxLen)) {
+    if (chunk.length <= maxLen) {
+      out.push(chunk);
+      continue;
+    }
+    let cur = '';
+    for (const line of chunk.split('\n')) {
+      const piece = line.length > maxLen ? line.slice(0, maxLen) : line;
+      if (cur && cur.length + 1 + piece.length > maxLen) {
+        out.push(cur);
+        cur = piece;
+      } else {
+        cur = cur ? `${cur}\n${piece}` : piece;
+      }
+    }
+    if (cur) out.push(cur);
+  }
+  return out;
+}
+
 async function sendNomenclature(chatIds, text) {
   for (const chatId of chatIds) {
-    for (const chunk of chunkMessage(text)) {
+    for (const chunk of splitNomenclatureText(text)) {
       try {
         await bot.sendMessage(chatId, chunk, { disable_web_page_preview: true });
       } catch (err) {
