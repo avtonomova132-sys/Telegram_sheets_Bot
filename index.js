@@ -19,7 +19,7 @@ const {
 const {
   sendWeekCards,
   handleCardCallback,
-  handleReminderCallback,
+  handleReminderCallback: handleAnnounceReminderCallback,
   syncCardsWithSheet,
   checkAndSendAnnounceReminders,
   sendReminderNow,
@@ -895,7 +895,7 @@ bot.on('callback_query', (query) => {
   // Кнопки в напоминании (rem:take:<номер эфира> / rem:pass:<номер>) — те же
   // правила и то же состояние, что на карточках; см. cardButtons.js.
   if (data.startsWith(REMINDER_CALLBACK_PREFIX)) {
-    handleReminderCallback(bot, query);
+    handleAnnounceReminderCallback(bot, query);
     return;
   }
   if (data !== CARD_TAKE_CALLBACK && data !== CARD_PASS_CALLBACK && data !== CARD_UNDO_CALLBACK) return;
