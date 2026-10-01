@@ -19,14 +19,12 @@ const {
 const {
   sendWeekCards,
   handleCardCallback,
-  handleReminderCallback: handleAnnounceReminderCallback,
   syncCardsWithSheet,
   checkAndSendAnnounceReminders,
   sendReminderNow,
   TAKE_CALLBACK: CARD_TAKE_CALLBACK,
   PASS_CALLBACK: CARD_PASS_CALLBACK,
   UNDO_CALLBACK: CARD_UNDO_CALLBACK,
-  REMINDER_CALLBACK_PREFIX,
 } = require('./cardButtons');
 const { generateAssistanceReport } = require('./assistance');
 const { generateSeriesCheckReport } = require('./assistantsSeries');
@@ -892,12 +890,8 @@ bot.onText(/^\/(следующая_неделя|next_week)(?:@\S+)?$/, (msg) => 
 // — см. cardButtons.js.
 bot.on('callback_query', (query) => {
   const data = query.data || '';
-  // Кнопки в напоминании (rem:take:<номер эфира> / rem:pass:<номер>) — те же
-  // правила и то же состояние, что на карточках; см. cardButtons.js.
-  if (data.startsWith(REMINDER_CALLBACK_PREFIX)) {
-    handleAnnounceReminderCallback(bot, query);
-    return;
-  }
+  // Карточки в напоминании — копии карточек Анонса с теми же кнопками, так что
+  // нажатия приходят сюда же; см. cardButtons.js.
   if (data !== CARD_TAKE_CALLBACK && data !== CARD_PASS_CALLBACK && data !== CARD_UNDO_CALLBACK) return;
   handleCardCallback(bot, query);
 });
@@ -930,6 +924,34 @@ if (!hostReminderEnabled) {
     }
   });
 }
+
+// ВРЕМЕННО: пример для проверки в ТЕСТОВОЙ группе "Дебаты": свежий Анонс, затем
+// напоминание в новом виде (шапка + карточки эфиров). Только в тестовую группу.
+// Маркер пишется ДО отправки — рестарт не повторит. Удалить после проверки.
+(async () => {
+  const testGroup = -5172293748;
+  const fs = require('fs');
+  const markerPath = process.env.REMINDER_CARDS_EXAMPLE_MARKER_PATH || '/data/reminder_cards_example_2026_10_01.json';
+  if (fs.existsSync(markerPath)) return;
+  try {
+    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
+  } catch (err) {
+    console.error('[reminder-cards-example] не удалось записать маркер, пример не отправлен:', err.message);
+    return;
+  }
+  try {
+    const result = await sendWeekCards(bot, testGroup, { requireComplete: true });
+    console.log(`[reminder-cards-example] Анонс в тестовую группу: aborted=${result.aborted}, без хоста=${result.open}, сообщений=${result.sent}`);
+    if (result.aborted) return;
+    const r = await sendReminderNow(bot, testGroup);
+    console.log(`[reminder-cards-example] напоминание: ${JSON.stringify(r)}`);
+  } catch (err) {
+    console.error(`[reminder-cards-example] ошибка (отправлено до ошибки: ${err.sentSoFar ?? 0}):`, err.message);
+    try {
+      fs.unlinkSync(markerPath);
+    } catch {}
+  }
+})();
 
 // ===== Воскресная авторассылка =====
 // Каждое воскресенье в WEEKLY_ANNOUNCE_HOUR (по умолчанию 10:00) по Бали бот
@@ -1284,7 +1306,6 @@ const TEST_GROUP_CHAT_ID = Number(process.env.TEST_GROUP_CHAT_ID) || -5172293748
 const REMIND_TEST_REASONS = {
   'no-announce': 'В «Дебатах» нет Анонса, отправленного ботом после включения напоминаний — сначала отправь Анонс туда.',
   'no-free': 'Напоминание не нужно: свободных эфиров не осталось (все зарезервированы, взяты или уже начались).',
-  'all-responded': 'Напоминание не нужно: все хосты уже отметились под свободными эфирами.',
 };
 bot.onText(/^\/remind_test(?:@\S+)?$/, async (msg) => {
   if (!myChatId || String(msg.from?.id) !== String(myChatId)) return;
@@ -1294,7 +1315,7 @@ bot.onText(/^\/remind_test(?:@\S+)?$/, async (msg) => {
     if (!r.sent) {
       await bot.sendMessage(msg.chat.id, REMIND_TEST_REASONS[r.reason] || `Напоминание не отправлено (${r.reason}).`);
     } else if (msg.chat.type === 'private') {
-      await bot.sendMessage(msg.chat.id, `✅ Тестовое напоминание отправлено в «Дебаты»: свободных эфиров ${r.n}, отмечено хостов ${r.tagged}.`);
+      await bot.sendMessage(msg.chat.id, `✅ Тестовое напоминание отправлено в «Дебаты»: свободных эфиров ${r.n}, не отметились совсем ${r.tagged}.`);
     }
   } catch (err) {
     console.error('[remind-test] ошибка:', err.message);
