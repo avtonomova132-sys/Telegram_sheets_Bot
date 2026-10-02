@@ -20,6 +20,7 @@ const {
   sendWeekCards,
   handleCardCallback,
   syncCardsWithSheet,
+  refreshCardsAfterHostListChange,
   checkAndSendAnnounceReminders,
   sendReminderNow,
   TAKE_CALLBACK: CARD_TAKE_CALLBACK,
@@ -1390,6 +1391,13 @@ async function runCardSheetSync() {
 }
 cron.schedule(buildIntervalCronExpression(HOST_DIFF_CHECK_INTERVAL_MINUTES), runCardSheetSync);
 setTimeout(runCardSheetSync, 30 * 1000);
+
+// После смены списка хостов (host-candidates.json) — один раз при старте
+// перерисовать уже висящие карточки (счётчик "N из M", строки "Не могут" /
+// "Ещё не отметились"). Если ничего не изменилось — ничего не делает.
+setTimeout(() => {
+  refreshCardsAfterHostListChange(bot).catch((err) => console.error('[card-buttons] обновление карточек после смены списка хостов:', err.message));
+}, 15 * 1000);
 
 // Одно напоминание хостам, не отметившимся под карточками, через 24 часа после
 // Анонса (любого, отправленного ботом в группу: воскресная рассылка или

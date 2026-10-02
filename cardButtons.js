@@ -63,7 +63,7 @@ const TAKE_CALLBACK = 'card:take';
 const PASS_CALLBACK = 'card:pass';
 const UNDO_CALLBACK = 'card:undo';
 
-// The 10 real hosts: both the people allowed to press the buttons and the
+// The real hosts (9): both the people allowed to press the buttons and the
 // denominator of the "N of M" counter. Deliberately separate from
 // community-tags.json (the 5 @mentions closing /check, /weekly).
 const CANDIDATES_PATH = path.join(__dirname, 'host-candidates.json');
@@ -79,18 +79,41 @@ function loadHostCandidates() {
 // (cards already sent keep the list they were created with).
 const TEMP_EXTRA_HOSTS = { '-5172293748': ['@Elena_NangTong_Bali'] };
 
-function candidatesFor(chatId) {
-  const base = loadHostCandidates();
+function candidatesFor(chatId, base = loadHostCandidates()) {
   const extra = (TEMP_EXTRA_HOSTS[String(chatId)] || []).filter((t) => !base.some((b) => normUser(b) === normUser(t)));
   return [...base, ...extra];
 }
 
-function readJson(fallback) {
+// Cards remember the host list they were created with. Whenever the state is
+// read, that list is cut down to the CURRENT one, so someone removed from
+// host-candidates.json (or from TEMP_EXTRA_HOSTS) stops counting on cards that
+// were already sent: not in "N of M", not allowed to press, not tagged, and a
+// reservation of theirs is dropped. It only ever removes people.
+function dropFormerHosts(store) {
+  if (!store || !store.messages) return store;
+  const base = loadHostCandidates();
+  for (const [key, record] of Object.entries(store.messages)) {
+    if (!record.candidateTags) continue;
+    const allowed = candidatesFor(key.split(':')[0], base).map(normUser);
+    record.candidateTags = record.candidateTags.filter((t) => allowed.includes(normUser(t)));
+    for (const field of ['reservedBy', 'takenBy']) {
+      const taker = record[field];
+      if (taker && !(taker.username && allowed.includes(normUser(taker.username)))) record[field] = null;
+    }
+  }
+  return store;
+}
+
+function readRawJson(fallback) {
   try {
     return JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
   } catch {
     return fallback;
   }
+}
+
+function readJson(fallback) {
+  return dropFormerHosts(readRawJson(fallback));
 }
 
 function writeJsonAtomic(data) {
@@ -465,6 +488,35 @@ async function syncCardsWithSheet(bot) {
   return { checked: pending.length, updated };
 }
 
+// Run once at startup: after the host list changed (see dropFormerHosts),
+// redraw the still-upcoming, not-yet-hosted cards whose list or reservation
+// was affected — counters and "haven't responded yet" lines lose the removed
+// person — and save the cut-down state. Does nothing once everything matches,
+// so it is safe on every start. Past events are left alone; the announce's
+// closing tag-line (a plain message the bot doesn't track) cannot be edited.
+function refreshCardsAfterHostListChange(bot) {
+  return runSerial(async () => {
+    const raw = readRawJson(null);
+    if (!raw || !raw.messages) return;
+    const fresh = dropFormerHosts(readRawJson(null));
+    const signature = (r) => JSON.stringify([r.candidateTags || null, r.reservedBy || r.takenBy || null]);
+    const changed = Object.keys(raw.messages).filter((k) => signature(raw.messages[k]) !== signature(fresh.messages[k]));
+    if (changed.length === 0) return;
+
+    writeJsonAtomic(fresh);
+    const now = Date.now();
+    const toRedraw = changed.filter((k) => {
+      const r = fresh.messages[k];
+      return !r.mirrorOf && !r.hosted && (!r.event || eventStartMs(r.event) > now);
+    });
+    console.log(`[card-buttons] список хостов изменился: записей обновлено ${changed.length}, карточек перерисовать ${toRedraw.length}`);
+    for (const key of toRedraw) {
+      await redrawViews(bot, fresh, key);
+      await sleep(Number(key.split(':')[0]) < 0 ? GROUP_GAP_MS : PRIVATE_GAP_MS);
+    }
+  });
+}
+
 // ---- One reminder, 24h after an announce, to hosts who haven't responded ----
 //
 // Every announce posted to a group (Sunday auto-send or a manual command) is
@@ -682,6 +734,7 @@ module.exports = {
   postWeekCards,
   handleCardCallback,
   syncCardsWithSheet,
+  refreshCardsAfterHostListChange,
   checkAndSendAnnounceReminders,
   sendReminderNow,
   TAKE_CALLBACK,
