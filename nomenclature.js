@@ -23,6 +23,7 @@ const STATE_PATH = process.env.NOMENCLATURE_STATE_PATH || '/data/nomenclature_st
 // header → регэксп для проверки заголовка первой строки.
 const COLUMN_SPECS = [
   { key: 'article', letter: 'D', header: /артикул/i, label: 'Артикул' },
+  { key: 'name', letter: 'A', header: /наименован/i, label: 'Наименование' },
   { key: 'barcode', letter: 'F', header: /баркод|штрих/i, label: 'Штрих-код' },
   { key: 'cost', letter: 'G', header: /итого\s*закупк/i, label: 'Себестоимость (Итого закупка)' },
   { key: 'width', letter: 'K', header: /ширин/i, label: 'Ширина' },
@@ -39,7 +40,10 @@ const FIELD_KEYS = COLUMN_SPECS.filter((c) => c.key !== 'article').map((c) => c.
 // изменений не участвует: это формула, цена закупки меняется часто — иначе
 // уведомления сыпались бы при каждой правке цены.
 const REQUIRED_FOR_CARD = ['barcode', 'cost', 'width', 'length', 'height', 'weight'];
-const DIFF_KEYS = FIELD_KEYS.filter((k) => k !== 'cost');
+// name (A) нужен только как запасной признак для поиска переименованного артикула.
+const DIFF_KEYS = FIELD_KEYS.filter((k) => k !== 'cost' && k !== 'name');
+// Ozon не принимает артикул длиннее 50 символов.
+const OZON_MAX_ARTICLE = 50;
 const NUMERIC_KEYS = new Set(['cost', 'width', 'length', 'height', 'weight']);
 
 // «Обычно вносит…» — только подсказка, не факт.
@@ -262,6 +266,76 @@ function diffSnapshots(prev, next) {
   return out;
 }
 
+// Переименование артикула: старый исчез, новый появился. Сопоставляем по
+// штрих-коду (он уникален), запасной вариант — по наименованию (колонка A).
+function detectRenames(prev, next) {
+  const removed = Object.keys(prev).filter((a) => !(a in next));
+  const added = Object.keys(next).filter((a) => !(a in prev));
+  const byBarcode = new Map();
+  const byName = new Map();
+  for (const a of added) {
+    const { barcode, name } = next[a];
+    if (barcode) byBarcode.set(barcode, a);
+    if (name) byName.set(name, byName.has(name) ? null : a);
+  }
+  const used = new Set();
+  const renames = [];
+  const gone = [];
+  for (const r of removed) {
+    const { barcode, name } = prev[r];
+    let to = barcode && byBarcode.get(barcode);
+    if (!to && name && byName.get(name)) to = byName.get(name);
+    if (to && !used.has(to)) {
+      used.add(to);
+      renames.push({ from: r, to });
+    } else {
+      gone.push(r);
+    }
+  }
+  // «прошлое» состояние переименованных — под новым именем, чтобы они не
+  // выглядели как совсем новые товары
+  const prevAdjusted = { ...prev };
+  for (const { from, to } of renames) {
+    prevAdjusted[to] = prev[from];
+    delete prevAdjusted[from];
+  }
+  return { renames, gone, prevAdjusted };
+}
+
+function buildRenameMessages(renames, gone, authors) {
+  const out = [];
+  if (renames.length) {
+    const line = ({ from, to }) => {
+      const mark = from.length > OZON_MAX_ARTICLE && to.length <= OZON_MAX_ARTICLE ? ' ✅ теперь ≤ 50' : '';
+      return `было: ${from} (${from.length})\nстало: ${to} (${to.length})${mark}`;
+    };
+    out.push(
+      [`✏️ Номенклатура: артикул изменён (${renames.length})`, ...renames.map(line), `Кто: ${authors.text}`].join('\n\n')
+    );
+    const fixed = renames.filter((r) => r.from.length > OZON_MAX_ARTICLE && r.to.length <= OZON_MAX_ARTICLE);
+    if (fixed.length) {
+      out.push(['✅ Артикул теперь не длиннее 50 символов — можно закреплять в Озон', ...fixed.map((r) => r.to)].join('\n'));
+    }
+    const stillLong = renames.filter((r) => r.to.length > OZON_MAX_ARTICLE);
+    if (stillLong.length) {
+      out.push(['⚠️ Новый артикул всё ещё длиннее 50 символов', ...stillLong.map((r) => `${r.to} (${r.to.length})`)].join('\n'));
+    }
+  }
+  if (gone.length) {
+    out.push(['🗑 Номенклатура: артикул пропал из таблицы', ...gone.map((a) => `• ${a}`), '', `Кто: ${authors.text}`].join('\n'));
+  }
+  return out;
+}
+
+function buildLongMessage(items) {
+  const long = Object.keys(items).filter((a) => a.length > OZON_MAX_ARTICLE);
+  if (!long.length) return null;
+  const MAX = 40;
+  const lines = long.slice(0, MAX).map((a) => `• ${a} (${a.length})`);
+  if (long.length > MAX) lines.push(`…и ещё ${long.length - MAX}`);
+  return [`📏 Артикулы длиннее 50 символов — Озон не примет (${long.length})`, ...lines].join('\n');
+}
+
 // ---------- авторы ----------
 
 async function fetchEditors(sinceIso) {
@@ -391,7 +465,10 @@ function buildMessages(diffs, next, editors) {
 function buildStatusMessage(items) {
   const all = Object.entries(items);
   const lacking = all.filter(([, rec]) => !isComplete(rec));
-  const head = `📋 Номенклатура сейчас: готово к карточке ${all.length - lacking.length} из ${all.length}`;
+  const longCount = all.filter(([a]) => a.length > OZON_MAX_ARTICLE).length;
+  const head =
+    `📋 Номенклатура сейчас: готово к карточке ${all.length - lacking.length} из ${all.length}` +
+    (longCount ? `\nАртикулов длиннее 50 символов: ${longCount} (список — /номенклатура_длинные)` : '');
   if (!lacking.length) return head;
   const MAX = 100;
   const lines = lacking.slice(0, MAX).map(([a, rec]) => `• ${a} — нет: ${missingFields(rec).join(', ')}`);
@@ -422,11 +499,13 @@ async function runCheck({ save = true } = {}) {
     return { firstRun: true, count: Object.keys(next).length, messages: [], items: next };
   }
 
-  const diffs = diffSnapshots(snap.items, next);
+  const { renames, gone, prevAdjusted } = detectRenames(snap.items, next);
+  const diffs = diffSnapshots(prevAdjusted, next);
   let messages = [];
-  if (diffs.length) {
+  if (diffs.length || renames.length || gone.length) {
     const editors = await fetchEditors(snap.checkedAt);
-    messages = buildMessages(diffs, next, editors);
+    // сначала переименования — для Елены это главное
+    messages = [...buildRenameMessages(renames, gone, buildAuthors(editors)), ...buildMessages(diffs, next, editors)];
   }
   if (save) writeJson(SNAPSHOT_PATH, { checkedAt: nowIso, items: next });
   return { firstRun: false, count: Object.keys(next).length, messages, items: next, diffCount: diffs.length };
@@ -439,6 +518,9 @@ module.exports = {
   buildMessages,
   buildWeeklyMessage,
   buildStatusMessage,
+  buildLongMessage,
+  detectRenames,
+  buildRenameMessages,
   isComplete,
   AccessError,
   readState,

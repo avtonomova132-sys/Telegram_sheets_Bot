@@ -1257,6 +1257,8 @@ async function runNomenclatureCheck({ weekly = false } = {}) {
   if (weekly && !result.firstRun) {
     const w = nomenclature.buildWeeklyMessage(result.items);
     if (w) await sendNomenclature(to, w);
+    const long = nomenclature.buildLongMessage(result.items);
+    if (long) await sendNomenclature(to, long);
   }
   return result;
 }
@@ -1323,6 +1325,17 @@ bot.onText(/^\/(номенклатура_готово|nomenclature_ready)(?:@\S+
   try {
     const result = await nomenclature.runCheck({ save: false });
     await sendNomenclature([msg.chat.id], nomenclature.buildStatusMessage(result.items));
+  } catch (err) {
+    await bot.sendMessage(msg.chat.id, `Не получилось проверить «Номенклатуру» 😔 ${err.message}`);
+  }
+});
+
+// Артикулы длиннее 50 символов (Озон их не принимает) — напоминание.
+bot.onText(/^\/(номенклатура_длинные|nomenclature_long)(?:@\S+)?$/, async (msg) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  try {
+    const result = await nomenclature.runCheck({ save: false });
+    await sendNomenclature([msg.chat.id], nomenclature.buildLongMessage(result.items) || 'Все артикулы не длиннее 50 символов ✅');
   } catch (err) {
     await bot.sendMessage(msg.chat.id, `Не получилось проверить «Номенклатуру» 😔 ${err.message}`);
   }
