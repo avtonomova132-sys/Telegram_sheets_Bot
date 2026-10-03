@@ -387,6 +387,18 @@ function buildMessages(diffs, next, editors) {
   return out;
 }
 
+// Текущее состояние таблицы (без снимка): сколько готово и чего не хватает.
+function buildStatusMessage(items) {
+  const all = Object.entries(items);
+  const lacking = all.filter(([, rec]) => !isComplete(rec));
+  const head = `📋 Номенклатура сейчас: готово к карточке ${all.length - lacking.length} из ${all.length}`;
+  if (!lacking.length) return head;
+  const MAX = 100;
+  const lines = lacking.slice(0, MAX).map(([a, rec]) => `• ${a} — нет: ${missingFields(rec).join(', ')}`);
+  if (lacking.length > MAX) lines.push(`…и ещё ${lacking.length - MAX}`);
+  return [head, `Не хватает данных (${lacking.length}):`, ...lines].join('\n');
+}
+
 function buildWeeklyMessage(items) {
   const lacking = Object.entries(items).filter(([, rec]) => !isComplete(rec));
   if (!lacking.length) return null;
@@ -426,6 +438,7 @@ module.exports = {
   diffSnapshots,
   buildMessages,
   buildWeeklyMessage,
+  buildStatusMessage,
   isComplete,
   AccessError,
   readState,

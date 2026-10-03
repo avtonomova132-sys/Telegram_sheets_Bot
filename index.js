@@ -1316,6 +1316,18 @@ bot.onText(/^\/(номенклатура|nomenclature)(?:@\S+)?$/, async (msg) =
   }
 });
 
+// Текущий статус: сколько артикулов готово к созданию карточки и чего не
+// хватает у остальных. Читает таблицу, снимок не трогает.
+bot.onText(/^\/(номенклатура_готово|nomenclature_ready)(?:@\S+)?$/, async (msg) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  try {
+    const result = await nomenclature.runCheck({ save: false });
+    await sendNomenclature([msg.chat.id], nomenclature.buildStatusMessage(result.items));
+  } catch (err) {
+    await bot.sendMessage(msg.chat.id, `Не получилось проверить «Номенклатуру» 😔 ${err.message}`);
+  }
+});
+
 // Отладка: показывает diff со снимком, ничего не сохраняя и никому не рассылая.
 bot.onText(/^\/(номенклатура_diff|nomenclature_diff)(?:@\S+)?$/, async (msg) => {
   if (!isTrustedUser(msg.chat.id)) return;
