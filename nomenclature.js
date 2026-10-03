@@ -24,6 +24,7 @@ const STATE_PATH = process.env.NOMENCLATURE_STATE_PATH || '/data/nomenclature_st
 const COLUMN_SPECS = [
   { key: 'article', letter: 'D', header: /артикул/i, label: 'Артикул' },
   { key: 'barcode', letter: 'F', header: /баркод|штрих/i, label: 'Штрих-код' },
+  { key: 'cost', letter: 'G', header: /итого\s*закупк/i, label: 'Себестоимость (Итого закупка)' },
   { key: 'width', letter: 'K', header: /ширин/i, label: 'Ширина' },
   { key: 'length', letter: 'L', header: /длин/i, label: 'Длина' },
   { key: 'height', letter: 'M', header: /высот/i, label: 'Высота' },
@@ -34,8 +35,12 @@ const COLUMN_SPECS = [
   { key: 'marking', letter: 'AP', header: /честный|маркиров/i, label: 'Маркировка' },
 ];
 const FIELD_KEYS = COLUMN_SPECS.filter((c) => c.key !== 'article').map((c) => c.key);
-const REQUIRED_FOR_CARD = ['barcode', 'width', 'length', 'height', 'weight'];
-const NUMERIC_KEYS = new Set(['width', 'length', 'height', 'weight']);
+// Себестоимость (G) нужна для «можно создавать карточку», но в сравнении
+// изменений не участвует: это формула, цена закупки меняется часто — иначе
+// уведомления сыпались бы при каждой правке цены.
+const REQUIRED_FOR_CARD = ['barcode', 'cost', 'width', 'length', 'height', 'weight'];
+const DIFF_KEYS = FIELD_KEYS.filter((k) => k !== 'cost');
+const NUMERIC_KEYS = new Set(['cost', 'width', 'length', 'height', 'weight']);
 
 // «Обычно вносит…» — только подсказка, не факт.
 const USUAL_AUTHOR = {
@@ -229,7 +234,7 @@ function isComplete(rec) {
 }
 
 function missingFields(rec) {
-  const names = { barcode: 'штрих-код', width: 'ширина', length: 'длина', height: 'высота', weight: 'вес' };
+  const names = { barcode: 'штрих-код', cost: 'себестоимость', width: 'ширина', length: 'длина', height: 'высота', weight: 'вес' };
   return REQUIRED_FOR_CARD.filter((k) => !rec[k]).map((k) => names[k]);
 }
 
@@ -242,12 +247,17 @@ function diffSnapshots(prev, next) {
   const out = [];
   for (const [article, rec] of Object.entries(next)) {
     const old = prev[article] || EMPTY;
+    // снимки до появления cost не содержат его — не считать это «появилось»
+    const prevHasCost = !prev[article] || prev[article].cost !== undefined;
+    const prevRec = prevHasCost ? prev[article] : { ...prev[article], cost: rec.cost };
     const changes = {};
-    for (const k of FIELD_KEYS) {
+    for (const k of DIFF_KEYS) {
       if ((old[k] || '') !== rec[k]) changes[k] = { from: old[k] || '', to: rec[k] };
     }
-    if (Object.keys(changes).length === 0) continue;
-    out.push({ article, changes, becameComplete: isComplete(rec) && !isComplete(prev[article]) });
+    const becameComplete = isComplete(rec) && !isComplete(prevRec);
+    // себестоимость внесли последней — других изменений нет, но «готово» сообщить нужно
+    if (Object.keys(changes).length === 0 && !becameComplete) continue;
+    out.push({ article, changes, becameComplete });
   }
   return out;
 }
@@ -351,9 +361,12 @@ function buildMessages(diffs, next, editors) {
   const authors = buildAuthors(editors);
   const out = [];
   const ready = diffs.filter((d) => d.becameComplete);
+  const news = diffs.filter((d) => Object.keys(d.changes).length > 0);
 
-  if (diffs.length <= COMPACT_THRESHOLD) {
-    out.push(['📦 Номенклатура: новое', ...diffs.map((d) => articleBlock(d, next[d.article], authors))].join('\n\n'));
+  if (!news.length) {
+    // только «готово» — без блока «новое»
+  } else if (news.length <= COMPACT_THRESHOLD) {
+    out.push(['📦 Номенклатура: новое', ...news.map((d) => articleBlock(d, next[d.article], authors))].join('\n\n'));
   } else {
     const tag = (d) => {
       const t = [];
@@ -364,7 +377,7 @@ function buildMessages(diffs, next, editors) {
       return `• ${d.article} — ${t.join(', ')}`;
     };
     out.push(
-      [`📦 Номенклатура: новое (${diffs.length} артикулов)`, ...diffs.map(tag), '', `Кто: ${authors.text}`].join('\n')
+      [`📦 Номенклатура: новое (${news.length} артикулов)`, ...news.map(tag), '', `Кто: ${authors.text}`].join('\n')
     );
   }
 
