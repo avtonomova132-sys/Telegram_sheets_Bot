@@ -1399,6 +1399,15 @@ async function checkAndRunFbo() {
   try {
     const { text } = await fbo.dailyMessage();
     if (text) await sendFbo(fboRecipients(), text);
+    try {
+      const rows = fboPlacement.parseDaily(await fbo.fetchPlacementFile('by-products'));
+      const prev = fbo.readState().paidAlerted || {};
+      const paid = fboPlacement.buildPaidMessage(rows, prev, true);
+      if (paid.text) await sendFbo(fboRecipients(), paid.text);
+      fbo.patchState({ paidAlerted: paid.state });
+    } catch (e) {
+      console.error('[fbo] платное размещение через API:', e.message);
+    }
     fbo.patchState({ lastDate: today, errorNotified: false, lastErrorAt: null });
   } catch (err) {
     console.error('[fbo] ошибка проверки:', err.message);
@@ -1445,8 +1454,13 @@ bot.onText(/^\/fbo_report(?:@\S+)?(?:\s+(by-products|by-supplies))?$/i, async (m
     await bot.sendMessage(msg.chat.id, `Запрашиваю у Озона отчёт (${kind})… до минуты`);
     const buffer = await fbo.fetchPlacementFile(kind);
     try {
-      const items = fboPlacement.parseReport(buffer);
-      await sendFbo([msg.chat.id], fboPlacement.buildSummary(items, fbo.isFood));
+      let text;
+      try {
+        text = fboPlacement.buildSummary(fboPlacement.parseReport(buffer), fbo.isFood);
+      } catch (e0) {
+        text = fboPlacement.buildPaidMessage(fboPlacement.parseDaily(buffer)).text;
+      }
+      await sendFbo([msg.chat.id], text);
     } catch (e) {
       const rows = require('./miniXlsx').readFirstSheet(buffer);
       const hi = rows.findIndex((r) => String(r[0]).trim() === 'SKU');

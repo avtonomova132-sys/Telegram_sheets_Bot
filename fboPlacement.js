@@ -118,4 +118,59 @@ function buildSummary(items, isFood) {
 
 const NOT_REPORT_PREFIX = 'в файле нет колонок';
 
-module.exports = { parseReport, buildSummary, NOT_REPORT_PREFIX };
+// ---- Отчёт из API (/v1/report/placement/by-products): строка = день × товар × склад ----
+function parseDaily(buffer) {
+  const all = readFirstSheet(buffer);
+  const hi = all.findIndex((r) => r.some((c) => clean(c) === 'Начисленная стоимость размещения'));
+  if (hi < 0) throw new Error(`${NOT_REPORT_PREFIX}: «Начисленная стоимость размещения»`);
+  const h = all[hi].map(clean);
+  const col = (re) => h.findIndex((c) => re.test(c));
+  const c = {
+    date: col(/^дата$/i), article: col(/^артикул$/i), warehouse: col(/^склад$/i),
+    qty: col(/^кол-во экземпляров$/i), paidQty: col(/платных экземпляров/i), cost: col(/начисленная стоимость/i),
+  };
+  const miss = Object.entries(c).filter(([, v]) => v < 0).map(([k]) => k);
+  if (miss.length) throw new Error(`${NOT_REPORT_PREFIX}: ${miss.join(', ')}`);
+  const rows = [];
+  for (const r of all.slice(hi + 1)) {
+    const article = String(r[c.article] ?? '').trim();
+    if (!article) continue;
+    rows.push({
+      date: toIsoDate(r[c.date]), article, warehouse: String(r[c.warehouse] ?? '').trim(),
+      qty: num(r[c.qty]), paidQty: num(r[c.paidQty]), cost: num(r[c.cost]),
+    });
+  }
+  return rows;
+}
+
+// Платное на последнюю дату отчёта, сгруппировано «артикул|склад».
+function paidNow(rows) {
+  const last = rows.reduce((m, r) => (r.date > m ? r.date : m), '');
+  const map = new Map();
+  for (const r of rows) {
+    if (r.date !== last || r.paidQty <= 0) continue;
+    const key = `${r.article}|${r.warehouse}`;
+    const g = map.get(key) || { key, article: r.article, warehouse: r.warehouse, paidQty: 0, cost: 0 };
+    g.paidQty += r.paidQty;
+    g.cost += r.cost;
+    map.set(key, g);
+  }
+  return { last, list: [...map.values()].sort((a, b) => b.cost - a.cost) };
+}
+
+// prev — {key: paidQty}, о чём уже сообщали; onlyNew — слать только новое/выросшее.
+function buildPaidMessage(rows, prev = {}, onlyNew = false) {
+  const { last, list } = paidNow(rows);
+  const fresh = onlyNew ? list.filter((g) => !(prev[g.key] >= g.paidQty)) : list;
+  const state = Object.fromEntries(list.map((g) => [g.key, g.paidQty]));
+  if (!fresh.length) {
+    return { text: onlyNew ? null : `💸 Платного размещения на ${ruDate(last)} нет ✅`, state };
+  }
+  const out = [`💸 Платное размещение на FBO (на ${ruDate(last)})${onlyNew ? ' — новое' : ''}:`];
+  for (const g of fresh) out.push(`• ${g.article} — ${g.paidQty} шт платно, ${g.warehouse}, ${rub(g.cost)} за день`);
+  out.push(`\nИтого за день: ${rub(fresh.reduce((s, g) => s + g.cost, 0))}. Можно создать заявку на вывоз со стока.`);
+  return { text: out.join('\n'), state };
+}
+
+
+module.exports = { parseReport, buildSummary, parseDaily, buildPaidMessage, NOT_REPORT_PREFIX };
