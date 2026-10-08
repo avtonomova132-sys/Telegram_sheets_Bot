@@ -35,6 +35,7 @@ const {
   markProgramsWatchChecked,
 } = require('./programsWatch');
 const nomenclature = require('./nomenclature');
+const fbo = require('./fbo');
 const { generateVerseImageBuffer } = require('./verse/generateVerseImage');
 const {
   getVerseCount,
@@ -1354,6 +1355,82 @@ bot.onText(/^\/(номенклатура_diff|nomenclature_diff)(?:@\S+)?$/, asy
       await sendNomenclature([msg.chat.id], `🔧 Отладка, снимок НЕ обновлён:`);
       for (const m of result.messages) await sendNomenclature([msg.chat.id], m);
     }
+  } catch (err) {
+    await bot.sendMessage(msg.chat.id, `Ошибка: ${err.message}`);
+  }
+});
+
+// ===== Мониторинг еды на складах Озона (FBO) =====
+// Отдельная фича (fbo.js): раз в день в 08:00 по Бали читает остатки через
+// Ozon Seller API (ключ только на чтение) и пишет Елене только если еды от
+// 3 шт одного артикула на одном складе стало больше/появилось новое. Если
+// новостей нет — молчит. Catch-up poll раз в 5 минут, как у остальных задач.
+const FBO_HOUR = 8;
+const FBO_RETRY_MS = 60 * 60 * 1000;
+
+function fboRecipients() {
+  const extra = String(process.env.FBO_EXTRA_CHAT_IDS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return [...new Set([...(myChatId ? [String(myChatId)] : []), ...extra])];
+}
+
+async function sendFbo(chatIds, text) {
+  for (const chatId of chatIds) {
+    for (const chunk of splitNomenclatureText(text)) {
+      try {
+        await bot.sendMessage(chatId, chunk, { disable_web_page_preview: true });
+      } catch (err) {
+        console.error('[fbo] не удалось отправить в', chatId, err.message);
+      }
+    }
+  }
+}
+
+async function checkAndRunFbo() {
+  if (!myChatId || !fbo.isConfigured()) return;
+  if (baliHour() < FBO_HOUR) return;
+  const today = baliDateString();
+  const state = fbo.readState();
+  if (state.lastDate === today) return;
+  if (state.lastErrorAt && Date.now() - state.lastErrorAt < FBO_RETRY_MS) return;
+  try {
+    const { text } = await fbo.dailyMessage();
+    if (text) await sendFbo(fboRecipients(), text);
+    fbo.patchState({ lastDate: today, errorNotified: false, lastErrorAt: null });
+  } catch (err) {
+    console.error('[fbo] ошибка проверки:', err.message);
+    const notify = !state.errorNotified;
+    fbo.patchState({ lastErrorAt: Date.now(), errorNotified: true });
+    if (notify) {
+      await sendFbo(
+        [String(myChatId)],
+        `⚠️ FBO: не получилось проверить остатки Озона — ${err.message}\nПовторю молча раз в час, напишу снова только когда заработает и сломается опять.`
+      );
+    }
+  }
+}
+
+cron.schedule('*/5 * * * *', checkAndRunFbo);
+
+// Ручная проверка: полная картина «сейчас», снимок «уже сообщал» не трогает.
+bot.onText(/^\/fbo(?:@\S+)?$/i, async (msg) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  try {
+    const { text } = await fbo.currentMessage();
+    await sendFbo([msg.chat.id], text);
+  } catch (err) {
+    console.error('[fbo] ошибка ручной проверки:', err.message);
+    await bot.sendMessage(msg.chat.id, `Не получилось проверить FBO 😔 ${err.message}`);
+  }
+});
+
+// Отладка: какой метод Озона ответил и что считается едой.
+bot.onText(/^\/fbo_debug(?:@\S+)?$/i, async (msg) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  try {
+    await sendFbo([msg.chat.id], await fbo.debugMessage());
   } catch (err) {
     await bot.sendMessage(msg.chat.id, `Ошибка: ${err.message}`);
   }
