@@ -1437,6 +1437,26 @@ bot.onText(/^\/fbo_probe(?:@\S+)?$/i, async (msg) => {
   }
 });
 
+// Отчёт о размещении напрямую из API Озона (без файла от Елены).
+bot.onText(/^\/fbo_report(?:@\S+)?(?:\s+(by-products|by-supplies))?$/i, async (msg, m) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  const kind = (m && m[1]) || 'by-products';
+  try {
+    await bot.sendMessage(msg.chat.id, `Запрашиваю у Озона отчёт (${kind})… до минуты`);
+    const buffer = await fbo.fetchPlacementFile(kind);
+    try {
+      const items = fboPlacement.parseReport(buffer);
+      await sendFbo([msg.chat.id], fboPlacement.buildSummary(items, fbo.isFood));
+    } catch (e) {
+      const rows = require('./miniXlsx').readFirstSheet(buffer);
+      const head = rows.slice(0, 4).map((r) => r.map((c) => String(c).slice(0, 40)).join(' | ')).join('\n');
+      await sendFbo([msg.chat.id], `Отчёт получен (${rows.length} строк), но колонки другие.\nПервые строки:\n${head}`);
+    }
+  } catch (err) {
+    await bot.sendMessage(msg.chat.id, `Ошибка: ${err.message}`);
+  }
+});
+
 // Отладка: какой метод Озона ответил и что считается едой.
 bot.onText(/^\/fbo_debug(?:@\S+)?$/i, async (msg) => {
   if (!isTrustedUser(msg.chat.id)) return;

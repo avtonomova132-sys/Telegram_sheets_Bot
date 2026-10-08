@@ -406,7 +406,30 @@ async function probeMessage() {
   return `🔧 FBO разведка методов Озона\n\n${lines.join('\n')}`;
 }
 
+// Отчёт «размещение» через API: создать → дождаться → скачать xlsx (только чтение).
+async function fetchPlacementFile(kind = 'by-products') {
+  const fmt = (d) => d.toISOString().slice(0, 10);
+  const to = new Date();
+  const from = new Date(Date.now() - 30 * 86400000);
+  const created = await ozonPost(`/v1/report/placement/${kind}/create`, { date_from: fmt(from), date_to: fmt(to) });
+  const code = (created.result && created.result.code) || created.code;
+  if (!code) throw new Error(`Озон не вернул код отчёта: ${JSON.stringify(created).slice(0, 150)}`);
+  for (let i = 0; i < 20; i += 1) {
+    await new Promise((r) => setTimeout(r, 3000));
+    const info = await ozonPost('/v1/report/info', { code });
+    const r = info.result || info;
+    if (r.status === 'success' && r.file) {
+      const res = await fetch(r.file);
+      if (!res.ok) throw new Error(`скачивание отчёта: HTTP ${res.status}`);
+      return Buffer.from(await res.arrayBuffer());
+    }
+    if (r.status === 'failed') throw new Error(`Озон не смог сформировать отчёт: ${r.error || ''}`);
+  }
+  throw new Error('отчёт не готов за 60 с');
+}
+
 module.exports = {
+  fetchPlacementFile,
   probeMessage,
   isConfigured,
   readState,
