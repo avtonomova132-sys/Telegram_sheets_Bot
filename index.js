@@ -1427,6 +1427,16 @@ bot.onText(/^\/fbo(?:@\S+)?$/i, async (msg) => {
   }
 });
 
+// Разведка методов Озона (пустые запросы, ничего не меняют).
+bot.onText(/^\/fbo_probe(?:@\S+)?$/i, async (msg) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  try {
+    await sendFbo([msg.chat.id], await fbo.probeMessage());
+  } catch (err) {
+    await bot.sendMessage(msg.chat.id, `Ошибка: ${err.message}`);
+  }
+});
+
 // Отладка: какой метод Озона ответил и что считается едой.
 bot.onText(/^\/fbo_debug(?:@\S+)?$/i, async (msg) => {
   if (!isTrustedUser(msg.chat.id)) return;

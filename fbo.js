@@ -358,7 +358,56 @@ async function debugMessage() {
   ].filter(Boolean).join('\n\n');
 }
 
+
+// Разведка: какие методы Озона вообще существуют для этого ключа. Шлём пустое
+// тело (ничего не создаётся и не меняется): 404 = такого метода нет,
+// 400/200/403 = метод есть.
+const PROBE_PATHS = [
+  '/v3/product/list',
+  '/v1/analytics/stocks',
+  '/v1/analytics/turnover/stocks',
+  '/v1/report/placement/by-products/create',
+  '/v1/report/placement/by-supplies/create',
+  '/v1/analytics/placement',
+  '/v1/analytics/placement/products',
+  '/v1/analytics/storage',
+  '/v1/analytics/storage-fee',
+  '/v1/analytics/forced-placement',
+  '/v1/analytics/stocks/placement',
+  '/v1/finance/placement',
+  '/v1/fbo/placement',
+  '/v1/stocks/placement',
+  '/v1/analytics/manage/stocks',
+  '/v1/analytics/manage/stocks/placement',
+  '/v1/report/stocks/create',
+  '/v1/report/info',
+];
+
+async function probeMessage() {
+  if (!isConfigured()) throw new Error('не заданы OZON_API_KEY / OZON_CLIENT_ID в Railway');
+  const lines = [];
+  for (const path of PROBE_PATHS) {
+    try {
+      const res = await fetch(`${OZON_HOST}${path}`, {
+        method: 'POST',
+        headers: {
+          'Client-Id': String(process.env.OZON_CLIENT_ID).trim(),
+          'Api-Key': String(process.env.OZON_API_KEY).trim(),
+          'Content-Type': 'application/json',
+        },
+        body: '{}',
+      });
+      const text = (await res.text()).replace(/\s+/g, ' ').slice(0, 70);
+      lines.push(`${res.status === 404 ? '❌' : '✅'} ${res.status} ${path}${res.status === 404 ? '' : ` — ${text}`}`);
+    } catch (err) {
+      lines.push(`⚠️ ${path} — ${err.message.slice(0, 60)}`);
+    }
+  }
+  return `🔧 FBO разведка методов Озона\n\n${lines.join('\n')}`;
+}
+
 module.exports = {
+  probeMessage,
   isConfigured,
   readState,
   patchState,
