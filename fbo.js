@@ -128,19 +128,80 @@ function normalizeRow(it) {
     cluster: String(it.cluster_name || '').trim(),
     warehouse: String(it.warehouse_name || it.cluster_name || 'склад не указан').trim(),
     available: num(available),
+    returning: num(it.return_from_customer_stock_count),
+    transit: num(it.transit_stock_count),
     expiring: num(it.expiring_stock_count),
   };
+}
+
+// ---- Полный отчёт (как «Управление остатками» в кабинете): остатки по
+// кластерам с возвратами и товарами в пути. Нужны SKU — берём их из каталога,
+// только у еды (иначе тысячи лишних запросов).
+async function fetchCatalog() {
+  const items = [];
+  let lastId = '';
+  for (let page = 0; page < 20; page += 1) {
+    const data = await ozonPost('/v3/product/list', { filter: { visibility: 'ALL' }, last_id: lastId, limit: 1000 });
+    const list = data?.result?.items || data?.items || [];
+    items.push(...list);
+    lastId = data?.result?.last_id || data?.last_id || '';
+    if (!lastId || list.length < 1000) break;
+  }
+  const offers = items.map((i) => i.offer_id).filter(Boolean);
+  const info = [];
+  let sample = null;
+  for (let i = 0; i < offers.length; i += 1000) {
+    const data = await ozonPost('/v3/product/info/list', { offer_id: offers.slice(i, i + 1000) });
+    const list = extractList(data) || [];
+    if (!sample && list[0]) sample = list[0];
+    info.push(...list);
+  }
+  const products = info.map((it) => ({
+    article: String(it.offer_id || '').trim(),
+    name: String(it.name || '').trim(),
+    sku: it.sku || (it.sources || []).map((x) => x.sku).find(Boolean) || null,
+  }));
+  return { products, sample };
+}
+
+async function fetchViaAnalytics() {
+  const { products, sample: catalogSample } = await fetchCatalog();
+  const food = products.filter((p) => p.sku && isFood(p));
+  if (!food.length) throw new Error(`каталог: товаров ${products.length}, еды с SKU 0 (поля товара: ${catalogSample ? Object.keys(catalogSample).join(', ') : '—'})`);
+  const byDigits = new Map(food.map((p) => [String(p.sku), p]));
+  const skus = food.map((p) => String(p.sku));
+  const rows = [];
+  let sample = null;
+  for (let i = 0; i < skus.length; i += 100) {
+    const data = await ozonPost('/v1/analytics/stocks', { skus: skus.slice(i, i + 100) });
+    const list = extractList(data);
+    if (!list) throw new Error(`/v1/analytics/stocks: неожиданный формат ответа (ключи: ${Object.keys(data || {}).join(', ') || 'пусто'})`);
+    if (!sample && list[0]) sample = list[0];
+    for (const it of list) {
+      const prod = byDigits.get(String(it.sku)) || {};
+      rows.push(normalizeRow({ ...it, offer_id: it.offer_id || prod.article, name: it.name || prod.name }));
+    }
+  }
+  return { endpoint: '/v1/analytics/stocks', rows, sample, foodSkus: skus.length };
 }
 
 // Остатки по складам. Сначала новый отчёт «управление остатками»; если Озон
 // его не принял (другая схема/доступ) — старый «остатки на складах».
 async function fetchStockRows() {
   const attempts = [
-    { endpoint: '/v1/analytics/manage/stocks', body: (offset) => ({ filter: {}, limit: PAGE_LIMIT, offset }) },
     { endpoint: '/v2/analytics/stock_on_warehouses', body: (offset) => ({ limit: PAGE_LIMIT, offset, warehouse_type: 'ALL' }) },
   ];
   let lastErr;
   const errors = [];
+  // Полный отчёт (с возвратами и «в пути»). Не вышло — запасной старый метод,
+  // в нём только «доступно к продаже».
+  try {
+    const full = await fetchViaAnalytics();
+    return { ...full, errors };
+  } catch (err) {
+    errors.push(`полный отчёт: ${err.message.slice(0, 220)}`);
+    if (err.status === 401 || err.status === 403) throw err;
+  }
   for (const a of attempts) {
     try {
       const rows = [];
@@ -193,8 +254,11 @@ function groupFood(rows) {
   for (const r of rows) {
     if (!r.article || !isFood(r)) continue;
     const key = `${r.article}|${r.warehouse}`;
-    const g = map.get(key) || { key, article: r.article, name: r.name, warehouse: r.warehouse, qty: 0, expiring: 0 };
-    g.qty += r.available;
+    const g = map.get(key) || { key, article: r.article, name: r.name, warehouse: r.warehouse, qty: 0, available: 0, returning: 0, transit: 0, expiring: 0 };
+    g.available += r.available;
+    g.returning += r.returning || 0;
+    g.transit += r.transit || 0;
+    g.qty += r.available + (r.returning || 0) + (r.transit || 0);
     g.expiring += r.expiring;
     map.set(key, g);
   }
@@ -210,7 +274,8 @@ function formatRub(n) {
 }
 
 function itemLine(g, prices) {
-  const parts = [`• ${g.warehouse} — ${g.qty} шт`];
+  const detail = [g.available && `в продаже ${g.available}`, g.returning && `возвращаются ${g.returning}`, g.transit && `в пути ${g.transit}`].filter(Boolean).join(', ');
+  const parts = [`• ${g.warehouse} — ${g.qty} шт${detail && g.qty !== g.available ? ` (${detail})` : ''}`];
   if (g.expiring > 0) parts.push(`⏳ срок истекает: ${g.expiring} шт`);
   const p = prices[g.article];
   if (p && g.qty >= MIN_QTY) parts.push(`цена ${formatRub(p)} → −8% = ${formatRub(p * (1 - PRICE_CUT))}`);
@@ -275,8 +340,8 @@ async function dailyMessage() {
 // Отладка первой настоящей проверки: какой метод ответил, сколько строк,
 // что считаем едой, а что нет — чтобы подправить список слов.
 async function debugMessage() {
-  const { endpoint, rows, errors, sample } = await fetchStockRows();
-  const label = (r) => `${r.article} — «${r.name.slice(0, 40)}» — ${r.warehouse}: ${r.available} шт`;
+  const { endpoint, rows, errors, sample, foodSkus } = await fetchStockRows();
+  const label = (r) => `${r.article} — «${r.name.slice(0, 40)}» — ${r.warehouse}: продаже ${r.available}, возвр. ${r.returning || 0}, в пути ${r.transit || 0}, срок ${r.expiring}`;
   const food = rows.filter(isFood).map(label);
   const other = rows.filter((r) => !isFood(r)).map(label);
   const cut = (arr) => arr.slice(0, 30).join('\n') + (arr.length > 30 ? `\n… (+${arr.length - 30})` : '');
@@ -285,6 +350,7 @@ async function debugMessage() {
     `Метод: ${endpoint}`,
     errors.length ? `Ошибки до этого:\n${errors.join('\n')}` : null,
     `Поля первой строки: ${sample ? Object.keys(sample).join(', ') : '—'}`,
+    foodSkus ? `Еды с SKU в каталоге: ${foodSkus}` : null,
     `Строк в ответе: ${rows.length}`,
     `Едой считаю (${food.length}):\n${cut(food) || '—'}`,
     `Не едой (${other.length}):\n${cut(other) || '—'}`,
