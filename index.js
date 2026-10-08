@@ -1449,7 +1449,9 @@ bot.onText(/^\/fbo_report(?:@\S+)?(?:\s+(by-products|by-supplies))?$/i, async (m
       await sendFbo([msg.chat.id], fboPlacement.buildSummary(items, fbo.isFood));
     } catch (e) {
       const rows = require('./miniXlsx').readFirstSheet(buffer);
-      const head = rows.slice(0, 4).map((r) => r.map((c) => String(c).slice(0, 40)).join(' | ')).join('\n');
+      const hi = rows.findIndex((r) => String(r[0]).trim() === 'SKU');
+      const pick = (r) => [...r.slice(0, 9), '…', ...r.slice(-4)].map((c) => String(c).slice(0, 30)).join(' | ');
+      const head = rows.slice(Math.max(hi, 0), Math.max(hi, 0) + 9).map(pick).join('\n');
       await sendFbo([msg.chat.id], `Отчёт получен (${rows.length} строк), но колонки другие.\nПервые строки:\n${head}`);
     }
   } catch (err) {
