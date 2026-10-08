@@ -140,20 +140,24 @@ async function fetchStockRows() {
     { endpoint: '/v2/analytics/stock_on_warehouses', body: (offset) => ({ limit: PAGE_LIMIT, offset, warehouse_type: 'ALL' }) },
   ];
   let lastErr;
+  const errors = [];
   for (const a of attempts) {
     try {
       const rows = [];
+      let sample = null;
       for (let offset = 0, page = 0; page < 50; page += 1) {
         const data = await ozonPost(a.endpoint, a.body(offset));
         const list = extractList(data);
         if (!list) throw new Error(`${a.endpoint}: неожиданный формат ответа (ключи: ${Object.keys(data || {}).join(', ') || 'пусто'})`);
+        if (!sample && list[0]) sample = list[0];
         rows.push(...list.map(normalizeRow));
         if (list.length < PAGE_LIMIT) break;
         offset += PAGE_LIMIT;
       }
-      return { endpoint: a.endpoint, rows };
+      return { endpoint: a.endpoint, rows, errors, sample };
     } catch (err) {
       lastErr = err;
+      errors.push(err.message.slice(0, 220));
       // 401/403 — ключ/доступ, пробовать другой метод бессмысленно
       if (err.status === 401 || err.status === 403) throw err;
     }
@@ -271,18 +275,21 @@ async function dailyMessage() {
 // Отладка первой настоящей проверки: какой метод ответил, сколько строк,
 // что считаем едой, а что нет — чтобы подправить список слов.
 async function debugMessage() {
-  const { endpoint, rows } = await fetchStockRows();
-  const food = [...new Set(rows.filter(isFood).map((r) => r.article))];
-  const other = [...new Set(rows.filter((r) => !isFood(r)).map((r) => r.article))];
-  const cut = (arr) => arr.slice(0, 40).join(', ') + (arr.length > 40 ? ` … (+${arr.length - 40})` : '');
+  const { endpoint, rows, errors, sample } = await fetchStockRows();
+  const label = (r) => `${r.article} — «${r.name.slice(0, 40)}» — ${r.warehouse}: ${r.available} шт`;
+  const food = rows.filter(isFood).map(label);
+  const other = rows.filter((r) => !isFood(r)).map(label);
+  const cut = (arr) => arr.slice(0, 30).join('\n') + (arr.length > 30 ? `\n… (+${arr.length - 30})` : '');
   return [
     `🔧 FBO отладка`,
     `Метод: ${endpoint}`,
+    errors.length ? `Ошибки до этого:\n${errors.join('\n')}` : null,
+    `Поля первой строки: ${sample ? Object.keys(sample).join(', ') : '—'}`,
     `Строк в ответе: ${rows.length}`,
-    `Едой считаю (${food.length}): ${cut(food) || '—'}`,
-    `Не едой (${other.length}): ${cut(other) || '—'}`,
+    `Едой считаю (${food.length}):\n${cut(food) || '—'}`,
+    `Не едой (${other.length}):\n${cut(other) || '—'}`,
     `Порог: ${MIN_QTY} шт`,
-  ].join('\n');
+  ].filter(Boolean).join('\n\n');
 }
 
 module.exports = {
