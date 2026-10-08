@@ -36,6 +36,7 @@ const {
 } = require('./programsWatch');
 const nomenclature = require('./nomenclature');
 const fbo = require('./fbo');
+const fboPlacement = require('./fboPlacement');
 const { generateVerseImageBuffer } = require('./verse/generateVerseImage');
 const {
   getVerseCount,
@@ -2938,11 +2939,33 @@ bot.onText(/^\/z(?:@\S+)?$/, (msg) => {
   execZ(msg.chat.id);
 });
 
+// Отчёт Озона «Платное размещение» (xlsx), присланный Еленой: бот сам узнаёт
+// его по колонкам и отвечает сводкой. Любой другой xlsx молча пропускаем.
+async function handleFboPlacementDocument(chatId, document) {
+  try {
+    const fileLink = await bot.getFileLink(document.file_id);
+    const response = await fetch(fileLink);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const items = fboPlacement.parseReport(buffer);
+    await sendFbo([chatId], fboPlacement.buildSummary(items, fbo.isFood));
+    return true;
+  } catch (err) {
+    if (String(err.message).startsWith(fboPlacement.NOT_REPORT_PREFIX)) return false;
+    console.error('[fbo] ошибка разбора отчёта о размещении:', err.message);
+    await bot.sendMessage(chatId, `Не получилось разобрать отчёт 😔 ${err.message}`);
+    return true;
+  }
+}
+
 bot.on('document', async (msg) => {
   const chatId = msg.chat.id;
   const caption = (msg.caption || '').trim();
   const isUploadCommand = /^\/z(?:@\S+)?$/.test(caption);
   const waitingSince = pendingArticlesUpload.get(chatId);
+
+  if (!isUploadCommand && !waitingSince && isTrustedUser(chatId) && /\.xlsx$/i.test(msg.document?.file_name || '')) {
+    if (await handleFboPlacementDocument(chatId, msg.document)) return;
+  }
 
   if (!isUploadCommand && !waitingSince) return;
 
