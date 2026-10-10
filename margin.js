@@ -428,6 +428,95 @@ async function debugMessage() {
   return lines.join('\n\n');
 }
 
+// ---------- поиск одного артикула: когда была последняя продажа ----------
+// Елена попросила посчитать для конкретного товара («1 кг Бабаевская
+// Белочка Пралине»), сколько реально он не продаётся, прежде чем решать
+// пороги с Алиной — это НЕ часть ежедневной рассылки, отдельная ручная
+// команда. По дням (dimension ["day","sku"]) за LOOKUP_DAYS, фильтр по sku
+// пробуем на стороне Ozon (filters), но на всякий случай фильтруем и сами —
+// не все версии API гарантированно применяют filters к этому методу.
+const LOOKUP_DAYS = 180;
+
+async function findArticleBySubstring(query) {
+  const { products } = await fbo.fetchCatalog();
+  const q = String(query || '').trim().toLowerCase();
+  // сначала точное совпадение артикула, потом — вхождение в артикул/название
+  const exact = products.find((p) => p.article.toLowerCase() === q);
+  if (exact) return { match: exact, alternatives: [] };
+  const partial = products.filter(
+    (p) => p.article.toLowerCase().includes(q) || p.name.toLowerCase().includes(q)
+  );
+  return { match: partial.length === 1 ? partial[0] : null, alternatives: partial };
+}
+
+async function fetchDailySalesForSku(sku, days) {
+  const to = new Date();
+  const from = new Date(Date.now() - days * 86400000);
+  const byDay = new Map();
+  let sample = null;
+  let offset = 0;
+  for (let page = 0; page < 50; page += 1) {
+    const data = await fbo.ozonPost('/v1/analytics/data', {
+      date_from: fmtDate(from),
+      date_to: fmtDate(to),
+      metrics: ['ordered_units'],
+      dimension: ['day', 'sku'],
+      filters: [{ key: 'sku', value: String(sku) }],
+      limit: 1000,
+      offset,
+    });
+    const rows = data?.result?.data || data?.data || [];
+    if (!sample && rows[0]) sample = rows[0];
+    for (const r of rows) {
+      const dims = r?.dimensions || [];
+      // dimensions приходят в порядке запроса: [day, sku] — но подстрахуемся
+      const dayDim = dims.find((d) => /^\d{4}-\d{2}-\d{2}/.test(String(d?.id ?? d?.name ?? '')));
+      const skuDim = dims.find((d) => String(d?.id ?? '') === String(sku));
+      if (!dayDim) continue;
+      if (dims.length > 1 && !skuDim) continue; // Ozon не отфильтровал по sku на своей стороне — отбрасываем чужие
+      const day = String(dayDim.id ?? dayDim.name).slice(0, 10);
+      const units = Number(r?.metrics?.[0]) || 0;
+      byDay.set(day, (byDay.get(day) || 0) + units);
+    }
+    if (rows.length < 1000) break;
+    offset += 1000;
+  }
+  return { byDay, sample };
+}
+
+async function lookupArticle(query) {
+  const { match, alternatives } = await findArticleBySubstring(query);
+  if (!match) {
+    if (!alternatives.length) return { text: `Не нашла в каталоге Ozon ничего похожего на «${query}»` };
+    const lines = alternatives.slice(0, 20).map((p) => `• ${p.article} — ${p.name}`);
+    return { text: [`Нашла несколько вариантов под «${query}» — уточни артикул:`, ...lines].join('\n') };
+  }
+  if (!match.sku) return { text: `${match.name} (${match.article}) — в каталоге Ozon нет SKU, продажи посчитать не могу` };
+
+  const [{ byDay, sample }, { map: stocks }] = await Promise.all([
+    fetchDailySalesForSku(match.sku, LOOKUP_DAYS),
+    fetchStocks([match.article]),
+  ]);
+
+  const soldDays = [...byDay.entries()].filter(([, units]) => units > 0).sort((a, b) => (a[0] < b[0] ? 1 : -1));
+  const s = stocks.get(match.article) || { fbo: 0, fbs: 0, total: 0 };
+  const lines = [
+    `${match.name} (${match.article})`,
+    `На складе: ФБО ${s.fbo}, ФБС ${s.fbs}`,
+  ];
+  if (!soldDays.length) {
+    lines.push(`За последние ${LOOKUP_DAYS} дней продаж не найдено (не значит «никогда» — дальше в прошлое не смотрела)`);
+  } else {
+    const [lastDay, lastUnits] = soldDays[0];
+    const daysSince = Math.round((Date.now() - new Date(lastDay).getTime()) / 86400000);
+    const totalUnits = soldDays.reduce((sum, [, u]) => sum + u, 0);
+    lines.push(`Последняя продажа: ${lastDay} (${daysSince} дней назад), ${lastUnits} шт`);
+    lines.push(`Всего продано за ${LOOKUP_DAYS} дней: ${totalUnits} шт, дней с продажами: ${soldDays.length}`);
+  }
+  if (!sample) lines.push('⚠️ Ozon не вернул ни одной строки по этому sku за весь период — возможно, метод не фильтрует по sku так, как я ожидала (см. /маржа_debug).');
+  return { text: lines.join('\n') };
+}
+
 module.exports = {
   isConfigured: fbo.isConfigured,
   readState,
@@ -436,6 +525,7 @@ module.exports = {
   dailyMessage,
   currentMessage,
   debugMessage,
+  lookupArticle,
   resolvePriceWithTier,
   priceForMargin,
   NO_SALES_DAYS,

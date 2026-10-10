@@ -1574,6 +1574,24 @@ bot.onText(/^\/маржа_debug(?:@\S+)?$/i, async (msg) => {
   }
 });
 
+// Ручной разовый вопрос про один артикул: когда он реально последний раз
+// продавался (не часть ежедневной рассылки). Аргумент — артикул целиком
+// или кусок названия/артикула; если совпадений несколько — покажет список.
+bot.onText(/^\/маржа_карточка(?:@\S+)?(?:\s+(.+))?$/i, async (msg, m) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  const query = (m && m[1] && m[1].trim()) || '';
+  if (!query) {
+    await bot.sendMessage(msg.chat.id, 'Напиши после команды артикул или кусок названия, например:\n/маржа_карточка 1КгБабаевскаяБелочкаПралине');
+    return;
+  }
+  try {
+    const { text } = await margin.lookupArticle(query);
+    await sendMargin([msg.chat.id], text);
+  } catch (err) {
+    await bot.sendMessage(msg.chat.id, `Ошибка: ${err.message}`);
+  }
+});
+
 // Было: once-per-day поллинг ("проверяем каждые 5 минут, наступило ли уже
 // 9:00 по Бали и проверяли ли мы уже сегодня"). Теперь честный периодический
 // cron на интервале HOST_DIFF_CHECK_INTERVAL_MINUTES (по умолчанию 180 —
