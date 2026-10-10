@@ -96,6 +96,7 @@ const SECTIONS = [
     buttons: [
       [{ label: '📦 Начать габариты', run: 'gabarity' }],
       [{ label: '📄 Загрузить артикулы (/z)', run: 'z' }],
+      [{ label: '💸 Маржа: истекает/не продаётся', run: 'marzha' }],
     ],
   },
   {

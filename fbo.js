@@ -442,4 +442,12 @@ module.exports = {
   currentMessage,
   dailyMessage,
   debugMessage,
+  // Экспортировано дополнительно для margin.js (алерт по марже для
+  // истекающего/не продающегося товара) — переиспользует тот же метод
+  // чтения остатков+сроков и тот же HTTP-клиент Ozon, чтобы не плодить
+  // второй способ ходить в API.
+  ozonPost,
+  extractList,
+  fetchStockRows,
+  fetchCatalog,
 };

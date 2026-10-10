@@ -37,6 +37,7 @@ const {
 const nomenclature = require('./nomenclature');
 const fbo = require('./fbo');
 const fboPlacement = require('./fboPlacement');
+const margin = require('./margin');
 const { generateVerseImageBuffer } = require('./verse/generateVerseImage');
 const {
   getVerseCount,
@@ -319,6 +320,7 @@ const MENU_RUN_HANDLERS = {
   bezgruppy: execBezgruppy,
   gabarity: execGabarity,
   z: execZ,
+  marzha: execMarzha,
   translate_on: (chatId, chatType) => execTranslateOn(chatId, chatType),
   translate_off: execTranslateOff,
   pro: execPro,
@@ -1478,6 +1480,95 @@ bot.onText(/^\/fbo_debug(?:@\S+)?$/i, async (msg) => {
   if (!isTrustedUser(msg.chat.id)) return;
   try {
     await sendFbo([msg.chat.id], await fbo.debugMessage());
+  } catch (err) {
+    await bot.sendMessage(msg.chat.id, `Ошибка: ${err.message}`);
+  }
+});
+
+// exec-обёртка для кнопки /menu (см. MENU_RUN_HANDLERS ниже) — та же логика,
+// что у голой команды /маржа, просто без проверки isTrustedUser (кнопка уже
+// выдана только доверенному чату через /menu).
+async function execMarzha(chatId) {
+  try {
+    const { text } = await margin.currentMessage();
+    await sendMargin([chatId], text);
+  } catch (err) {
+    await bot.sendMessage(chatId, `Не получилось проверить маржу 😔 ${err.message}`);
+  }
+}
+
+// Отдельная фича (margin.js): правило Алины — еда с истекающей партией,
+// которая не продаётся MARGIN_NO_SALES_DAYS (по умолчанию 30) дней, —
+// бот сам (без запроса) шлёт Елене артикул + готовую цену при марже 8%;
+// если и после этого MARGIN_STAGE2_DAYS (14) дней нет продаж — то же для
+// 2%. Цену в Озоне ставит Елена сама (ключ только на чтение). Раз в день
+// в MARGIN_HOUR по Бали, catch-up poll раз в 5 минут, как у остальных.
+const MARGIN_HOUR = 8;
+const MARGIN_RETRY_MS = 60 * 60 * 1000;
+
+function marginRecipients() {
+  const extra = String(process.env.MARGIN_EXTRA_CHAT_IDS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return [...new Set([...(myChatId ? [String(myChatId)] : []), ...extra])];
+}
+
+async function sendMargin(chatIds, text) {
+  for (const chatId of chatIds) {
+    for (const chunk of splitNomenclatureText(text)) {
+      try {
+        await bot.sendMessage(chatId, chunk, { disable_web_page_preview: true });
+      } catch (err) {
+        console.error('[margin] не удалось отправить в', chatId, err.message);
+      }
+    }
+  }
+}
+
+async function checkAndRunMargin() {
+  if (!myChatId || !margin.isConfigured()) return;
+  if (baliHour() < MARGIN_HOUR) return;
+  const today = baliDateString();
+  const state = margin.readState();
+  if (state.lastDate === today) return;
+  if (state.lastErrorAt && Date.now() - state.lastErrorAt < MARGIN_RETRY_MS) return;
+  try {
+    const { text } = await margin.dailyMessage();
+    if (text) await sendMargin(marginRecipients(), text);
+    margin.patchState({ lastDate: today, errorNotified: false, lastErrorAt: null });
+  } catch (err) {
+    console.error('[margin] ошибка проверки:', err.message);
+    const notify = !state.errorNotified;
+    margin.patchState({ lastErrorAt: Date.now(), errorNotified: true });
+    if (notify) {
+      await sendMargin(
+        [String(myChatId)],
+        `⚠️ Маржа: не получилось проверить — ${err.message}\nПовторю молча раз в час, напишу снова только когда заработает и сломается опять.`
+      );
+    }
+  }
+}
+
+cron.schedule('*/5 * * * *', checkAndRunMargin);
+
+// Ручная проверка: картина «сейчас» (не трогает каскад-состояние).
+bot.onText(/^\/маржа(?:@\S+)?$/i, async (msg) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  try {
+    const { text } = await margin.currentMessage();
+    await sendMargin([msg.chat.id], text);
+  } catch (err) {
+    console.error('[margin] ошибка ручной проверки:', err.message);
+    await bot.sendMessage(msg.chat.id, `Не получилось проверить маржу 😔 ${err.message}`);
+  }
+});
+
+// Отладка: какие кандидаты нашлись, что реально отдаёт Ozon по ценам/продажам.
+bot.onText(/^\/маржа_debug(?:@\S+)?$/i, async (msg) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  try {
+    await sendMargin([msg.chat.id], await margin.debugMessage());
   } catch (err) {
     await bot.sendMessage(msg.chat.id, `Ошибка: ${err.message}`);
   }
