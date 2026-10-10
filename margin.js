@@ -517,6 +517,36 @@ async function lookupArticle(query) {
   return { text: lines.join('\n') };
 }
 
+// ---------- масштаб: сколько артикулов не продаётся N дней ----------
+// Разведка перед тем, как согласовывать пороги с Алиной — просто счётчик,
+// без расчёта цены и без записи в каскад-снимок (save всегда false здесь).
+async function notSellingReport(days) {
+  const { candidates, totalCatalog } = await findCandidates();
+  const { map: ordered } = await fetchOrderedUnitsBySku(days);
+  const withSku = candidates.filter((c) => c.sku);
+  const noSku = candidates.length - withSku.length;
+  const notSelling = withSku.filter((c) => (ordered.get(String(c.sku)) ?? 0) === 0);
+  return { totalCatalog, withStock: candidates.length, noSku, notSelling, days };
+}
+
+function formatNotSellingReport({ totalCatalog, withStock, noSku, notSelling, days }) {
+  const lines = [
+    `🔍 Не продаётся ${days}+ дней`,
+    `Каталог: ${totalCatalog} артикулов, с остатком (ФБО+ФБС) > 0: ${withStock}${noSku ? `, без sku (не проверила): ${noSku}` : ''}`,
+    `Не продаётся ${days}+ дней: ${notSelling.length} из ${withStock}`,
+  ];
+  if (notSelling.length) {
+    const sample = notSelling.slice(0, 15).map((c) => `• ${c.article}${c.name ? ` — ${c.name.slice(0, 50)}` : ''} (ФБО ${c.fbo}, ФБС ${c.fbs})`);
+    lines.push(`Примеры:\n${sample.join('\n')}${notSelling.length > 15 ? `\n…и ещё ${notSelling.length - 15}` : ''}`);
+  }
+  return lines.join('\n\n');
+}
+
+async function notSellingMessage(days) {
+  const report = await notSellingReport(days);
+  return { text: formatNotSellingReport(report), report };
+}
+
 module.exports = {
   isConfigured: fbo.isConfigured,
   readState,
@@ -526,6 +556,7 @@ module.exports = {
   currentMessage,
   debugMessage,
   lookupArticle,
+  notSellingMessage,
   resolvePriceWithTier,
   priceForMargin,
   NO_SALES_DAYS,
