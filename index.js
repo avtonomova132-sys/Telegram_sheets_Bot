@@ -856,9 +856,13 @@ bot.onText(/\/(check|report)\b/, (msg) => {
 async function execNextWeek(chatId, { inGroup = false } = {}) {
   try {
     if (!inGroup) await bot.sendMessage(chatId, 'Собираю расписание на следующую неделю... 📊 Секунду.');
-    const result = await sendWeekCards(bot, chatId, { requireComplete: inGroup });
+    const result = await sendWeekCards(bot, chatId, { requireComplete: inGroup, reviewChatId: myChatId ? Number(myChatId) : null });
 
-    if (result.aborted === 'empty') {
+    if (result.aborted === 'needsReview') {
+      // Сомнительные эфиры: в группу ничего не ушло, Анонс с пометкой «Нужна
+      // проверка» отправлен Елене в личку (см. cardButtons.js: sendWeekCards).
+      console.log(`[next-week] нужна проверка: сомнительных карточек ${result.doubts}; в группу не отправлено`);
+    } else if (result.aborted === 'empty') {
       await bot.sendMessage(chatId, 'На следующей неделе нет запланированных сессий.');
     } else if (result.aborted === 'allCovered') {
       await bot.sendMessage(chatId, 'На следующей неделе у всех эфиров уже есть хост 🎉 — просить некого.');
@@ -931,6 +935,29 @@ if (!hostReminderEnabled) {
   });
 }
 
+// ВРЕМЕННО: исправленный Анонс на 12–18 октября — ТОЛЬКО в личку Елене (для
+// просмотра перед отправкой в группу). Напоминание не планируется (в личке
+// батч не запоминается). Маркер пишется ДО отправки. Удалить после просмотра.
+(async () => {
+  const fs = require('fs');
+  const markerPath = process.env.WEEK_PREVIEW2_MARKER_PATH || '/data/week_preview2_2026_10_12.json';
+  if (!myChatId || fs.existsSync(markerPath)) return;
+  try {
+    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
+  } catch (err) {
+    console.error('[week-preview2] не удалось записать маркер, не отправляю:', err.message);
+    return;
+  }
+  try {
+    const range = { start: new Date(Date.UTC(2026, 9, 12)), end: new Date(Date.UTC(2026, 9, 18)) };
+    const result = await sendWeekCards(bot, Number(myChatId), { requireComplete: true, range, reviewChatId: Number(myChatId) });
+    console.log(`[week-preview2] результат: aborted=${result.aborted}, без хоста=${result.open}, сомнительных карточек=${result.doubts}, справок=${result.strays}, сообщений=${result.sent}, провалены вкладки=${JSON.stringify(result.failedTabs)}`);
+    for (const c of result.cards || []) console.log(`[week-preview2] карточка: ${c}`);
+  } catch (err) {
+    console.error(`[week-preview2] ошибка (отправлено до ошибки: ${err.sentSoFar ?? 0}):`, err.message);
+  }
+})();
+
 // ===== Воскресная авторассылка =====
 // Каждое воскресенье в WEEKLY_ANNOUNCE_HOUR (по умолчанию 10:00) по Бали бот
 // сам отправляет расписание на следующую неделю карточками (шапка + одно
@@ -974,7 +1001,7 @@ async function checkAndSendWeeklyAnnounce() {
   const target = groupId || myChatId;
 
   try {
-    const result = await sendWeekCards(bot, target, { requireComplete: Boolean(groupId) });
+    const result = await sendWeekCards(bot, target, { requireComplete: Boolean(groupId), reviewChatId: myChatId ? Number(myChatId) : null });
 
     if (result.aborted === 'failedTabs') {
       if (weeklyAnnounceWarnedDate !== today) {
@@ -987,6 +1014,11 @@ async function checkAndSendWeeklyAnnounce() {
     }
 
     markWeeklyAnnounceSent(today);
+
+    if (result.aborted === 'needsReview') {
+      notifyElena('⚠️ Воскресная рассылка в группу НЕ ушла: в расписании есть сомнительные эфиры. Анонс с пометкой «Нужна проверка» и списком этих эфиров отправлен тебе в личку.');
+      return;
+    }
 
     if (result.aborted === 'empty') {
       notifyElena('На следующей неделе нет запланированных сессий — воскресная рассылка не отправлялась.');

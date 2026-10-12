@@ -34,7 +34,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { escapeHtml, formatCommunityTag, getNextWeekRange, collectWeekEvents, buildWeekCardParts, isPastAzStart } = require('./report');
+const { escapeHtml, formatCommunityTag, getNextWeekRange, collectWeekEvents, buildWeekCardParts, isPastAzStart, describeDoubt, chunkMessage } = require('./report');
 
 // Telegram allows roughly 20 messages/minute into one group — a week is
 // ~25 cards, so group sends are paced ~3.2s apart (a burst gets HTTP 429).
@@ -223,7 +223,7 @@ async function sendCard(bot, chatId, { titleLine, dateLine, tabUrl = null, when 
 // `range` overrides the default (next week) — e.g. the current week on a
 // Monday. Sessions whose Arizona start has already passed are left out: asking
 // for a host for something that already happened would be misleading.
-async function sendWeekCards(bot, chatId, { now = new Date(), requireComplete = false, range = getNextWeekRange(now) } = {}) {
+async function sendWeekCards(bot, chatId, { now = new Date(), requireComplete = false, range = getNextWeekRange(now), reviewChatId = null } = {}) {
   const collected = await collectWeekEvents(range);
   const failedTabs = collected.failedTabs;
   const events = collected.events.filter((e) => e.hasHost || !isPastAzStart(e, now));
@@ -231,13 +231,65 @@ async function sendWeekCards(bot, chatId, { now = new Date(), requireComplete = 
   if (events.length === 0) return { aborted: 'empty', failedTabs, events: 0, sent: 0 };
   if (requireComplete && failedTabs.length > 0) return { aborted: 'failedTabs', failedTabs, events: events.length, sent: 0 };
 
-  return postWeekCards(bot, chatId, events, range, failedTabs);
+  // Anything about a card that a person should look at first (the sheet's date
+  // column disagrees with the title, an unreadable date, odd times). Such an
+  // announce NEVER goes to a group by itself: the whole thing is sent to
+  // `reviewChatId` (Elena's private chat) with a "needs checking" note instead.
+  const cardDoubts = events.filter((e) => !e.hasHost && !isPastAzStart(e, now) && (e.doubts || []).length > 0);
+  const strays = collected.strays || [];
+  const review = { doubts: cardDoubts, strays, blocked: false };
+
+  if (cardDoubts.length > 0 && chatId < 0) {
+    if (!reviewChatId) return { aborted: 'needsReview', failedTabs, events: events.length, doubts: cardDoubts.length, strays: strays.length, sent: 0 };
+    review.blocked = true;
+    const result = await postWeekCards(bot, reviewChatId, events, range, failedTabs, review);
+    return { ...result, aborted: 'needsReview', doubts: cardDoubts.length, strays: strays.length, reviewSent: true };
+  }
+
+  const result = await postWeekCards(bot, chatId, events, range, failedTabs, chatId > 0 ? review : null);
+  // A group announce with no doubtful cards but a stray title date: tell Elena
+  // privately (informational), nothing is added to the group message.
+  if (chatId < 0 && strays.length > 0 && reviewChatId) {
+    await withRetry(() => bot.sendMessage(reviewChatId, strayNote(strays), { parse_mode: 'HTML', disable_web_page_preview: true })).catch(() => {});
+  }
+  return { ...result, doubts: cardDoubts.length, strays: strays.length };
+}
+
+function strayNote(strays) {
+  return [
+    'ℹ️ <b>Требует проверки (не блокирует Анонс)</b>',
+    'Эти эфиры без хоста названием «привязаны» к этой неделе, но по колонке Data стоят в другой день — в Анонс они НЕ включены (дата берётся только из колонки Data):',
+    '',
+    strays.map(describeDoubt).join('\n\n'),
+  ].join('\n');
+}
+
+// The note put in front of an announce that has something to check (private
+// chat only). Split to respect Telegram's 4096-character limit.
+function reviewNoteChunks({ doubts, strays, blocked }) {
+  const parts = [];
+  if (doubts.length > 0) {
+    parts.push(
+      blocked
+        ? '⚠️ <b>Нужна проверка</b> — Анонс в группу НЕ отправлен. Ниже он показан так, как выглядел бы; есть сомнительные эфиры:'
+        : '⚠️ <b>Нужна проверка</b> — если бы это была автоматическая отправка, в группу она бы не ушла. Сомнительные эфиры:',
+      '',
+      doubts.map(describeDoubt).join('\n\n')
+    );
+  }
+  if (strays.length > 0) {
+    if (parts.length > 0) parts.push('');
+    parts.push(strayNote(strays));
+  }
+  return chunkMessage(parts.join('\n'), 3900);
 }
 
 // The sending half of sendWeekCards, on an already-collected event list
 // (split out so a test can post a hand-adjusted list through the exact same
-// code path).
-async function postWeekCards(bot, chatId, events, range, failedTabs = []) {
+// code path). `review` (private chats only): {doubts, strays, blocked} — a
+// "needs checking" note goes out first when there is anything in it.
+async function postWeekCards(bot, chatId, events, range, failedTabs = [], review = null) {
+
   const { header, cards, closing, openCount } = buildWeekCardParts(events, range);
   // Every event of the week already has a host — nothing to ask for.
   if (openCount === 0) return { aborted: 'allCovered', failedTabs, events: events.length, sent: 0 };
@@ -248,6 +300,13 @@ async function postWeekCards(bot, chatId, events, range, failedTabs = []) {
   const cardKeys = [];
 
   try {
+    if (review && (review.doubts.length > 0 || review.strays.length > 0)) {
+      for (const chunk of reviewNoteChunks(review)) {
+        await withRetry(() => bot.sendMessage(chatId, chunk, { parse_mode: 'HTML', disable_web_page_preview: true }));
+        sent++;
+        await sleep(gapMs);
+      }
+    }
     // No message_thread_id is ever set, so in a forum group everything lands
     // in the default "General" topic; the header's reply is kept so callers
     // can report which topic it actually landed in.

@@ -339,10 +339,14 @@ const MONTHS = {
   jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
 };
 
-// The "Data" column's formatting is all over the place between tabs (day
-// names, multi-line notes, missing years on continuation rows). Session
-// titles almost always end with "(Mon DD, YYYY)" and are far more
-// consistent, so we try that first and only fall back to the date cell.
+// RULE (Elena, 2026-10-12): the date of a session comes ONLY from the "Data"
+// column; the date in brackets at the end of a title — "(Mon DD, YYYY)" — is
+// NEVER used to compute it, because titles go stale (ACI 18 sessions carried
+// "(Oct 18, 2026)" while the sheet put them on Oct 25 and the Announce listed
+// them a week early). The title date is still read (parseDateFromText) but only
+// to CROSS-CHECK: a disagreement is recorded on the event as a "doubt" (see
+// parseTabEvents / describeDoubt) so the Announce can ask for a human look.
+// parseDateFromText reads "Mon DD, YYYY" / "DD Mon YYYY" with an explicit year.
 function parseDateFromText(text) {
   if (!text) return null;
   const clean = text.replace(/\s+/g, ' ').trim();
@@ -360,6 +364,49 @@ function parseDateFromText(text) {
   }
 
   return null;
+}
+
+const WEEKDAY_TOKENS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+
+// Reads the date out of a "Data" cell. Besides the explicit-year forms it
+// copes with cells that have NO year ("Thu, 24 September", "DAY 1 FEB 19
+// (Thursday)"): the year is inferred from the weekday name when there is one
+// (the only year within ±1 of `baseYear` in which that day-of-month falls on
+// that weekday), otherwise `baseYear` is assumed (yearGuessed). Returns
+// { date, weekdayConflict, yearGuessed } or null when no date can be read.
+function parseDataCellDate(text, baseYear) {
+  if (!text) return null;
+  const clean = String(text).replace(/\s+/g, ' ').trim();
+  if (!clean) return null;
+
+  const wd = clean.match(/\b(sun|mon|tue|wed|thu|fri|sat)[a-z]*\b/i);
+  const weekday = wd ? WEEKDAY_TOKENS.indexOf(wd[1].toLowerCase()) : -1;
+
+  const explicit = parseDateFromText(clean);
+  if (explicit) {
+    return { date: explicit, weekdayConflict: weekday >= 0 && explicit.getUTCDay() !== weekday, yearGuessed: false };
+  }
+
+  const candidates = [];
+  const addCandidate = (day, monthWord) => {
+    const mon = MONTHS[monthWord.slice(0, 3).toLowerCase()];
+    if (mon !== undefined && day >= 1 && day <= 31 && !candidates.some((c) => c.mon === mon && c.day === day)) candidates.push({ day, mon });
+  };
+  for (const m of clean.matchAll(/(\d{1,2})\s+([A-Za-z]{3,9})\b/g)) addCandidate(Number(m[1]), m[2]);
+  for (const m of clean.matchAll(/([A-Za-z]{3,9})\.?\s+(\d{1,2})\b/g)) addCandidate(Number(m[2]), m[1]);
+  if (candidates.length === 0) return null;
+
+  const years = [baseYear, baseYear + 1, baseYear - 1];
+  if (weekday >= 0) {
+    for (const c of candidates) {
+      for (const y of years) {
+        const d = new Date(Date.UTC(y, c.mon, c.day));
+        if (d.getUTCMonth() === c.mon && d.getUTCDay() === weekday) return { date: d, weekdayConflict: false, yearGuessed: false };
+      }
+    }
+  }
+  const c = candidates[0];
+  return { date: new Date(Date.UTC(baseYear, c.mon, c.day)), weekdayConflict: weekday >= 0, yearGuessed: weekday < 0 };
 }
 
 // Returns minutes-since-midnight, tolerant of "06:30", "7:30 AM" and
@@ -474,9 +521,12 @@ function isExcludedProgramEvent(title, tabName = '') {
   });
 }
 
+const isoDay = (d) => d.toISOString().slice(0, 10);
+
 function parseTabEvents(tabName, rows) {
   const segments = findHeaderSegments(rows, tabName);
   const events = [];
+  let tabYear = null; // last year seen in an explicit Data date — base for year-less cells
 
   for (const seg of segments) {
     let lastKnownDate = null;
@@ -498,14 +548,39 @@ function parseTabEvents(tabName, rows) {
       // after the main class) often doesn't repeat the date, only the time,
       // so a dateless-but-timed row still falls back to whatever date the
       // segment most recently saw.
-      let date = parseDateFromText(title) || parseDateFromText(row[seg.dateCol]);
-      if (date) {
+      // The date comes ONLY from the Data column (see parseDateFromText); the
+      // title's date is just cross-checked below.
+      const doubts = [];
+      const dateCell = normalize(row[seg.dateCol] || '');
+      const baseYear = (lastKnownDate && lastKnownDate.getUTCFullYear()) || tabYear || new Date().getUTCFullYear();
+      const cellInfo = parseDataCellDate(dateCell, baseYear);
+      let date = null;
+      if (cellInfo) {
+        date = cellInfo.date;
         lastKnownDate = date;
+        tabYear = date.getUTCFullYear();
+        if (cellInfo.weekdayConflict) doubts.push({ code: 'weekday-mismatch', note: `в колонке Data «${dateCell}» — день недели не совпадает с числом` });
+        if (cellInfo.yearGuessed) doubts.push({ code: 'year-guessed', note: `в колонке Data «${dateCell}» нет года — принят ${date.getUTCFullYear()}` });
       } else if (azStartMin !== null && azEndMin !== null && lastKnownDate) {
         date = lastKnownDate;
+        if (dateCell) doubts.push({ code: 'date-unreadable', note: `колонка Data «${dateCell}» не читается — взята дата предыдущей строки ${isoDay(date)}` });
       }
       if (!date || azStartMin === null || azEndMin === null) continue;
       if (isExcludedProgramEvent(title, seg.programLabel)) continue;
+
+      const titleDate = parseDateFromText(title);
+      if (titleDate && titleDate.getTime() !== date.getTime()) {
+        doubts.push({
+          code: 'date-mismatch',
+          note: `по колонке Data эфир ${isoDay(date)}, а в названии указано ${isoDay(titleDate)} — верна дата из колонки Data`,
+        });
+      }
+      // A session may run past midnight (23:00–01:00), so the length is taken
+      // modulo a day; zero or more than 10 hours means a typo in the times.
+      const durationMin = (((azEndMin - azStartMin) % 1440) + 1440) % 1440;
+      if (durationMin === 0 || durationMin > 600) {
+        doubts.push({ code: 'time-odd', note: `непонятное время в таблице: начало ${formatPoint24h(azStartMin)}, конец ${formatPoint24h(azEndMin)} (AZ)` });
+      }
 
       const coHost = seg.coHostCol !== -1 ? normalize(row[seg.coHostCol]) : '';
 
@@ -525,6 +600,8 @@ function parseTabEvents(tabName, rows) {
         coHost,
         hasHost,
         date,
+        titleDate, // for cross-checking only — never used as the event's date
+        doubts, // [{code, note}] — anything about this row that needs a human look
         azStartMin,
         azEndMin,
         mskStartMin: mskStart.min,
@@ -662,7 +739,23 @@ async function collectWeekEvents(range) {
     .filter((e) => inRange(e.date, range.start, range.end))
     .sort((a, b) => a.date - b.date || (a.azStartMin ?? 0) - (b.azStartMin ?? 0));
 
-  return { events, failedTabs, debugCounts };
+  // Sessions without a host whose TITLE names a day of this week but whose
+  // Data column puts them outside it (the ACI 18 case). They are not in
+  // `events` — the Data column decides — but they are reported so a person
+  // can see that the sheet disagrees with itself.
+  const strays = allEvents
+    .filter((e) => !e.hasHost && e.titleDate && inRange(e.titleDate, range.start, range.end) && !inRange(e.date, range.start, range.end))
+    .sort((a, b) => a.date - b.date || (a.azStartMin ?? 0) - (b.azStartMin ?? 0));
+
+  return { events, failedTabs, debugCounts, strays };
+}
+
+// One "needs checking" entry as HTML: where the session is, what the sheet
+// says, and what looks wrong with it.
+function describeDoubt(e) {
+  const when = `AZ ${formatDDMM(e.date)}, ${formatRange24h(e.azStartMin, e.azEndMin)}`;
+  const notes = (e.doubts || []).map((d) => `   – ${escapeHtml(d.note)}`);
+  return [`• <b>${escapeHtml(e.tabName)}</b> — ${escapeHtml(e.title || '(без названия)')}`, `   по таблице: ${when}${e.hasHost ? '' : ', хоста нет'}`, ...notes].join('\n');
 }
 
 function formatDebugCounts(debugCounts, range) {
@@ -1857,6 +1950,7 @@ module.exports = {
   escapeHtml,
   formatCommunityTag,
   isPastAzStart,
+  describeDoubt,
   formatProgramNameHtml,
   csvUrl,
   fetchWithTimeout,
