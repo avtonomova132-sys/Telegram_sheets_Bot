@@ -34,7 +34,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { escapeHtml, formatCommunityTag, getNextWeekRange, collectWeekEvents, buildWeekCardParts } = require('./report');
+const { escapeHtml, formatCommunityTag, getNextWeekRange, collectWeekEvents, buildWeekCardParts, isPastAzStart } = require('./report');
 
 // Telegram allows roughly 20 messages/minute into one group — a week is
 // ~25 cards, so group sends are paced ~3.2s apart (a burst gets HTTP 429).
@@ -77,7 +77,12 @@ function loadHostCandidates() {
 // in the reminder) — the group has just one real host, Mikhail. Applies only
 // to cards sent after this was added; to switch it off, empty this object
 // (cards already sent keep the list they were created with).
-const TEMP_EXTRA_HOSTS = { '-5172293748': ['@Elena_NangTong_Bali'] };
+// Same for Elena's own private chat with the bot (chat id = her user id), where
+// she previews an announce before it goes to the group.
+const TEMP_EXTRA_HOSTS = {
+  '-5172293748': ['@Elena_NangTong_Bali'],
+  ...(process.env.MY_CHAT_ID ? { [String(process.env.MY_CHAT_ID)]: ['@Elena_NangTong_Bali'] } : {}),
+};
 
 function candidatesFor(chatId, base = loadHostCandidates()) {
   const extra = (TEMP_EXTRA_HOSTS[String(chatId)] || []).filter((t) => !base.some((b) => normUser(b) === normUser(t)));
@@ -215,9 +220,13 @@ async function sendCard(bot, chatId, { titleLine, dateLine, tabUrl = null, when 
 // requireComplete: when a spreadsheet tab failed to load, post NOTHING
 // (returns aborted:'failedTabs') instead of publishing a partial schedule
 // to a group. On a send error midway the thrown error carries `sentSoFar`.
-async function sendWeekCards(bot, chatId, { now = new Date(), requireComplete = false } = {}) {
-  const range = getNextWeekRange(now);
-  const { events, failedTabs } = await collectWeekEvents(range);
+// `range` overrides the default (next week) — e.g. the current week on a
+// Monday. Sessions whose Arizona start has already passed are left out: asking
+// for a host for something that already happened would be misleading.
+async function sendWeekCards(bot, chatId, { now = new Date(), requireComplete = false, range = getNextWeekRange(now) } = {}) {
+  const collected = await collectWeekEvents(range);
+  const failedTabs = collected.failedTabs;
+  const events = collected.events.filter((e) => e.hasHost || !isPastAzStart(e, now));
 
   if (events.length === 0) return { aborted: 'empty', failedTabs, events: 0, sent: 0 };
   if (requireComplete && failedTabs.length > 0) return { aborted: 'failedTabs', failedTabs, events: events.length, sent: 0 };
@@ -265,7 +274,9 @@ async function postWeekCards(bot, chatId, events, range, failedTabs = []) {
     await withRetry(() => bot.sendMessage(chatId, closing));
     sent++;
     await sleep(gapMs);
-    const tagLine = candidatesFor(chatId)
+    // Tags: always the real hosts only (the temporary "Elena is a host" test
+    // mode counts her on the cards but must never end up in this line).
+    const tagLine = loadHostCandidates()
       .map((t) => escapeHtml(formatCommunityTag(t)))
       .join(' ');
     await withRetry(() => bot.sendMessage(chatId, tagLine, { parse_mode: 'HTML' }));
@@ -280,6 +291,7 @@ async function postWeekCards(bot, chatId, events, range, failedTabs = []) {
     failedTabs,
     events: events.length,
     open: openCount,
+    cards: cards.map((c) => `${c.titleLine} | ${c.dateLine}`),
     sent,
     threadId: headerMessage && headerMessage.message_thread_id != null ? headerMessage.message_thread_id : null,
   };
@@ -672,6 +684,18 @@ async function refreshReminders(bot, store, batch) {
   }
 }
 
+// For diagnostics (logged by a one-shot): which announces the bot remembers.
+function batchSummaries() {
+  const store = readRawJson({ messages: {}, batches: [] });
+  return (store.batches || []).map((b) => ({
+    chatId: b.chatId,
+    sentAt: new Date(b.sentAt).toISOString(),
+    cards: b.cardKeys.length,
+    eventDates: b.cardKeys.map((k) => (store.messages[k] && store.messages[k].event ? store.messages[k].event.dateIso.slice(0, 10) : '?')),
+    outcome: b.outcome,
+  }));
+}
+
 // Called every few minutes (catch-up style: a missed tick or a restart just
 // sends it on the next one). Returns any send errors so the caller can tell
 // Elena; an ordinary "nothing to remind about" is not an error.
@@ -735,6 +759,7 @@ module.exports = {
   handleCardCallback,
   syncCardsWithSheet,
   refreshCardsAfterHostListChange,
+  batchSummaries,
   checkAndSendAnnounceReminders,
   sendReminderNow,
   TAKE_CALLBACK,
