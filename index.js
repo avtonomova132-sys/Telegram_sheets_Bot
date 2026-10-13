@@ -938,8 +938,7 @@ if (!hostReminderEnabled) {
 // ===== Страж акций Ozon (см. actionsGuard.js) =====
 // /акции — только чтение: что сейчас в акциях от Ozon. Убирает товары только
 // после нажатия «Убрать» (или сразу, если задано ACTIONS_AUTO_REMOVE=1).
-// Ежедневная проверка в ACTIONS_GUARD_HOUR (по умолчанию 9:00 Бали), повтор
-// раз в час при ошибке — одно сообщение об ошибке, дальше тихо.
+// Проверка раз в 4 часа (ACTIONS_CHECK_HOURS), ошибка — одно сообщение и ретрай раз в час.
 const actionsGuard = require('./actionsGuard');
 const ACTIONS_GUARD_HOUR = Number(process.env.ACTIONS_GUARD_HOUR) || 9;
 const ACTIONS_REMOVE_CB = 'ag:remove';
@@ -1006,16 +1005,34 @@ bot.on('callback_query', async (query) => {
   }
 });
 
-async function checkActionsDaily() {
+// Проверка раз в ACTIONS_CHECK_HOURS (по умолчанию 4) часа. Тишина, пока чисто;
+// о новом товаре в акциях пишет сразу (повторно о том же наборе — нет);
+// раз в день в ACTIONS_GUARD_HOUR — короткое «проверка работает».
+async function checkActionsPeriodic() {
   if (!actionsGuard.isConfigured() || !myChatId || actionsGuardRunning) return;
-  const today = baliDateString();
+  const everyMs = (Number(process.env.ACTIONS_CHECK_HOURS) || 4) * 60 * 60 * 1000;
   const state = actionsGuard.getState();
-  if (state.lastCheckDate === today || baliHour() < ACTIONS_GUARD_HOUR) return;
-  if (state.lastErrorAt && Date.now() - state.lastErrorAt < 60 * 60 * 1000) return;
+  const now = Date.now();
+  if (state.lastCheckAt && now - state.lastCheckAt < everyMs) return;
+  if (state.lastErrorAt && now - state.lastErrorAt < 60 * 60 * 1000) return;
   actionsGuardRunning = true;
   try {
-    await runActionsCheck(myChatId, { notifyIfEmpty: false });
-    actionsGuard.patchState({ lastCheckDate: today, errorNotified: false, lastErrorAt: null });
+    const snap = await actionsGuard.snapshot();
+    const ids = snap.flatMap((a) => a.productIds.map((id) => `${a.id}:${id}`)).sort();
+    const key = ids.join(',');
+    const patch = { lastCheckAt: now, errorNotified: false, lastErrorAt: null };
+    if (ids.length && key !== state.lastAlertKey) {
+      await bot.sendMessage(myChatId, `⚠️ ${actionsGuard.formatSnapshot(snap)}\n\nOzon не даёт убрать товары через ключ — уберите вручную в кабинете.`);
+      patch.lastAlertKey = key;
+    } else if (!ids.length) {
+      patch.lastAlertKey = '';
+    }
+    const today = baliDateString();
+    if (state.lastCheckDate !== today && baliHour() >= ACTIONS_GUARD_HOUR) {
+      if (!ids.length) await bot.sendMessage(myChatId, '✅ Акции Ozon: проверка работает, товаров в акциях нет.');
+      patch.lastCheckDate = today;
+    }
+    actionsGuard.patchState(patch);
   } catch (err) {
     console.error('[actions-guard] ошибка проверки:', err.message);
     if (!state.errorNotified) {
@@ -1027,7 +1044,7 @@ async function checkActionsDaily() {
   }
 }
 
-cron.schedule('*/5 * * * *', checkActionsDaily);
+cron.schedule('*/5 * * * *', checkActionsPeriodic);
 
 // ===== Воскресная авторассылка =====
 // Каждое воскресенье в WEEKLY_ANNOUNCE_HOUR (по умолчанию 10:00) по Бали бот
