@@ -34,7 +34,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { escapeHtml, formatCommunityTag, getNextWeekRange, collectWeekEvents, buildWeekCardParts, isPastAzStart, describeDoubt, chunkMessage } = require('./report');
+const { escapeHtml, formatCommunityTag, getNextWeekRange, collectWeekEvents, buildWeekCardParts, isPastAzStart, describeDoubt, formatRange24h } = require('./report');
 
 // Telegram allows roughly 20 messages/minute into one group — a week is
 // ~25 cards, so group sends are paced ~3.2s apart (a burst gets HTTP 429).
@@ -223,7 +223,7 @@ async function sendCard(bot, chatId, { titleLine, dateLine, tabUrl = null, when 
 // `range` overrides the default (next week) — e.g. the current week on a
 // Monday. Sessions whose Arizona start has already passed are left out: asking
 // for a host for something that already happened would be misleading.
-async function sendWeekCards(bot, chatId, { now = new Date(), requireComplete = false, range = getNextWeekRange(now), reviewChatId = null } = {}) {
+async function sendWeekCards(bot, chatId, { now = new Date(), requireComplete = false, range = getNextWeekRange(now), reviewChatId = null, sendChecklist = false } = {}) {
   const collected = await collectWeekEvents(range);
   const failedTabs = collected.failedTabs;
   const events = collected.events.filter((e) => e.hasHost || !isPastAzStart(e, now));
@@ -231,65 +231,86 @@ async function sendWeekCards(bot, chatId, { now = new Date(), requireComplete = 
   if (events.length === 0) return { aborted: 'empty', failedTabs, events: 0, sent: 0 };
   if (requireComplete && failedTabs.length > 0) return { aborted: 'failedTabs', failedTabs, events: events.length, sent: 0 };
 
-  // Anything about a card that a person should look at first (the sheet's date
-  // column disagrees with the title, an unreadable date, odd times). Such an
-  // announce NEVER goes to a group by itself: the whole thing is sent to
-  // `reviewChatId` (Elena's private chat) with a "needs checking" note instead.
-  const cardDoubts = events.filter((e) => !e.hasHost && !isPastAzStart(e, now) && (e.doubts || []).length > 0);
+  const openEvents = events.filter((e) => !e.hasHost); // = the cards, in order
   const strays = collected.strays || [];
-  const review = { doubts: cardDoubts, strays, blocked: false };
+  const skippedOff = collected.skippedOff || [];
 
-  if (cardDoubts.length > 0 && chatId < 0) {
+  // Anything odd about a card that a person should look at first (the sheet's
+  // date column disagrees with the title, an unreadable date, strange times).
+  // Such an announce NEVER goes to a group by itself: the very same announce is
+  // sent to `reviewChatId` (Elena's private chat) with the odd sessions listed
+  // at the end. With nothing odd, no such block is added at all.
+  const cardDoubts = openEvents.filter((e) => (e.doubts || []).length > 0);
+  const review = cardDoubts.length > 0 ? { doubts: cardDoubts, blocked: false } : null;
+
+  let result;
+  if (review && chatId < 0) {
     if (!reviewChatId) return { aborted: 'needsReview', failedTabs, events: events.length, doubts: cardDoubts.length, strays: strays.length, sent: 0 };
     review.blocked = true;
-    const result = await postWeekCards(bot, reviewChatId, events, range, failedTabs, review);
-    return { ...result, aborted: 'needsReview', doubts: cardDoubts.length, strays: strays.length, reviewSent: true };
+    result = { ...(await postWeekCards(bot, reviewChatId, events, range, failedTabs, review)), aborted: 'needsReview', reviewSent: true };
+  } else {
+    result = await postWeekCards(bot, chatId, events, range, failedTabs, chatId > 0 ? review : null);
   }
 
-  const result = await postWeekCards(bot, chatId, events, range, failedTabs, chatId > 0 ? review : null);
-  // A group announce with no doubtful cards but a stray title date: tell Elena
-  // privately (informational), nothing is added to the group message.
-  if (chatId < 0 && strays.length > 0 && reviewChatId) {
-    await withRetry(() => bot.sendMessage(reviewChatId, strayNote(strays), { parse_mode: 'HTML', disable_web_page_preview: true })).catch(() => {});
+  // Private extras for Elena (never into a group): the check-list she asked
+  // for, or — for a normal group send — a note about sessions that were left
+  // out because only their title (not the Data column) points at this week.
+  if (reviewChatId && !result.aborted) {
+    if (sendChecklist) {
+      await withRetry(() => bot.sendMessage(reviewChatId, checklistText(openEvents, skippedOff, strays), { parse_mode: 'HTML', disable_web_page_preview: true }));
+    } else if (chatId < 0 && strays.length > 0) {
+      await withRetry(() => bot.sendMessage(reviewChatId, strayNote(strays), { parse_mode: 'HTML', disable_web_page_preview: true })).catch(() => {});
+    }
+  } else if (reviewChatId && sendChecklist) {
+    await withRetry(() => bot.sendMessage(reviewChatId, checklistText(openEvents, skippedOff, strays), { parse_mode: 'HTML', disable_web_page_preview: true }));
   }
-  return { ...result, doubts: cardDoubts.length, strays: strays.length };
+  return { ...result, doubts: cardDoubts.length, strays: strays.length, skippedOff: skippedOff.length };
 }
+
+const ddmm = (d) => `${String(d.getUTCDate()).padStart(2, '0')}.${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+const eventWhen = (e) => `${ddmm(e.date)}, ${formatRange24h(e.azStartMin, e.azEndMin)} AZ`;
+const eventLine = (e) => `<b>${escapeHtml(e.tabName)}</b> — «${escapeHtml(e.title || 'без названия')}», ${eventWhen(e)}`;
 
 function strayNote(strays) {
   return [
-    'ℹ️ <b>Требует проверки (не блокирует Анонс)</b>',
-    'Эти эфиры без хоста названием «привязаны» к этой неделе, но по колонке Data стоят в другой день — в Анонс они НЕ включены (дата берётся только из колонки Data):',
+    'ℹ️ <b>Для сведения</b>',
+    'Эти эфиры без хоста названием «привязаны» к этой неделе, но в колонке Data стоят в другой день — в Анонс они НЕ включены (дата берётся только из колонки Data):',
     '',
     strays.map(describeDoubt).join('\n\n'),
   ].join('\n');
 }
 
-// The note put in front of an announce that has something to check (private
-// chat only). Split to respect Telegram's 4096-character limit.
-function reviewNoteChunks({ doubts, strays, blocked }) {
-  const parts = [];
-  if (doubts.length > 0) {
-    parts.push(
-      blocked
-        ? '⚠️ <b>Нужна проверка</b> — Анонс в группу НЕ отправлен. Ниже он показан так, как выглядел бы; есть сомнительные эфиры:'
-        : '⚠️ <b>Нужна проверка</b> — если бы это была автоматическая отправка, в группу она бы не ушла. Сомнительные эфиры:',
-      '',
-      doubts.map(describeDoubt).join('\n\n')
-    );
-  }
+// The short check-list message: every session in the announce with its tab,
+// title and date/time from the Data column, the sessions skipped because of an
+// "off" mark, and (if any) the title-only strays.
+function checklistText(openEvents, skippedOff, strays) {
+  const lines = ['📋 <b>Список проверки</b> (дата и время — по колонке Data, время AZ)', '', `<b>Эфиры в Анонсе (${openEvents.length}):</b>`];
+  openEvents.forEach((e, i) => lines.push(`${i + 1}. ${eventLine(e)}`));
+  lines.push('', skippedOff.length > 0 ? `<b>Пропущены — пометка «off» (${skippedOff.length}):</b>` : '<b>Пропущены — пометка «off»:</b> нет');
+  skippedOff.forEach((e) => lines.push(`• ${eventLine(e)}`));
   if (strays.length > 0) {
-    if (parts.length > 0) parts.push('');
-    parts.push(strayNote(strays));
+    lines.push('', `<b>Не включены — в названии дата этой недели, а в колонке Data другая (${strays.length}):</b>`);
+    strays.forEach((e) => lines.push(`• ${eventLine(e)}`));
   }
-  return chunkMessage(parts.join('\n'), 3900);
+  return lines.join('\n');
+}
+
+// The closing block of an announce that has odd sessions (private chat only).
+function reviewNoteText({ doubts, blocked }) {
+  return [
+    '⚠️ <b>Нужна проверка</b> — эти эфиры показались мне странными:',
+    '',
+    doubts.map(describeDoubt).join('\n\n'),
+    '',
+    blocked ? 'Это тот же Анонс, который ушёл бы в группу, — в группу он НЕ отправлен.' : 'С такими эфирами автоматическая отправка в группу не сработала бы.',
+  ].join('\n');
 }
 
 // The sending half of sendWeekCards, on an already-collected event list
 // (split out so a test can post a hand-adjusted list through the exact same
-// code path). `review` (private chats only): {doubts, strays, blocked} — a
-// "needs checking" note goes out first when there is anything in it.
+// code path). `review` (private chats only): {doubts, blocked} — the odd
+// sessions are listed in a last message when there are any.
 async function postWeekCards(bot, chatId, events, range, failedTabs = [], review = null) {
-
   const { header, cards, closing, openCount } = buildWeekCardParts(events, range);
   // Every event of the week already has a host — nothing to ask for.
   if (openCount === 0) return { aborted: 'allCovered', failedTabs, events: events.length, sent: 0 };
@@ -300,13 +321,6 @@ async function postWeekCards(bot, chatId, events, range, failedTabs = [], review
   const cardKeys = [];
 
   try {
-    if (review && (review.doubts.length > 0 || review.strays.length > 0)) {
-      for (const chunk of reviewNoteChunks(review)) {
-        await withRetry(() => bot.sendMessage(chatId, chunk, { parse_mode: 'HTML', disable_web_page_preview: true }));
-        sent++;
-        await sleep(gapMs);
-      }
-    }
     // No message_thread_id is ever set, so in a forum group everything lands
     // in the default "General" topic; the header's reply is kept so callers
     // can report which topic it actually landed in.
@@ -340,6 +354,12 @@ async function postWeekCards(bot, chatId, events, range, failedTabs = [], review
       .join(' ');
     await withRetry(() => bot.sendMessage(chatId, tagLine, { parse_mode: 'HTML' }));
     sent++;
+    // Last: the odd sessions, in plain words — only when there are any.
+    if (review) {
+      await sleep(gapMs);
+      await withRetry(() => bot.sendMessage(chatId, reviewNoteText(review), { parse_mode: 'HTML', disable_web_page_preview: true }));
+      sent++;
+    }
   } catch (err) {
     err.sentSoFar = sent;
     throw err;

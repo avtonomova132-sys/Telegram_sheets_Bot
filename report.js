@@ -523,9 +523,27 @@ function isExcludedProgramEvent(title, tabName = '') {
 
 const isoDay = (d) => d.toISOString().slice(0, 10);
 
+// RULE (Elena, 2026-10-13): a row with the word "off" in ANY of its text cells
+// (title column or any other; any case; as a whole word) is a day with NO
+// broadcast, e.g. "off" in the title of the Oct 12 Xuanzang's Tower slots. Such a
+// row is not an event: it never reaches the Announce, /check, the counters, or
+// the host diff. Only the TEXT counts — never cell colours. Hidden / grouped
+// rows are in the CSV export as well, so they are read like any other. Skipped
+// rows are kept on `events.offEvents` so a person can see what was left out.
+// Links are ignored (a URL containing "/off/" is not a note).
+const OFF_WORD = /(^|[^A-Za-z0-9])off([^A-Za-z0-9]|$)/i;
+
+function rowMarkedOff(row) {
+  return row.some((cell) => {
+    const text = normalize(cell);
+    return text.length > 0 && !/^https?:\/\//i.test(text) && OFF_WORD.test(text);
+  });
+}
+
 function parseTabEvents(tabName, rows) {
   const segments = findHeaderSegments(rows, tabName);
   const events = [];
+  const offEvents = [];
   let tabYear = null; // last year seen in an explicit Data date — base for year-less cells
 
   for (const seg of segments) {
@@ -559,11 +577,11 @@ function parseTabEvents(tabName, rows) {
         date = cellInfo.date;
         lastKnownDate = date;
         tabYear = date.getUTCFullYear();
-        if (cellInfo.weekdayConflict) doubts.push({ code: 'weekday-mismatch', note: `в колонке Data «${dateCell}» — день недели не совпадает с числом` });
-        if (cellInfo.yearGuessed) doubts.push({ code: 'year-guessed', note: `в колонке Data «${dateCell}» нет года — принят ${date.getUTCFullYear()}` });
+        if (cellInfo.weekdayConflict) doubts.push({ code: 'weekday-mismatch', note: `в ячейке даты «${dateCell}» число и день недели не совпадают` });
+        if (cellInfo.yearGuessed) doubts.push({ code: 'year-guessed', note: `в ячейке даты «${dateCell}» нет ни года, ни дня недели — принял ${date.getUTCFullYear()} год` });
       } else if (azStartMin !== null && azEndMin !== null && lastKnownDate) {
         date = lastKnownDate;
-        if (dateCell) doubts.push({ code: 'date-unreadable', note: `колонка Data «${dateCell}» не читается — взята дата предыдущей строки ${isoDay(date)}` });
+        if (dateCell) doubts.push({ code: 'date-unreadable', note: `ячейку даты «${dateCell}» не удалось прочитать — взял дату предыдущей строки (${formatDDMM(date)})` });
       }
       if (!date || azStartMin === null || azEndMin === null) continue;
       if (isExcludedProgramEvent(title, seg.programLabel)) continue;
@@ -572,14 +590,14 @@ function parseTabEvents(tabName, rows) {
       if (titleDate && titleDate.getTime() !== date.getTime()) {
         doubts.push({
           code: 'date-mismatch',
-          note: `по колонке Data эфир ${isoDay(date)}, а в названии указано ${isoDay(titleDate)} — верна дата из колонки Data`,
+          note: `в таблице эфир стоит на ${formatDDMM(date)}, а в названии написано ${formatDDMM(titleDate)} — я взял дату из таблицы`,
         });
       }
       // A session may run past midnight (23:00–01:00), so the length is taken
       // modulo a day; zero or more than 10 hours means a typo in the times.
       const durationMin = (((azEndMin - azStartMin) % 1440) + 1440) % 1440;
       if (durationMin === 0 || durationMin > 600) {
-        doubts.push({ code: 'time-odd', note: `непонятное время в таблице: начало ${formatPoint24h(azStartMin)}, конец ${formatPoint24h(azEndMin)} (AZ)` });
+        doubts.push({ code: 'time-odd', note: `время в таблице выглядит странно (начало ${formatPoint24h(azStartMin)}, конец ${formatPoint24h(azEndMin)} по AZ)` });
       }
 
       const coHost = seg.coHostCol !== -1 ? normalize(row[seg.coHostCol]) : '';
@@ -593,7 +611,7 @@ function parseTabEvents(tabName, rows) {
       const mskStart = deriveMsk(azStartMin);
       const mskEnd = azEndMin !== null ? deriveMsk(azEndMin) : { min: null, dayOffset: mskStart.dayOffset };
 
-      events.push({
+      const event = {
         tabName: seg.programLabel,
         title,
         host,
@@ -608,9 +626,12 @@ function parseTabEvents(tabName, rows) {
         mskStartDayOffset: mskStart.dayOffset,
         mskEndMin: mskEnd.min,
         mskEndDayOffset: mskEnd.dayOffset,
-      });
+      };
+      if (rowMarkedOff(row)) offEvents.push(event);
+      else events.push(event);
     }
   }
+  events.offEvents = offEvents;
   return events;
 }
 
@@ -629,7 +650,9 @@ async function fetchTabEvents(spreadsheetId, tab) {
   // straight to where its host would actually sign up, not the general
   // host-signup sheet.
   const tabUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit?gid=${tab.gid}#gid=${tab.gid}`;
-  return events.map((e) => ({ ...e, tabUrl }));
+  const withUrl = events.map((e) => ({ ...e, tabUrl }));
+  withUrl.offEvents = (events.offEvents || []).map((e) => ({ ...e, tabUrl }));
+  return withUrl;
 }
 
 function sleep(ms) {
@@ -720,6 +743,7 @@ function inRange(date, start, end) {
 async function collectWeekEvents(range) {
   const config = loadConfig();
   const allEvents = [];
+  const allOff = [];
   const failedTabs = [];
   const debugCounts = [];
 
@@ -733,6 +757,7 @@ async function collectWeekEvents(range) {
     const inRangeCount = events.filter((e) => inRange(e.date, range.start, range.end)).length;
     debugCounts.push({ name: tab.name, total: events.length, inRange: inRangeCount });
     allEvents.push(...events);
+    allOff.push(...(events.offEvents || []));
   }
 
   const events = allEvents
@@ -747,15 +772,21 @@ async function collectWeekEvents(range) {
     .filter((e) => !e.hasHost && e.titleDate && inRange(e.titleDate, range.start, range.end) && !inRange(e.date, range.start, range.end))
     .sort((a, b) => a.date - b.date || (a.azStartMin ?? 0) - (b.azStartMin ?? 0));
 
-  return { events, failedTabs, debugCounts, strays };
+  // Rows marked "off" (no broadcast) that fall in this week — left out of
+  // everything, listed only so a person can see what was skipped.
+  const skippedOff = allOff
+    .filter((e) => inRange(e.date, range.start, range.end))
+    .sort((a, b) => a.date - b.date || (a.azStartMin ?? 0) - (b.azStartMin ?? 0));
+
+  return { events, failedTabs, debugCounts, strays, skippedOff };
 }
 
 // One "needs checking" entry as HTML: where the session is, what the sheet
 // says, and what looks wrong with it.
 function describeDoubt(e) {
-  const when = `AZ ${formatDDMM(e.date)}, ${formatRange24h(e.azStartMin, e.azEndMin)}`;
+  const when = `${formatDDMM(e.date)}, ${formatRange24h(e.azStartMin, e.azEndMin)} AZ`;
   const notes = (e.doubts || []).map((d) => `   – ${escapeHtml(d.note)}`);
-  return [`• <b>${escapeHtml(e.tabName)}</b> — ${escapeHtml(e.title || '(без названия)')}`, `   по таблице: ${when}${e.hasHost ? '' : ', хоста нет'}`, ...notes].join('\n');
+  return [`• <b>${escapeHtml(e.tabName)}</b> — «${escapeHtml(e.title || 'без названия')}», ${when}`, ...notes].join('\n');
 }
 
 function formatDebugCounts(debugCounts, range) {
