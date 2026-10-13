@@ -935,6 +935,95 @@ if (!hostReminderEnabled) {
   });
 }
 
+// ===== Страж акций Ozon (см. actionsGuard.js) =====
+// /акции — только чтение: что сейчас в акциях от Ozon. Убирает товары только
+// после нажатия «Убрать» (или сразу, если задано ACTIONS_AUTO_REMOVE=1).
+// Ежедневная проверка в ACTIONS_GUARD_HOUR (по умолчанию 9:00 Бали), повтор
+// раз в час при ошибке — одно сообщение об ошибке, дальше тихо.
+const actionsGuard = require('./actionsGuard');
+const ACTIONS_GUARD_HOUR = Number(process.env.ACTIONS_GUARD_HOUR) || 9;
+const ACTIONS_REMOVE_CB = 'ag:remove';
+let actionsGuardRunning = false;
+
+const actionsKeyboard = {
+  inline_keyboard: [[
+    { text: '🗑 Убрать всё из акций', callback_data: ACTIONS_REMOVE_CB },
+  ]],
+};
+
+async function runActionsCheck(chatId, { notifyIfEmpty }) {
+  const snap = await actionsGuard.snapshot();
+  const total = snap.reduce((s, a) => s + a.productIds.length, 0);
+  if (!total) {
+    if (notifyIfEmpty) await bot.sendMessage(chatId, actionsGuard.formatSnapshot(snap));
+    return;
+  }
+  if (process.env.ACTIONS_AUTO_REMOVE === '1') {
+    const report = await actionsGuard.removeAll(snap);
+    await bot.sendMessage(chatId, `Нашла товары в акциях от Ozon и убрала:\n${report}`);
+    return;
+  }
+  await bot.sendMessage(chatId, `⚠️ ${actionsGuard.formatSnapshot(snap)}\n\nУбрать их из акций?`, {
+    reply_markup: actionsKeyboard,
+  });
+}
+
+bot.onText(/^\/(акции|actions)(?:@\S+)?$/, async (msg) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  if (!actionsGuard.isConfigured()) {
+    await bot.sendMessage(msg.chat.id, 'Ключ OZON_ACTIONS_API_KEY ещё не подключён (нужен Deploy в Railway).');
+    return;
+  }
+  try {
+    await runActionsCheck(msg.chat.id, { notifyIfEmpty: true });
+  } catch (err) {
+    console.error('[actions-guard] ошибка ручной проверки:', err.message);
+    await bot.sendMessage(msg.chat.id, `Не получилось проверить акции 😔 ${err.message}`);
+  }
+});
+
+bot.on('callback_query', async (query) => {
+  if (query.data !== ACTIONS_REMOVE_CB) return;
+  const chatId = query.message?.chat?.id;
+  try { await bot.answerCallbackQuery(query.id); } catch { /* ignore */ }
+  if (!chatId || !isTrustedUser(query.from?.id)) return;
+  try {
+    const snap = await actionsGuard.snapshot();
+    if (!snap.length) {
+      await bot.sendMessage(chatId, actionsGuard.formatSnapshot(snap));
+      return;
+    }
+    const report = await actionsGuard.removeAll(snap);
+    await bot.sendMessage(chatId, `Готово:\n${report}\n\nПроверьте через /акции, что список пуст.`);
+  } catch (err) {
+    console.error('[actions-guard] ошибка удаления:', err.message);
+    await bot.sendMessage(chatId, `Не получилось убрать товары 😔 ${err.message}`);
+  }
+});
+
+async function checkActionsDaily() {
+  if (!actionsGuard.isConfigured() || !myChatId || actionsGuardRunning) return;
+  const today = baliDateString();
+  const state = actionsGuard.getState();
+  if (state.lastCheckDate === today || baliHour() < ACTIONS_GUARD_HOUR) return;
+  if (state.lastErrorAt && Date.now() - state.lastErrorAt < 60 * 60 * 1000) return;
+  actionsGuardRunning = true;
+  try {
+    await runActionsCheck(myChatId, { notifyIfEmpty: false });
+    actionsGuard.patchState({ lastCheckDate: today, errorNotified: false, lastErrorAt: null });
+  } catch (err) {
+    console.error('[actions-guard] ошибка проверки:', err.message);
+    if (!state.errorNotified) {
+      try { await bot.sendMessage(myChatId, `Не получилось проверить акции Ozon 😔 ${err.message}\nПовторю через час.`); } catch { /* ignore */ }
+    }
+    actionsGuard.patchState({ errorNotified: true, lastErrorAt: Date.now() });
+  } finally {
+    actionsGuardRunning = false;
+  }
+}
+
+cron.schedule('*/5 * * * *', checkActionsDaily);
+
 // ===== Воскресная авторассылка =====
 // Каждое воскресенье в WEEKLY_ANNOUNCE_HOUR (по умолчанию 10:00) по Бали бот
 // сам отправляет расписание на следующую неделю карточками (шапка + одно
