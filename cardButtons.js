@@ -223,7 +223,7 @@ async function sendCard(bot, chatId, { titleLine, dateLine, tabUrl = null, when 
 // `range` overrides the default (next week) — e.g. the current week on a
 // Monday. Sessions whose Arizona start has already passed are left out: asking
 // for a host for something that already happened would be misleading.
-async function sendWeekCards(bot, chatId, { now = new Date(), requireComplete = false, range = getNextWeekRange(now), reviewChatId = null, sendChecklist = false } = {}) {
+async function sendWeekCards(bot, chatId, { now = new Date(), requireComplete = false, range = getNextWeekRange(now), reviewChatId = null, sendChecklist = false, verify = null } = {}) {
   const collected = await collectWeekEvents(range);
   const failedTabs = collected.failedTabs;
   const events = collected.events.filter((e) => e.hasHost || !isPastAzStart(e, now));
@@ -232,6 +232,12 @@ async function sendWeekCards(bot, chatId, { now = new Date(), requireComplete = 
   if (requireComplete && failedTabs.length > 0) return { aborted: 'failedTabs', failedTabs, events: events.length, sent: 0 };
 
   const openEvents = events.filter((e) => !e.hasHost); // = the cards, in order
+  // Optional last check by the caller on the freshly built list ("is this the
+  // list a person approved?"): any text back means nothing is sent.
+  if (verify) {
+    const reason = verify(openEvents);
+    if (reason) return { aborted: 'mismatch', reason, failedTabs, events: events.length, open: openEvents.length, sent: 0 };
+  }
   const strays = collected.strays || [];
   const skippedOff = collected.skippedOff || [];
 

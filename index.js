@@ -21,6 +21,7 @@ const {
   handleCardCallback,
   syncCardsWithSheet,
   refreshCardsAfterHostListChange,
+  batchSummaries,
   checkAndSendAnnounceReminders,
   sendReminderNow,
   TAKE_CALLBACK: CARD_TAKE_CALLBACK,
@@ -934,6 +935,63 @@ if (!hostReminderEnabled) {
     }
   });
 }
+
+// ВРЕМЕННО: разовая отправка Анонса на 12–18 октября в большую группу
+// "WorldView Productions" по просьбе Елены (она проверила Анонс в личке).
+// Защиты: не отправлять, если Анонс на эту неделю в группу уже уходил; не
+// отправлять, если собранный сейчас список отличается от утверждённого (2 эфира
+// Xuanzang's Tower, Session 39 SEIJI, 17.10). Маркер пишется ДО отправки.
+// Удалить после отправки.
+(async () => {
+  const fs = require('fs');
+  const GROUP = -1001757671785;
+  const markerPath = process.env.WVP_ANNOUNCE_MARKER_PATH || '/data/wvp_announce_2026_10_12.json';
+  if (fs.existsSync(markerPath)) return;
+  const prior = batchSummaries().filter((b) => b.chatId === GROUP && b.eventDates.some((d) => d >= '2026-10-12' && d <= '2026-10-18'));
+  console.log(`[wvp-announce] Анонсы, уже отправленные в большую группу: ${JSON.stringify(batchSummaries().filter((b) => b.chatId === GROUP))}`);
+  if (prior.length > 0) {
+    console.log('[wvp-announce] Анонс на эту неделю в группу уже уходил — НЕ отправляю');
+    notifyElena('⚠️ Анонс на 12–18 октября в большую группу уже отправлялся ранее — повторно не отправляю.');
+    return;
+  }
+  try {
+    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
+  } catch (err) {
+    console.error('[wvp-announce] не удалось записать маркер, не отправляю:', err.message);
+    return;
+  }
+  const expected = [
+    { start: 660, end: 750, re: /^Session 39\b.*SEIJI/i },
+    { start: 1080, end: 1170, re: /^Rebroadcast Session 39\b.*SEIJI/i },
+  ];
+  const verify = (open) => {
+    const got = open.map((e) => `${e.tabName} | ${e.date.toISOString().slice(0, 10)} ${e.azStartMin}-${e.azEndMin} | ${e.title}`);
+    if (open.length !== expected.length) return `ожидалось ${expected.length} эфира, получилось ${open.length}: ${JSON.stringify(got)}`;
+    const ok = open.every(
+      (e, i) =>
+        e.tabName === "Xuanzang's Tower" &&
+        e.date.toISOString().slice(0, 10) === '2026-10-17' &&
+        e.azStartMin === expected[i].start &&
+        e.azEndMin === expected[i].end &&
+        expected[i].re.test(e.title)
+    );
+    return ok ? null : `список отличается от утверждённого: ${JSON.stringify(got)}`;
+  };
+  try {
+    const range = { start: new Date(Date.UTC(2026, 9, 12)), end: new Date(Date.UTC(2026, 9, 18)) };
+    const result = await sendWeekCards(bot, GROUP, { requireComplete: true, range, reviewChatId: Number(myChatId), verify });
+    console.log(`[wvp-announce] результат: aborted=${result.aborted}, причина=${result.reason || ''}, без хоста=${result.open}, сообщений=${result.sent}, тема=${result.threadId}, провалены вкладки=${JSON.stringify(result.failedTabs)}`);
+    for (const c of result.cards || []) console.log(`[wvp-announce] карточка: ${c}`);
+    if (result.aborted) {
+      // Ничего в группу не ушло — маркер снимаем, чтобы можно было повторить.
+      if (['mismatch', 'empty', 'allCovered', 'failedTabs'].includes(result.aborted)) fs.unlinkSync(markerPath);
+      notifyElena(`⚠️ Анонс в большую группу НЕ отправлен (${result.aborted}). ${result.reason || ''}`.trim());
+    }
+  } catch (err) {
+    console.error(`[wvp-announce] ошибка (отправлено до ошибки: ${err.sentSoFar ?? 0}):`, err.message);
+    notifyElena(`⚠️ Анонс в большую группу: ошибка после ${err.sentSoFar ?? 0} сообщений — ${err.message}. Повторно автоматически не отправляю.`);
+  }
+})();
 
 // ===== Воскресная авторассылка =====
 // Каждое воскресенье в WEEKLY_ANNOUNCE_HOUR (по умолчанию 10:00) по Бали бот
