@@ -958,6 +958,11 @@ async function runActionsCheck(chatId, { notifyIfEmpty }) {
     if (notifyIfEmpty) await bot.sendMessage(chatId, actionsGuard.formatSnapshot(snap));
     return;
   }
+  // Ozon с 12.10.2026 блокирует deactivate («unified price logic») — пока без кнопки удаления.
+  if (process.env.ACTIONS_API_REMOVE !== '1') {
+    await bot.sendMessage(chatId, `⚠️ ${actionsGuard.formatSnapshot(snap)}\n\nOzon не даёт убрать товары через ключ — уберите вручную в кабинете.`);
+    return;
+  }
   if (process.env.ACTIONS_AUTO_REMOVE === '1') {
     const report = await actionsGuard.removeAll(snap);
     await bot.sendMessage(chatId, `Нашла товары в акциях от Ozon и убрала:\n${report}`);
