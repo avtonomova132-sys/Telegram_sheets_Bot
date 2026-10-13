@@ -935,29 +935,6 @@ if (!hostReminderEnabled) {
   });
 }
 
-// ВРЕМЕННО: исправленный Анонс на 12–18 октября (с правилом "off") — ТОЛЬКО в
-// личку Елене + короткий список проверки. Напоминание не планируется (в личке
-// батч не запоминается). Маркер пишется ДО отправки. Удалить после просмотра.
-(async () => {
-  const fs = require('fs');
-  const markerPath = process.env.WEEK_PREVIEW3_MARKER_PATH || '/data/week_preview3_2026_10_13.json';
-  if (!myChatId || fs.existsSync(markerPath)) return;
-  try {
-    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
-  } catch (err) {
-    console.error('[week-preview3] не удалось записать маркер, не отправляю:', err.message);
-    return;
-  }
-  try {
-    const range = { start: new Date(Date.UTC(2026, 9, 12)), end: new Date(Date.UTC(2026, 9, 18)) };
-    const result = await sendWeekCards(bot, Number(myChatId), { requireComplete: true, range, reviewChatId: Number(myChatId), sendChecklist: true });
-    console.log(`[week-preview3] результат: aborted=${result.aborted}, без хоста=${result.open}, сомнительных=${result.doubts}, справок=${result.strays}, пропущено off=${result.skippedOff}, сообщений=${result.sent}, провалены вкладки=${JSON.stringify(result.failedTabs)}`);
-    for (const c of result.cards || []) console.log(`[week-preview3] карточка: ${c}`);
-  } catch (err) {
-    console.error(`[week-preview3] ошибка (отправлено до ошибки: ${err.sentSoFar ?? 0}):`, err.message);
-  }
-})();
-
 // ===== Воскресная авторассылка =====
 // Каждое воскресенье в WEEKLY_ANNOUNCE_HOUR (по умолчанию 10:00) по Бали бот
 // сам отправляет расписание на следующую неделю карточками (шапка + одно
