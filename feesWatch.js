@@ -5,8 +5,10 @@
 // продвижение. Заранее бот узнать об автоподключении не может — только по
 // факту списания, поэтому раз в месяц (с FEES_REMINDER_DAY, 25-го) ещё
 // напоминает проверить «Финансы → Витрина услуг».
-// Схема ответа /v3/finance/transaction/list не сверена с живым Озоном —
-// смотреть /списания_debug.
+// Старый /v3/finance/transaction/list Ozon закрыл — читаем
+// /v1/finance/accrual/by-day (по одному дню) и справочник
+// /v1/finance/accrual/types. Схема не сверена с живым Озоном — смотреть
+// /списания_debug.
 
 const fs = require('fs');
 const path = require('path');
@@ -59,43 +61,97 @@ async function ozon(endpoint, body) {
   }
 }
 
-function isoDay(ms) { return new Date(ms).toISOString(); }
+function dayStr(ms) { return new Date(ms).toISOString().slice(0, 10); }
 
-// Список операций за последние `days` дней (только чтение).
+// Справочник типов начислений: type_id → название (только чтение).
+// Форма ответа не сверена с живым Озоном — разбираем осторожно.
+async function loadTypes() {
+  const data = await ozon('/v1/finance/accrual/types', {});
+  const list = data.result?.types || data.result?.accrual_types || data.types || data.result || [];
+  const map = new Map();
+  if (Array.isArray(list)) {
+    for (const t of list) {
+      const id = t.id ?? t.type_id;
+      const name = t.name ?? t.title ?? t.type_name;
+      if (id !== undefined && name) map.set(String(id), String(name));
+    }
+  }
+  return map;
+}
+
+// Все начисления за один день (курсор last_id).
+async function accrualsForDay(day) {
+  const out = [];
+  let lastId = '';
+  for (let guard = 0; guard < 200; guard++) {
+    const body = { date: day };
+    if (lastId) body.last_id = lastId;
+    const data = await ozon('/v1/finance/accrual/by-day', body);
+    const list = data.accruals || data.result?.accruals || [];
+    out.push(...list);
+    lastId = data.last_id || data.result?.last_id || '';
+    if (!lastId || !list.length) break;
+  }
+  return out;
+}
+
+function amountOf(o) {
+  const v = o.total_amount?.amount ?? o.amount?.amount ?? o.amount ?? o.price ?? o.total;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// Ищем в начислении все объекты с type_id (услуги/сборы лежат на разной
+// глубине: posting.products[].delivery.services, item_fees.fees[].fees,
+// non_item_fee, container_fees…). Возвращаем [{ typeId, amount }].
+function collectFees(node, acc = [], depth = 0) {
+  if (!node || typeof node !== 'object' || depth > 12) return acc;
+  if (Array.isArray(node)) { for (const x of node) collectFees(x, acc, depth + 1); return acc; }
+  if (node.type_id !== undefined && node.type_id !== null) {
+    acc.push({ typeId: String(node.type_id), amount: amountOf(node) });
+  }
+  for (const k of Object.keys(node)) {
+    if (node[k] && typeof node[k] === 'object') collectFees(node[k], acc, depth + 1);
+  }
+  return acc;
+}
+
+// Операции за последние `days` дней, уже в виде [{ name, amount }].
 async function listOperations(days = LOOKBACK_DAYS, now = Date.now()) {
-  const from = isoDay(now - days * 86400000);
-  const to = isoDay(now);
+  const types = await loadTypes().catch(() => new Map());
   const ops = [];
-  for (let page = 1; page <= 100; page++) {
-    const data = await ozon('/v3/finance/transaction/list', {
-      filter: { date: { from, to }, operation_type: [], posting_number: '', transaction_type: 'all' },
-      page,
-      page_size: PAGE_SIZE,
-    });
-    const list = data.result?.operations || [];
-    ops.push(...list);
-    const pageCount = Number(data.result?.page_count) || 0;
-    if (!list.length || page >= pageCount) break;
+  for (let i = 0; i < days; i++) {
+    const day = dayStr(now - i * 86400000);
+    for (const acc of await accrualsForDay(day)) {
+      const fees = collectFees(acc);
+      if (!fees.length) {
+        ops.push({ name: types.get(String(acc.type_id)) || acc.accrued_category || 'начисление', amount: amountOf(acc) });
+        continue;
+      }
+      for (const f of fees) ops.push({ name: types.get(f.typeId) || `тип ${f.typeId}`, amount: f.amount });
+    }
   }
   return ops;
 }
 
-// Свод по названиям списаний: название → { sum, count }.
-// Берём и название операции, и названия услуг внутри неё.
+// Для отладки: один «живой» пример начисления и кусок справочника.
+async function debugSample() {
+  const types = await loadTypes().catch((e) => `ошибка: ${e.message}`);
+  const day = dayStr(Date.now() - 86400000);
+  const list = await accrualsForDay(day);
+  return { day, count: list.length, sample: list[0] || null, typesCount: types instanceof Map ? types.size : types, typesSample: types instanceof Map ? [...types.entries()].slice(0, 5) : null };
+}
+
+// Свод по названиям: название → { sum, count }.
 function summarize(ops) {
   const out = new Map();
-  const add = (name, sum) => {
-    const n = String(name || '').trim();
-    if (!n) return;
+  for (const op of ops) {
+    const n = String(op.name || '').trim();
+    if (!n) continue;
     const cur = out.get(n) || { sum: 0, count: 0 };
-    cur.sum += Number(sum) || 0;
+    cur.sum += Number(op.amount) || 0;
     cur.count += 1;
     out.set(n, cur);
-  };
-  for (const op of ops) {
-    const services = Array.isArray(op.services) ? op.services : [];
-    if (services.length) for (const s of services) add(s.name, s.price);
-    else add(op.operation_type_name || op.operation_type, op.amount);
   }
   return out;
 }
@@ -141,5 +197,5 @@ function formatSummary(summary) {
 
 module.exports = {
   isConfigured, listOperations, summarize, diff, formatAlerts, formatSummary,
-  getState, patchState, isPaidName,
+  getState, patchState, isPaidName, debugSample,
 };

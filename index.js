@@ -1089,6 +1089,17 @@ async function checkFeesPeriodic() {
 
 cron.schedule('*/5 * * * *', checkFeesPeriodic);
 
+bot.onText(/^\/(списания_debug|fees_debug)(?:@\w+)?$/i, async (msg) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  try {
+    const d = await feesWatch.debugSample();
+    const text = JSON.stringify(d, null, 1);
+    for (let i = 0; i < text.length; i += 3500) await bot.sendMessage(msg.chat.id, text.slice(i, i + 3500));
+  } catch (err) {
+    await bot.sendMessage(msg.chat.id, `Не получилось: ${err.message}`);
+  }
+});
+
 bot.onText(/^\/(списания|fees)(?:@\w+)?$/i, async (msg) => {
   if (!isTrustedUser(msg.chat.id)) return;
   if (!feesWatch.isConfigured()) {
