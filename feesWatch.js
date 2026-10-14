@@ -210,9 +210,81 @@ function diff(summary, state, monthKey) {
   return { alerts, known: [...known], paidSeen };
 }
 
+// Пошаговые инструкции «как отключить» по ключевым словам названия списания.
+// Пути взяты из уведомлений самого Озона (чат «Подписки и лояльность»).
+const HOWTO = [
+  { words: ['premium', 'премиум', 'аналитика premium'], steps: [
+    'Premium (подписка):',
+    '1) seller.ozon.ru → справа вверху название магазина → «Настройки» → «Договоры»',
+    '2) найти подписку Premium → «Отключить подписку»',
+    '3) придёт сообщение «Скоро отключим Premium» — значит отключено со следующего периода.' ] },
+  { words: ['звёзд', 'звезд', 'star'], steps: [
+    'Звёздные товары (1,5% с продаж):',
+    '1) верхнее меню «Продвижение» → «Механики лояльности»',
+    '2) «Звёздные товары» → «Отключить».' ] },
+  { words: ['бренд'], steps: [
+    'Продвижение брендов (1% с продаж):',
+    '1) верхнее меню «Товары» → «Бренды» (в ряде кабинетов «Товары и цены» → «Бренды»)',
+    '2) по каждому бренду выключить «Продвигать» и акцию «Морковск».' ] },
+  { words: ['отзыв', 'review'], steps: [
+    'Отзывы (подписка «Управление отзывами», «Отзывы за баллы», закрепление):',
+    '1) верхнее меню «Товары» → «Отзывы покупателей»',
+    '2) «Ещё» / «Подписка» → отключить; для «Отзывы за баллы» — «Товары» → «Отзывы за баллы» → остановить.' ] },
+];
+const GENERIC_HOWTO = 'Где отключить: «Финансы» → «Витрина услуг». Если такого пункта нет — в строке поиска вверху кабинета введите название услуги и откройте её страницу.';
+
+function howTo(name) {
+  const l = name.toLowerCase();
+  const h = HOWTO.find((x) => x.words.some((w) => l.includes(w)));
+  return h ? h.steps.join('\n') : GENERIC_HOWTO;
+}
+
 function formatAlerts(alerts, days = LOOKBACK_DAYS) {
   const lines = alerts.map((a) => `• ${a.name} — ${money(a.sum)} (${a.count} шт.), ${a.why}`);
-  return `💸 Ozon: в списаниях за последние ${days} дн. —\n${lines.join('\n')}\n\nЕсли это не нужно — «Финансы → Витрина услуг», там отключить.`;
+  const seen = new Set();
+  const guides = [];
+  for (const a of alerts) {
+    const g = howTo(a.name);
+    if (!seen.has(g)) { seen.add(g); guides.push(g); }
+  }
+  return `💸 Ozon: в списаниях за последние ${days} дн. —\n${lines.join('\n')}\n\nКак отключить, если не нужно:\n\n${guides.join('\n\n')}`;
+}
+
+// Раз в месяц повторяющиеся списания (одна операция за период) запоминаем с числом
+// месяца — за PREWARN_DAYS дней до следующего такого числа предупреждаем заранее.
+const PREWARN_DAYS = Number(process.env.FEES_PREWARN_DAYS) || 5;
+function trackMonthly(alerts, state, todayStr) {
+  const monthly = { ...(state.monthly || {}) };
+  const day = Number(todayStr.slice(8, 10));
+  for (const a of alerts) {
+    if (a.count <= 1 && !monthly[a.name]) monthly[a.name] = { day, sum: a.sum };
+  }
+  return monthly;
+}
+function prewarnDue(state, todayStr) {
+  const monthly = state.monthly || {};
+  const warned = state.prewarned || {};
+  const [y, m, d] = todayStr.split('-').map(Number);
+  const dim = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const out = [];
+  for (const [name, v] of Object.entries(monthly)) {
+    // следующее списание: ближайшая дата с этим числом (в короткие месяцы — последний день)
+    let ny = y, nm = m;
+    let cd = Math.min(v.day, dim);
+    if (cd <= d) { nm = m + 1; if (nm > 12) { nm = 1; ny += 1; } cd = Math.min(v.day, new Date(Date.UTC(ny, nm, 0)).getUTCDate()); }
+    const target = Date.UTC(ny, nm - 1, cd);
+    const left = Math.round((target - Date.UTC(y, m - 1, d)) / 86400000);
+    const key = `${name}|${ny}-${nm}`;
+    if (left <= PREWARN_DAYS && !warned[key]) out.push({ name, sum: v.sum, left, date: `${String(cd).padStart(2, '0')}.${String(nm).padStart(2, '0')}`, key });
+  }
+  return out;
+}
+function formatPrewarn(items) {
+  const lines = items.map((i) => `• ${i.name} — около ${money(i.sum)}, примерно ${i.date} (через ${i.left} дн.)`);
+  const seen = new Set();
+  const guides = [];
+  for (const i of items) { const g = howTo(i.name); if (!seen.has(g)) { seen.add(g); guides.push(g); } }
+  return `⏰ Скоро может списаться:\n${lines.join('\n')}\n\nЕсли не нужно — отключите заранее:\n\n${guides.join('\n\n')}`;
 }
 
 function formatSummary(summary) {
@@ -224,5 +296,5 @@ function formatSummary(summary) {
 
 module.exports = {
   isConfigured, listOperations, summarize, diff, formatAlerts, formatSummary,
-  getState, patchState, isPaidName, debugSample,
+  getState, patchState, isPaidName, debugSample, trackMonthly, prewarnDue, formatPrewarn, howTo,
 };

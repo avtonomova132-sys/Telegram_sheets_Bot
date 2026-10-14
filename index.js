@@ -1070,9 +1070,17 @@ async function checkFeesPeriodic() {
     const { alerts, known, paidSeen } = feesWatch.diff(summary, state, monthKey);
     if (alerts.length) await bot.sendMessage(myChatId, feesWatch.formatAlerts(alerts));
     const patch = { lastCheckDate: today, knownNames: known, paidSeen, errorNotified: false, lastErrorAt: null };
+    patch.monthly = feesWatch.trackMonthly(alerts, state, today);
+    const due = feesWatch.prewarnDue({ ...state, monthly: patch.monthly }, today);
+    if (due.length) {
+      await bot.sendMessage(myChatId, feesWatch.formatPrewarn(due));
+      const pw = { ...(state.prewarned || {}) };
+      due.forEach((i) => { pw[i.key] = true; });
+      patch.prewarned = pw;
+    }
     const day = Number(today.slice(8, 10));
     if (day >= FEES_REMINDER_DAY && state.lastReminderMonth !== monthKey) {
-      await bot.sendMessage(myChatId, '🔔 Конец месяца. Загляните в «Финансы → Витрина услуг» и проверьте, что Premium, «Управление отзывами» и «Звёздные товары» отключены — они могут подключиться сами на следующий месяц.');
+      await bot.sendMessage(myChatId, '🔔 Конец месяца. Проверьте, что отключены:\n\n' + ['premium', 'звёзд', 'бренд', 'отзыв'].map((w) => feesWatch.howTo(w)).join('\n\n') + '\n\nОзон может подключить их сам на следующий месяц (1-го числа он уже переподключал подписки).');
       patch.lastReminderMonth = monthKey;
     }
     feesWatch.patchState(patch);
