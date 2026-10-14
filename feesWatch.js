@@ -65,17 +65,44 @@ function dayStr(ms) { return new Date(ms).toISOString().slice(0, 10); }
 
 // Справочник типов начислений: type_id → название (только чтение).
 // Форма ответа не сверена с живым Озоном — разбираем осторожно.
-async function loadTypes() {
-  const data = await ozon('/v1/finance/accrual/types', {});
-  const list = data.result?.types || data.result?.accrual_types || data.types || data.result || [];
-  const map = new Map();
-  if (Array.isArray(list)) {
-    for (const t of list) {
-      const id = t.id ?? t.type_id;
-      const name = t.name ?? t.title ?? t.type_name;
-      if (id !== undefined && name) map.set(String(id), String(name));
+// Достаём из произвольного JSON все пары «id → название»: массивы объектов,
+// где есть id/type_id и name/title/… (схема справочника не задокументирована).
+function extractTypeMap(node, map = new Map(), depth = 0) {
+  if (!node || typeof node !== 'object' || depth > 8) return map;
+  if (Array.isArray(node)) {
+    for (const t of node) {
+      if (t && typeof t === 'object' && !Array.isArray(t)) {
+        const id = t.id ?? t.type_id ?? t.code;
+        const name = t.name ?? t.title ?? t.type_name ?? t.description ?? t.label;
+        if (id !== undefined && id !== null && typeof name === 'string' && name) map.set(String(id), name);
+      }
+      extractTypeMap(t, map, depth + 1);
     }
+    return map;
   }
+  // Вариант «объект-словарь»: { "1": "Комиссия", ... } или { "1": {name: ...} }
+  for (const [k, v] of Object.entries(node)) {
+    if (/^\d+$/.test(k)) {
+      if (typeof v === 'string') map.set(k, v);
+      else if (v && typeof v === 'object') {
+        const name = v.name ?? v.title ?? v.type_name;
+        if (typeof name === 'string') map.set(k, name);
+      }
+    } else if (v && typeof v === 'object') extractTypeMap(v, map, depth + 1);
+  }
+  return map;
+}
+
+let typesRawSample = null;
+async function loadTypes() {
+  let data = await ozon('/v1/finance/accrual/types', {});
+  let map = extractTypeMap(data);
+  if (!map.size) {
+    // Возможно, метод ждёт GET-подобный пустой запрос с другим телом.
+    data = await ozon('/v1/finance/accrual/types', { language: 'RU' }).catch(() => data);
+    map = extractTypeMap(data);
+  }
+  typesRawSample = map.size ? null : JSON.stringify(data).slice(0, 1200);
   return map;
 }
 
@@ -96,7 +123,7 @@ async function accrualsForDay(day) {
 }
 
 function amountOf(o) {
-  const v = o.total_amount?.amount ?? o.amount?.amount ?? o.amount ?? o.price ?? o.total;
+  const v = o.accrued?.amount ?? o.total_amount?.amount ?? o.amount?.amount ?? o.amount ?? o.price ?? o.total;
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 }
@@ -139,7 +166,7 @@ async function debugSample() {
   const types = await loadTypes().catch((e) => `ошибка: ${e.message}`);
   const day = dayStr(Date.now() - 86400000);
   const list = await accrualsForDay(day);
-  return { day, count: list.length, sample: list[0] || null, typesCount: types instanceof Map ? types.size : types, typesSample: types instanceof Map ? [...types.entries()].slice(0, 5) : null };
+  return { day, count: list.length, sample: list[0] || null, typesCount: types instanceof Map ? types.size : types, typesSample: types instanceof Map ? [...types.entries()].slice(0, 5) : null, typesRaw: typesRawSample };
 }
 
 // Свод по названиям: название → { sum, count }.
