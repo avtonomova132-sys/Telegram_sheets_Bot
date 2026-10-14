@@ -1046,6 +1046,63 @@ async function checkActionsPeriodic() {
 
 cron.schedule('*/5 * * * *', checkActionsPeriodic);
 
+// ===== Страж платных списаний Ozon (см. feesWatch.js) =====
+// Раз в день после FEES_WATCH_HOUR (10:00 по Бали): новые/платные списания —
+// сразу в личку; тишина, если нового нет. Раз в месяц с FEES_REMINDER_DAY —
+// напоминание проверить «Витрину услуг» (автоподключение заранее не видно).
+const feesWatch = require('./feesWatch');
+const FEES_WATCH_HOUR = Number(process.env.FEES_WATCH_HOUR) || 10;
+const FEES_REMINDER_DAY = Number(process.env.FEES_REMINDER_DAY) || 25;
+let feesWatchRunning = false;
+
+async function checkFeesPeriodic() {
+  if (!feesWatch.isConfigured() || !myChatId || feesWatchRunning) return;
+  const state = feesWatch.getState();
+  const today = baliDateString();
+  const now = Date.now();
+  if (baliHour() < FEES_WATCH_HOUR) return;
+  if (state.lastCheckDate === today) return;
+  if (state.lastErrorAt && now - state.lastErrorAt < 60 * 60 * 1000) return;
+  feesWatchRunning = true;
+  try {
+    const summary = feesWatch.summarize(await feesWatch.listOperations());
+    const monthKey = today.slice(0, 7);
+    const { alerts, known, paidSeen } = feesWatch.diff(summary, state, monthKey);
+    if (alerts.length) await bot.sendMessage(myChatId, feesWatch.formatAlerts(alerts));
+    const patch = { lastCheckDate: today, knownNames: known, paidSeen, errorNotified: false, lastErrorAt: null };
+    const day = Number(today.slice(8, 10));
+    if (day >= FEES_REMINDER_DAY && state.lastReminderMonth !== monthKey) {
+      await bot.sendMessage(myChatId, '🔔 Конец месяца. Загляните в «Финансы → Витрина услуг» и проверьте, что Premium, «Управление отзывами» и «Звёздные товары» отключены — они могут подключиться сами на следующий месяц.');
+      patch.lastReminderMonth = monthKey;
+    }
+    feesWatch.patchState(patch);
+  } catch (err) {
+    console.error('[fees-watch] ошибка проверки:', err.message);
+    if (!state.errorNotified) {
+      try { await bot.sendMessage(myChatId, `Не получилось проверить списания Ozon 😔 ${err.message}\nПовторю через час.`); } catch { /* ignore */ }
+    }
+    feesWatch.patchState({ errorNotified: true, lastErrorAt: Date.now() });
+  } finally {
+    feesWatchRunning = false;
+  }
+}
+
+cron.schedule('*/5 * * * *', checkFeesPeriodic);
+
+bot.onText(/^\/(списания|fees)(?:@\w+)?$/i, async (msg) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  if (!feesWatch.isConfigured()) {
+    await bot.sendMessage(msg.chat.id, 'Не заданы OZON_API_KEY / OZON_CLIENT_ID в Railway.');
+    return;
+  }
+  try {
+    const summary = feesWatch.summarize(await feesWatch.listOperations(7));
+    await bot.sendMessage(msg.chat.id, `Списания Ozon за 7 дней:\n${feesWatch.formatSummary(summary)}`);
+  } catch (err) {
+    await bot.sendMessage(msg.chat.id, `Не получилось: ${err.message}`);
+  }
+});
+
 // ===== Воскресная авторассылка =====
 // Каждое воскресенье в WEEKLY_ANNOUNCE_HOUR (по умолчанию 10:00) по Бали бот
 // сам отправляет расписание на следующую неделю карточками (шапка + одно
