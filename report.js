@@ -1038,7 +1038,34 @@ function compactCheckEventBlock(e) {
   return [compactCheckDateLine(e), sundayProgramName(e), '✅ / ❌ ?'].join('\n');
 }
 
-function buildCompactCheckBody(missing, range, tags, failedTabs) {
+// Who holds a ✅ reservation, as text: "@username", else the profile name.
+function reserverText(user) {
+  if (user.username) return `@${user.username}`;
+  return [user.first_name, user.last_name].filter(Boolean).join(' ') || 'участник';
+}
+
+// "Xuanzang's Tower — «Session 39 …», 17.10, 11:00–12:30 AZ" (HTML).
+function checkEventLine(e) {
+  const label = sessionLabel(e.title);
+  return `${escapeHtml(e.tabName)}${label ? ` — «${escapeHtml(label)}»` : ''}, ${formatDDMM(e.date)}, ${formatRange24h(e.azStartMin, e.azEndMin)} AZ`;
+}
+
+// A reserved-but-not-yet-in-the-sheet session. NOT a session without a host.
+function reservedLine(e, user) {
+  return `🔒 Зарезервировал(а) ${escapeHtml(reserverText(user))}, ещё не вписан(а) в таблицу — ${checkEventLine(e)}`;
+}
+
+// /check when nothing is free: short, and lists what closed each session.
+function buildCompactAllClosed(events, now, reservedOf) {
+  const lines = ['✅ Все эфиры недели закрыты', ''];
+  for (const e of events) {
+    if (e.hasHost) lines.push(`👤 ${escapeHtml(e.host)} — ${checkEventLine(e)}`);
+    else if (!isPastAzStart(e, now) && reservedOf(e)) lines.push(reservedLine(e, reservedOf(e)));
+  }
+  return lines.join('\n');
+}
+
+function buildCompactCheckBody(missing, range, tags, failedTabs, reservedLines = []) {
   const n = missing.length;
   const body = missing.map(compactCheckEventBlock).join('\n\n');
   const partial = failedTabs.length > 0;
@@ -1069,7 +1096,9 @@ function buildCompactCheckBody(missing, range, tags, failedTabs) {
     .filter((part) => part !== null)
     .join('\n\n');
 
-  const parts = [enHead, ruHead, body, '🙏 Thank you / Спасибо 🌿'];
+  const parts = [enHead, ruHead, body];
+  if (reservedLines.length > 0) parts.push(reservedLines.join('\n'));
+  parts.push('🙏 Thank you / Спасибо 🌿');
   if (tags && tags.length > 0) parts.push(tags.map((t) => escapeHtml(formatCommunityTag(t))).join(' '));
   return parts.join('\n\n');
 }
@@ -1087,11 +1116,20 @@ function buildCompactCheckBody(missing, range, tags, failedTabs) {
 // "✅ / ❌ ?" instead of the "Host: needed" line, no links, full EN section
 // then full RU section). The daily diff-check's pasted recap still calls this
 // without it and keeps the older per-zone layout on purpose.
-function buildCheckMessage(events, range, tags, failedTabs = [], now = new Date(), { compact = false } = {}) {
-  const missing = events.filter((e) => !e.hasHost && !isPastAzStart(e, now));
+function buildCheckMessage(events, range, tags, failedTabs = [], now = new Date(), { compact = false, reservedOf = null } = {}) {
+  // A session counts as CLOSED when the sheet names a host OR it has an active
+  // ✅ reservation in the group (not undone). Only sessions with neither are
+  // "missing"; a reserved one the sheet doesn't name yet gets its own 🔒 line.
+  const unhosted = events.filter((e) => !e.hasHost && !isPastAzStart(e, now));
+  const reservedList = reservedOf ? unhosted.filter((e) => reservedOf(e)) : [];
+  const missing = reservedOf ? unhosted.filter((e) => !reservedOf(e)) : unhosted;
   const rangeEn = formatWeekRangeEn(range.start, range.end);
   const rangeRu = formatWeekRangeRu(range.start, range.end);
   const partial = failedTabs.length > 0;
+
+  if (compact && reservedOf && missing.length === 0 && !partial) {
+    return buildCompactAllClosed(events, now, reservedOf);
+  }
 
   if (missing.length === 0) {
     const enBlock = partial
@@ -1117,7 +1155,7 @@ function buildCheckMessage(events, range, tags, failedTabs = [], now = new Date(
     return [enBlock, ruBlock].join('\n\n');
   }
 
-  if (compact) return buildCompactCheckBody(missing, range, tags, failedTabs);
+  if (compact) return buildCompactCheckBody(missing, range, tags, failedTabs, reservedList.map((e) => reservedLine(e, reservedOf(e))));
 
   const enBody = missing.map(checkEventBlockEn).join('\n\n');
   const ruBody = missing.map(checkEventBlockRu).join('\n\n');
@@ -1221,6 +1259,7 @@ function buildWeekCardParts(events, range) {
     titleLine: `${keycapNumber(i + 1)} <b>${escapeHtml(e.tabName)}</b>`,
     dateLine: weekCardDateLine(e),
     tabUrl: e.tabUrl || null,
+    label: sessionLabel(e.title), // session name, kept for the "all covered" messages
     when: sundayButtonWhen(e),
     // Identifies the sheet row again later (cardButtons.js: syncCardsWithSheet).
     event: { tabUrl: e.tabUrl || null, dateIso: e.date.toISOString(), azStartMin: e.azStartMin },
@@ -1566,11 +1605,20 @@ function markWeeklyAnnounceSent(dateStr) {
   fs.renameSync(tmpPath, WEEKLY_ANNOUNCE_STATE_PATH);
 }
 
+// Who holds an active ✅ reservation for an event, from the announce cards
+// (set by cardButtons.js, which owns that state; report.js can't import it —
+// circular). Returns the user object or null.
+let reservationLookup = () => null;
+
+function setReservationLookup(fn) {
+  reservationLookup = typeof fn === 'function' ? fn : () => null;
+}
+
 async function generateCheckReport(now = new Date()) {
   const range = getCurrentWeekRange(now);
   const { events, failedTabs, debugCounts } = await collectWeekEvents(range);
   const tags = loadCommunityTags();
-  const text = buildCheckMessage(events, range, tags, failedTabs, now, { compact: true });
+  const text = buildCheckMessage(events, range, tags, failedTabs, now, { compact: true, reservedOf: (e) => reservationLookup(e) });
   return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
 }
 
@@ -1981,6 +2029,7 @@ module.exports = {
   escapeHtml,
   formatCommunityTag,
   isPastAzStart,
+  setReservationLookup,
   describeDoubt,
   formatProgramNameHtml,
   csvUrl,

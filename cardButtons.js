@@ -34,7 +34,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { escapeHtml, formatCommunityTag, getNextWeekRange, collectWeekEvents, buildWeekCardParts, isPastAzStart, describeDoubt, formatRange24h, formatRange12h, formatMonthDayEn, formatMonthDayRu, mskDate, programLine } = require('./report');
+const { escapeHtml, formatCommunityTag, getNextWeekRange, collectWeekEvents, buildWeekCardParts, isPastAzStart, describeDoubt, formatRange24h, formatRange12h, formatMonthDayEn, formatMonthDayRu, mskDate, programLine, setReservationLookup, sessionLabel } = require('./report');
 
 // Telegram allows roughly 20 messages/minute into one group — a week is
 // ~25 cards, so group sends are paced ~3.2s apart (a burst gets HTTP 429).
@@ -63,7 +63,7 @@ const TAKE_CALLBACK = 'card:take';
 const PASS_CALLBACK = 'card:pass';
 const UNDO_CALLBACK = 'card:undo';
 
-// The real hosts (9): both the people allowed to press the buttons and the
+// The real hosts (8): both the people allowed to press the buttons and the
 // denominator of the "N of M" counter. Deliberately separate from
 // community-tags.json (the 5 @mentions closing /check, /weekly).
 const CANDIDATES_PATH = path.join(__dirname, 'host-candidates.json');
@@ -196,8 +196,8 @@ function cardKeyboard(record) {
 
 // titleLine/dateLine arrive as ready HTML strings; `event` identifies the
 // sheet row (tab + date + AZ start) so the periodic sync can find it again.
-async function sendCard(bot, chatId, { titleLine, dateLine, tabUrl = null, when = null, event = null, candidateTags = candidatesFor(chatId) }) {
-  const record = { titleLine, dateLine, tabUrl, when, event, candidateTags, refusers: [], reservedBy: null, hosted: null };
+async function sendCard(bot, chatId, { titleLine, dateLine, tabUrl = null, when = null, event = null, label = '', candidateTags = candidatesFor(chatId) }) {
+  const record = { titleLine, dateLine, tabUrl, when, event, label, candidateTags, refusers: [], reservedBy: null, hosted: null };
   const sent = await withRetry(() =>
     bot.sendMessage(chatId, cardText(record), {
       parse_mode: 'HTML',
@@ -341,6 +341,7 @@ async function postWeekCards(bot, chatId, events, range, failedTabs = [], review
         tabUrl: card.tabUrl,
         when: card.when,
         event: card.event,
+        label: card.label,
       });
       cardKeys.push(`${chatId}:${cardMessage.message_id}`);
       sent++;
@@ -506,7 +507,10 @@ async function processCardCallback(bot, query) {
   }
   await safeAck(bot, query, result.toast);
 
-  if (result.changed) await redrawViews(bot, store, originKey);
+  if (result.changed) {
+    await redrawViews(bot, store, originKey);
+    await evaluateCoverageForCard(bot, originKey);
+  }
 }
 
 // ALL card/reminder work (presses, sheet sync) runs strictly one after
@@ -578,6 +582,7 @@ async function syncCardsWithSheet(bot) {
       writeJsonAtomic(fresh);
       updated++;
       await redrawViews(bot, fresh, key);
+      await evaluateCoverageForCard(bot, key);
     });
   }
 
@@ -611,38 +616,35 @@ function refreshCardsAfterHostListChange(bot) {
       await redrawViews(bot, fresh, key);
       await sleep(Number(key.split(':')[0]) < 0 ? GROUP_GAP_MS : PRIVATE_GAP_MS);
     }
+    // Removing someone can free a session they had reserved (or, rarely, close one).
+    await weekFlowTick(bot, Date.now());
   });
 }
 
-// ---- Personal nudge to hosts who never answered an announce ----
+// ---- Who answered / who did not, and the Tuesday message to Elena ----
 //
-// Elena asked (2026-10-15) for a private message to the hosts who have not
-// pressed ✅ or ❌ under ANY session of the week's announce, reminding them of a
-// session that still has no host. Two steps, so nothing reaches a host before
-// she has seen it: buildHostNudgePlan() reads the saved answers + the live
-// sheet and nudgePreviewText() shows her everything; only after her go-ahead
-// does sendHostNudges() write to the hosts. Pressing ✅/❌ is NEVER done from
-// the private message (the counter lives under the announce in the group): the
-// message only carries a link button to the announce.
-//
-// A bot can message a person first only if it knows their numeric Telegram id
-// AND they once pressed Start. Ids are known only for people who pressed a
-// button on one of the saved cards; anyone else cannot be written to (listed
-// as failed, no workaround is attempted).
+// The bot NEVER writes to a host itself (Elena's rule, 2026-10-15): it only
+// prepares, for Elena, who has not pressed ✅ or ❌ under any session of the
+// week's announce and a ready text she can send herself. A bot cannot message
+// a person first anyway unless it knows their Telegram id and they pressed
+// Start; ids are known only from people who once pressed a card button, so the
+// preparation also says whom the bot could not even reach.
 
 const WEEKDAYS_EN = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const WEEKDAYS_RU = ['воскресенье', 'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота'];
 
-async function buildHostNudgePlan(chatId, range, now = new Date()) {
+// `batch` defaults to the newest announce in the chat. Reads the saved ✅/❌
+// answers (per host in the CURRENT host list only) and the live sheet.
+async function buildHostNudgePlan(chatId, range, now = new Date(), batch = null) {
   const store = readJson({ messages: {}, batches: [] });
-  const batch = (store.batches || []).filter((b) => b.chatId === chatId).sort((a, b) => b.sentAt - a.sentAt)[0];
+  batch = batch || (store.batches || []).filter((b) => b.chatId === chatId).sort((a, b) => b.sentAt - a.sentAt)[0];
   if (!batch) return { error: 'no-announce' };
 
   const hosts = loadHostCandidates();
   const responses = new Map(hosts.map((t) => [normUser(t), []]));
-  const known = new Map(); // username -> {id, first_name, last_name}, from any saved card
+  const known = new Map(); // username -> {id, first_name}, from any saved card
   const remember = (u) => {
-    if (u && u.username && u.id) known.set(normUser(u.username), { id: u.id, first_name: u.first_name || '', last_name: u.last_name || '' });
+    if (u && u.username && u.id) known.set(normUser(u.username), { id: u.id, first_name: u.first_name || '' });
   };
   for (const record of Object.values(store.messages)) {
     normalizeRecord(record);
@@ -654,10 +656,10 @@ async function buildHostNudgePlan(chatId, range, now = new Date()) {
     if (!record) return;
     const label = `эфир ${i + 1} (${record.when || ''})`;
     if (record.reservedBy && record.reservedBy.username && responses.has(normUser(record.reservedBy.username))) {
-      responses.get(normUser(record.reservedBy.username)).push(`✅ взял(а) ${label}`);
+      responses.get(normUser(record.reservedBy.username)).push(`✅ ${label}`);
     }
     for (const u of record.refusers || []) {
-      if (u.username && responses.has(normUser(u.username))) responses.get(normUser(u.username)).push(`❌ не может ${label}`);
+      if (u.username && responses.has(normUser(u.username))) responses.get(normUser(u.username)).push(`❌ ${label}`);
     }
   });
 
@@ -681,18 +683,9 @@ async function buildHostNudgePlan(chatId, range, now = new Date()) {
     const notes = responses.get(normUser(tag));
     const person = known.get(normUser(tag)) || null;
     if (notes.length > 0) responded.push({ tag, notes });
-    else silent.push({ tag, id: person ? person.id : null, name: person ? person.first_name : '' });
+    else silent.push({ tag, id: person ? person.id : null });
   }
-  return {
-    batch,
-    announceUrl: `https://t.me/c/${String(chatId).replace(/^-100/, '')}/${batch.headerMessageId}`,
-    responded,
-    silent,
-    freeEvents,
-    reservedEvents,
-    hostedCount: upcoming.filter((e) => e.hasHost).length,
-    failedTabs: collected.failedTabs,
-  };
+  return { batch, hostCount: hosts.length, responded, silent, freeEvents, reservedEvents, failedTabs: collected.failedTabs };
 }
 
 function nudgeEventBlocks(e) {
@@ -710,72 +703,265 @@ function nudgeEventBlocks(e) {
   return { en, ru };
 }
 
-// The private message, plain text (no formatting characters to break on
-// titles from the sheet). `name` is the first name from the person's Telegram
-// profile when the bot has seen it, otherwise empty.
-function nudgeText(freeEvents, name = '') {
+// The ready text for Elena to send herself: a plain question, answered with
+// "yes"/"no" in words — no buttons and no "press" (answers do not go through
+// the bot, so they must not be asked for as presses).
+function hostQuestionText(freeEvents) {
   const many = freeEvents.length > 1;
   const blocks = freeEvents.map(nudgeEventBlocks);
-  const greeting = name ? `🙏 Dear ${name} / ${name}, дорогой друг,` : '🙏 Dear friend / Дорогой друг,';
   return [
-    greeting,
+    '🙏 Dear friend / Дорогой друг,',
     '',
     'English:',
     many ? 'We still need hosts for these broadcasts this week:' : 'We still need a host for a broadcast this week:',
     blocks.map((b) => b.en).join('\n\n'),
-    `Could you let us know whether you can take ${many ? 'one of them' : 'it'}? Please press ✅ (I'll take it) or ❌ (can't do it) under the announcement in the group. Even a quick ❌ helps us a lot. Thank you for your service 💛`,
+    `Would you be able to take ${many ? 'one of them' : 'it'}? A simple "yes" or "no" is all we need — it really helps us plan. Thank you for your service 💛`,
     '',
     'Русский:',
     many ? 'На этой неделе нам ещё нужны хосты на эфиры:' : 'На этой неделе нам ещё нужен хост на эфир:',
     blocks.map((b) => b.ru).join('\n\n'),
-    `Подскажите, пожалуйста, сможете ли вы ${many ? 'провести какой-нибудь из них' : 'его провести'}? Нажмите ✅ (беру) или ❌ (не могу) под Анонсом в группе. Даже быстрое ❌ нам очень помогает. Спасибо за ваше служение 💛`,
+    `Сможете ли вы ${many ? 'взять какой-нибудь из них' : 'его взять'}? Достаточно ответить «да» или «нет» — это очень поможет нам спланировать. Спасибо за ваше служение 💛`,
   ].join('\n');
 }
 
-const nudgeKeyboard = (url) => [[{ text: 'Open the announcement / Открыть анонс', url }]];
-
-// What Elena sees before anything is sent (HTML).
-function nudgePreviewText(plan) {
-  const fmt = (e) => `${escapeHtml(programLine(e.tabName, e.title))} — ${String(e.date.getUTCDate()).padStart(2, '0')}.${String(e.date.getUTCMonth() + 1).padStart(2, '0')}, ${formatRange24h(e.azStartMin, e.azEndMin)} AZ`;
-  const lines = ['📋 <b>Напоминание хостам — на проверку</b> (хостам пока ничего не отправлено)', ''];
-  lines.push(`<b>Ответили (${plan.responded.length} из 9):</b>`);
+// The Tuesday message to Elena (HTML): free sessions, whom to write to (with a
+// mark for people the bot cannot reach), whom not to (already answered), and
+// the ready text.
+function tuesdayMessageText(plan) {
+  const ddmm = (d) => `${String(d.getUTCDate()).padStart(2, '0')}.${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+  const lines = ['📋 <b>Вторник: на этой неделе ещё есть свободные эфиры</b>', '', '<b>Свободны:</b>'];
+  plan.freeEvents.forEach((e) =>
+    lines.push(`• ${escapeHtml(programLine(e.tabName, e.title))} — AZ ${ddmm(e.date)}, ${formatRange24h(e.azStartMin, e.azEndMin)} · MCK ${ddmm(mskDate(e))}, ${formatRange24h(e.mskStartMin, e.mskEndMin)}`)
+  );
+  plan.reservedEvents.forEach((r) => lines.push(`• (уже есть бронь ${escapeHtml(displayName(r.by))} — не считается свободным: ${escapeHtml(programLine(r.event.tabName, r.event.title))})`));
+  lines.push('', '<b>Писать этим людям</b> (ни разу не нажали ✅/❌ на этой неделе):');
+  if (plan.silent.length === 0) lines.push('— таких нет, все уже ответили');
+  plan.silent.forEach((s) => lines.push(`• ${escapeHtml(s.tag)}${s.id ? '' : ' — ⚠️ бот не знает его Telegram-ID, написать придётся вам лично или отметить в группе'}`));
+  lines.push('', '<b>Не писать (уже ответили):</b>');
   if (plan.responded.length === 0) lines.push('— никто');
   plan.responded.forEach((r) => lines.push(`• ${escapeHtml(r.tag)} — ${r.notes.map(escapeHtml).join('; ')}`));
-  lines.push('', `<b>Не ответили ни разу (${plan.silent.length}):</b>`);
-  if (plan.silent.length === 0) lines.push('— таких нет');
-  plan.silent.forEach((s) =>
-    lines.push(`• ${escapeHtml(s.tag)}${s.name ? ` (${escapeHtml(s.name)})` : ''} — ${s.id ? 'бот знает его Telegram-ID, написать можно попробовать' : 'бот НЕ знает его Telegram-ID — написать ему не сможет'}`)
-  );
-  lines.push('', '<b>Эфиры без хоста сейчас</b> (таблица + брони в Анонсе):');
-  if (plan.freeEvents.length === 0) lines.push('— свободных нет, всё закрыто');
-  plan.freeEvents.forEach((e) => lines.push(`• свободен: ${fmt(e)}`));
-  plan.reservedEvents.forEach((r) => lines.push(`• в таблице хоста нет, но есть бронь ${escapeHtml(displayName(r.by))}: ${fmt(r.event)}`));
-  if (plan.failedTabs.length > 0) lines.push(`⚠️ Не загрузились вкладки: ${escapeHtml(plan.failedTabs.join('; '))}`);
-  if (plan.freeEvents.length > 0) {
-    lines.push('', '<b>Текст, который уйдёт каждому</b> (под ним кнопка «Open the announcement / Открыть анонс» → ссылка на Анонс в группе; если имя в профиле известно, оно подставляется в приветствие):', '', escapeHtml(nudgeText(plan.freeEvents)));
-    lines.push('', `Ссылка кнопки: ${escapeHtml(plan.announceUrl)}`, '', 'Отправлять? Напишите «отправляй» — до этого хостам ничего не уходит.');
-  }
+  if (plan.failedTabs.length > 0) lines.push('', `⚠️ Не загрузились вкладки: ${escapeHtml(plan.failedTabs.join('; '))}`);
+  lines.push('', '<b>Готовый текст для личного сообщения</b> (без кнопок):', '', escapeHtml(hostQuestionText(plan.freeEvents)));
   return lines.join('\n');
 }
 
-// Sends the nudge to every host in plan.silent once. Returns {sent, failed}.
-async function sendHostNudges(bot, plan) {
-  const sent = [];
-  const failed = [];
-  for (const s of plan.silent) {
-    if (!s.id) {
-      failed.push({ tag: s.tag, reason: 'бот не знает его Telegram-ID' });
-      continue;
-    }
-    try {
-      await withRetry(() => bot.sendMessage(s.id, nudgeText(plan.freeEvents, s.name), { reply_markup: { inline_keyboard: nudgeKeyboard(plan.announceUrl) } }));
-      sent.push(s.tag);
-    } catch (err) {
-      failed.push({ tag: s.tag, reason: err.message });
-    }
-    await sleep(PRIVATE_GAP_MS);
+// ---- The week's flow around an announce: "all covered", Tuesday check ----
+//
+// Elena's schedule for a week (2026-10-15):
+//   Sunday 10:00 Bali  announce in the group (auto-send is PAUSED until she says)
+//   Monday 10:00       reminder in the group, tags only hosts who never pressed
+//                      (24h after the announce — checkAndSendAnnounceReminders)
+//   Tuesday 10:00      (48h after) ONLY if sessions are still free: ONE message
+//                      to Elena, with who to write to and a ready text. The bot
+//                      itself never writes to a host — Elena does.
+// And at any moment: once every session of the announce is closed (a host named
+// in the sheet OR an active ✅ reservation) the bot, ONCE, tells Elena "🎉 all
+// covered" and thanks the group (a reply to the announce header), and cancels
+// the Monday/Tuesday messages. If an Undo frees a session again, Elena gets
+// "Эфир снова свободен: …", the normal schedule is restored, and the next
+// time everything closes both messages are sent again.
+//
+// A session is CLOSED when the sheet names any host (even someone not in the
+// host list) or there is an active reservation; FREE only with neither.
+
+const WVP_GROUP_ID = Number(process.env.VOLUNTEER_GROUP_ID) || -1001757671785;
+const TEST_GROUP_ID = Number(process.env.TEST_GROUP_CHAT_ID) || -5172293748;
+const LIVE_BATCH_MS = 9 * 24 * 60 * 60 * 1000; // older announces are history
+const TUESDAY_DELAY_MS = 48 * 60 * 60 * 1000;
+
+const elenaChatId = () => (process.env.MY_CHAT_ID ? Number(process.env.MY_CHAT_ID) : null);
+
+function isLiveBatch(batch, now) {
+  return (batch.chatId === WVP_GROUP_ID || batch.chatId === TEST_GROUP_ID) && now - batch.sentAt < LIVE_BATCH_MS;
+}
+
+async function sendToElena(bot, text) {
+  const id = elenaChatId();
+  if (!id) return;
+  try {
+    await withRetry(() => bot.sendMessage(id, text, { parse_mode: 'HTML', disable_web_page_preview: true }));
+  } catch (err) {
+    console.error('[week-flow] не удалось написать Елене:', err.message);
   }
-  return { sent, failed };
+}
+
+function coverageOf(store, batch) {
+  const cards = batch.cardKeys
+    .map((key) => ({ key, record: store.messages[key] }))
+    .filter((c) => c.record)
+    .map((c) => {
+      normalizeRecord(c.record);
+      return c;
+    });
+  const open = cards.filter((c) => !c.record.hosted && !c.record.reservedBy);
+  return { cards, open, covered: cards.length > 0 && open.length === 0 };
+}
+
+// One card as a short block: title, AZ/MCK line, and who closed it.
+function cardSummaryHtml(record) {
+  const head = `${record.titleLine}${record.label ? ` — ${escapeHtml(record.label)}` : ''}`;
+  const who = record.hosted
+    ? `👤 <b>Host / Хост:</b> ${escapeHtml(record.hosted.name)}`
+    : record.reservedBy
+      ? `⏳ <b>Reserved by / Зарезервировал(а):</b> ${escapeHtml(displayName(record.reservedBy))}`
+      : '⭕ без хоста';
+  return [head, record.dateLine, who].join('\n');
+}
+
+const coveredDmText = (cards) =>
+  ['🎉 <b>Ура! Все эфиры недели закрыты / All sessions this week are covered</b>', '', cards.map((c) => cardSummaryHtml(c.record)).join('\n\n')].join('\n');
+
+// Compares the announce's sessions with what was last told, and acts on the
+// CHANGE only (so each transition happens once). Call inside the serial queue.
+async function evaluateCoverage(bot, batchKey) {
+  const store = readJson({ messages: {}, batches: [] });
+  const batch = (store.batches || []).find((b) => batchId(b) === batchKey);
+  const now = Date.now();
+  if (!batch || !isLiveBatch(batch, now)) return;
+  const cov = coverageOf(store, batch);
+
+  if (cov.covered && !batch.coveredAt) {
+    // Marked BEFORE anything is sent, so a failure never turns into a repeat.
+    batch.coveredAt = now;
+    if (!batch.remindedAt) {
+      batch.remindedAt = now;
+      batch.outcome = 'covered';
+      batch.cancelledByCover = true;
+    }
+    if (!batch.tuesdayDoneAt) {
+      batch.tuesdayDoneAt = now;
+      batch.tuesdayCancelledByCover = true;
+    }
+    writeJsonAtomic(store);
+    await sendToElena(bot, coveredDmText(cov.cards));
+    try {
+      const sent = await withRetry(() =>
+        bot.sendMessage(batch.chatId, COVERED_TEXT, { reply_to_message_id: batch.headerMessageId, allow_sending_without_reply: true })
+      );
+      const after = readJson({ messages: {}, batches: [] });
+      const b = (after.batches || []).find((x) => batchId(x) === batchKey);
+      if (b) {
+        b.coveredMessageId = sent.message_id;
+        writeJsonAtomic(after);
+      }
+    } catch (err) {
+      console.error(`[week-flow] не удалось написать в группу «все эфиры закрыты» (${batchKey}):`, err.message);
+    }
+    console.log(`[week-flow] ${batchKey}: все эфиры закрыты — написала Елене и в группу, напоминания отменены`);
+    return;
+  }
+
+  if (!cov.covered && batch.coveredAt) {
+    batch.coveredAt = null;
+    if (batch.cancelledByCover) {
+      batch.remindedAt = null;
+      batch.outcome = null;
+      batch.cancelledByCover = false;
+    }
+    if (batch.tuesdayCancelledByCover) {
+      batch.tuesdayDoneAt = null;
+      batch.tuesdayCancelledByCover = false;
+    }
+    writeJsonAtomic(store);
+    await sendToElena(bot, ['🔓 <b>Эфир снова свободен:</b>', '', cov.open.map((c) => cardSummaryHtml(c.record)).join('\n\n')].join('\n'));
+    console.log(`[week-flow] ${batchKey}: эфир снова свободен — обычная схема возвращена`);
+  }
+}
+
+// After a change to one card: re-evaluate the announce it belongs to.
+async function evaluateCoverageForCard(bot, cardKey) {
+  const store = readJson({ messages: {}, batches: [] });
+  const batch = (store.batches || []).find((b) => b.cardKeys.includes(cardKey));
+  if (batch) await evaluateCoverage(bot, batchId(batch));
+}
+
+// Monday of the week the announce's sessions fall in, through Sunday.
+function weekRangeOfBatch(store, batch) {
+  const dates = batch.cardKeys
+    .map((k) => store.messages[k])
+    .filter((r) => r && r.event)
+    .map((r) => new Date(r.event.dateIso).getTime());
+  if (dates.length === 0) return null;
+  const first = new Date(Math.min(...dates));
+  const back = (first.getUTCDay() + 6) % 7;
+  const start = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth(), first.getUTCDate() - back));
+  return { start, end: new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate() + 6)) };
+}
+
+// Tuesday check: only if something is still free (sheet + reservations).
+async function runTuesdayCheck(bot, batchKey, now) {
+  const store = readJson({ messages: {}, batches: [] });
+  const batch = (store.batches || []).find((b) => batchId(b) === batchKey);
+  if (!batch || !isLiveBatch(batch, now) || batch.tuesdayDoneAt || now < batch.sentAt + TUESDAY_DELAY_MS) return;
+  const range = weekRangeOfBatch(store, batch);
+  if (!range) return;
+  const plan = await buildHostNudgePlan(batch.chatId, range, new Date(now), batch);
+  const after = readJson({ messages: {}, batches: [] });
+  const b = (after.batches || []).find((x) => batchId(x) === batchKey);
+  if (!b || b.tuesdayDoneAt) return;
+  b.tuesdayDoneAt = now; // once, whatever happens next
+  writeJsonAtomic(after);
+  if (plan.error || plan.freeEvents.length === 0) {
+    console.log(`[week-flow] ${batchKey}: во вторник свободных эфиров нет — ничего не пишу`);
+    return;
+  }
+  await sendToElena(bot, tuesdayMessageText(plan));
+  console.log(`[week-flow] ${batchKey}: вторничное сообщение отправлено Елене (свободных эфиров ${plan.freeEvents.length})`);
+}
+
+// The periodic tick (every 5 minutes, from checkAndSendAnnounceReminders):
+// catches changes that came from the sheet and fires the Tuesday check.
+async function weekFlowTick(bot, now) {
+  const batches = (readJson({ messages: {}, batches: [] }).batches || []).filter((b) => isLiveBatch(b, now));
+  for (const b of batches) {
+    const key = batchId(b);
+    try {
+      await evaluateCoverage(bot, key);
+      await runTuesdayCheck(bot, key, now);
+    } catch (err) {
+      console.error(`[week-flow] ошибка (${key}):`, err.message);
+    }
+  }
+}
+
+// One-off for a week whose "all covered" was already announced by hand (the
+// group has the thank-you): remember it WITHOUT writing to the group, cancel
+// the reminders, and send Elena the "🎉" message once. Labels for the list are
+// read from the sheet because older cards didn't store the session name.
+async function markCoveredSilently(bot, chatId) {
+  const store = readJson({ messages: {}, batches: [] });
+  const batch = (store.batches || []).filter((b) => b.chatId === chatId).sort((a, b) => b.sentAt - a.sentAt)[0];
+  if (!batch) return { done: false, reason: 'no-announce' };
+  const cov = coverageOf(store, batch);
+  if (!cov.covered) return { done: false, reason: 'not-covered' };
+  if (batch.coveredAt) return { done: false, reason: 'already' };
+  const now = Date.now();
+  batch.coveredAt = now;
+  if (!batch.remindedAt) {
+    batch.remindedAt = now;
+    batch.outcome = 'covered';
+    batch.cancelledByCover = true;
+  }
+  if (!batch.tuesdayDoneAt) {
+    batch.tuesdayDoneAt = now;
+    batch.tuesdayCancelledByCover = true;
+  }
+  writeJsonAtomic(store);
+
+  const range = weekRangeOfBatch(store, batch);
+  if (range) {
+    try {
+      const { events } = await collectWeekEvents(range);
+      for (const c of cov.cards) {
+        const e = events.find((x) => c.record.event && x.tabUrl === c.record.event.tabUrl && x.date.toISOString() === c.record.event.dateIso && x.azStartMin === c.record.event.azStartMin);
+        if (e && !c.record.label) c.record.label = sessionLabel(e.title);
+      }
+    } catch (err) {
+      console.error('[week-flow] не удалось подтянуть названия эфиров:', err.message);
+    }
+  }
+  await sendToElena(bot, coveredDmText(cov.cards));
+  return { done: true, cards: cov.cards.length };
 }
 
 // ---- One reminder, 24h after an announce, to hosts who haven't responded ----
@@ -950,6 +1136,8 @@ function batchSummaries() {
 // Elena; an ordinary "nothing to remind about" is not an error.
 async function checkAndSendAnnounceReminders(bot, now = Date.now()) {
   const errors = [];
+  // First: "all covered" / Tuesday check — which may cancel a reminder below.
+  await runSerial(() => weekFlowTick(bot, now));
   const dueIds = (readJson({ messages: {} }).batches || [])
     .filter((b) => !b.remindedAt && now >= b.sentAt + REMINDER_DELAY_MS)
     .map(batchId);
@@ -1008,9 +1196,10 @@ module.exports = {
   handleCardCallback,
   syncCardsWithSheet,
   refreshCardsAfterHostListChange,
+  markCoveredSilently,
+  weekFlowTick,
   buildHostNudgePlan,
-  nudgePreviewText,
-  sendHostNudges,
+  tuesdayMessageText,
   batchSummaries,
   checkAndSendAnnounceReminders,
   sendReminderNow,
@@ -1018,3 +1207,16 @@ module.exports = {
   PASS_CALLBACK,
   UNDO_CALLBACK,
 };
+
+// /check must treat an active ✅ reservation in the WVP group as a closed
+// session (the sheet may not name the person yet).
+setReservationLookup((e) => {
+  const store = readJson({ messages: {} });
+  const iso = e.date.toISOString();
+  for (const [key, r] of Object.entries(store.messages)) {
+    if (r.mirrorOf || !r.event || !r.reservedBy || r.hosted) continue;
+    if (Number(key.split(':')[0]) !== WVP_GROUP_ID) continue;
+    if (r.event.tabUrl === (e.tabUrl || null) && r.event.dateIso === iso && r.event.azStartMin === e.azStartMin) return r.reservedBy;
+  }
+  return null;
+});
