@@ -34,7 +34,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { escapeHtml, formatCommunityTag, getNextWeekRange, collectWeekEvents, buildWeekCardParts, isPastAzStart, describeDoubt, formatRange24h } = require('./report');
+const { escapeHtml, formatCommunityTag, getNextWeekRange, collectWeekEvents, buildWeekCardParts, isPastAzStart, describeDoubt, formatRange24h, formatRange12h, formatMonthDayEn, formatMonthDayRu, mskDate, programLine } = require('./report');
 
 // Telegram allows roughly 20 messages/minute into one group — a week is
 // ~25 cards, so group sends are paced ~3.2s apart (a burst gets HTTP 429).
@@ -614,6 +614,170 @@ function refreshCardsAfterHostListChange(bot) {
   });
 }
 
+// ---- Personal nudge to hosts who never answered an announce ----
+//
+// Elena asked (2026-10-15) for a private message to the hosts who have not
+// pressed ✅ or ❌ under ANY session of the week's announce, reminding them of a
+// session that still has no host. Two steps, so nothing reaches a host before
+// she has seen it: buildHostNudgePlan() reads the saved answers + the live
+// sheet and nudgePreviewText() shows her everything; only after her go-ahead
+// does sendHostNudges() write to the hosts. Pressing ✅/❌ is NEVER done from
+// the private message (the counter lives under the announce in the group): the
+// message only carries a link button to the announce.
+//
+// A bot can message a person first only if it knows their numeric Telegram id
+// AND they once pressed Start. Ids are known only for people who pressed a
+// button on one of the saved cards; anyone else cannot be written to (listed
+// as failed, no workaround is attempted).
+
+const WEEKDAYS_EN = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const WEEKDAYS_RU = ['воскресенье', 'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота'];
+
+async function buildHostNudgePlan(chatId, range, now = new Date()) {
+  const store = readJson({ messages: {}, batches: [] });
+  const batch = (store.batches || []).filter((b) => b.chatId === chatId).sort((a, b) => b.sentAt - a.sentAt)[0];
+  if (!batch) return { error: 'no-announce' };
+
+  const hosts = loadHostCandidates();
+  const responses = new Map(hosts.map((t) => [normUser(t), []]));
+  const known = new Map(); // username -> {id, first_name, last_name}, from any saved card
+  const remember = (u) => {
+    if (u && u.username && u.id) known.set(normUser(u.username), { id: u.id, first_name: u.first_name || '', last_name: u.last_name || '' });
+  };
+  for (const record of Object.values(store.messages)) {
+    normalizeRecord(record);
+    (record.refusers || []).forEach(remember);
+    remember(record.reservedBy);
+  }
+  batch.cardKeys.forEach((key, i) => {
+    const record = store.messages[key];
+    if (!record) return;
+    const label = `эфир ${i + 1} (${record.when || ''})`;
+    if (record.reservedBy && record.reservedBy.username && responses.has(normUser(record.reservedBy.username))) {
+      responses.get(normUser(record.reservedBy.username)).push(`✅ взял(а) ${label}`);
+    }
+    for (const u of record.refusers || []) {
+      if (u.username && responses.has(normUser(u.username))) responses.get(normUser(u.username)).push(`❌ не может ${label}`);
+    }
+  });
+
+  const collected = await collectWeekEvents(range);
+  const upcoming = collected.events.filter((e) => !isPastAzStart(e, now));
+  const recordFor = (e) =>
+    batch.cardKeys
+      .map((k) => store.messages[k])
+      .find((r) => r && r.event && r.event.tabUrl === e.tabUrl && r.event.dateIso === e.date.toISOString() && r.event.azStartMin === e.azStartMin);
+  const freeEvents = [];
+  const reservedEvents = [];
+  for (const e of upcoming.filter((x) => !x.hasHost)) {
+    const record = recordFor(e);
+    if (record && record.reservedBy) reservedEvents.push({ event: e, by: record.reservedBy });
+    else freeEvents.push(e);
+  }
+
+  const responded = [];
+  const silent = [];
+  for (const tag of hosts) {
+    const notes = responses.get(normUser(tag));
+    const person = known.get(normUser(tag)) || null;
+    if (notes.length > 0) responded.push({ tag, notes });
+    else silent.push({ tag, id: person ? person.id : null, name: person ? person.first_name : '' });
+  }
+  return {
+    batch,
+    announceUrl: `https://t.me/c/${String(chatId).replace(/^-100/, '')}/${batch.headerMessageId}`,
+    responded,
+    silent,
+    freeEvents,
+    reservedEvents,
+    hostedCount: upcoming.filter((e) => e.hasHost).length,
+    failedTabs: collected.failedTabs,
+  };
+}
+
+function nudgeEventBlocks(e) {
+  const programme = programLine(e.tabName, e.title);
+  const en = [
+    `📛 ${programme}`,
+    `🕒 Arizona: ${WEEKDAYS_EN[e.date.getUTCDay()]}, ${formatMonthDayEn(e.date)}, ${formatRange12h(e.azStartMin, e.azEndMin)}`,
+    `🕒 Moscow: ${formatMonthDayEn(mskDate(e))}, ${formatRange24h(e.mskStartMin, e.mskEndMin)}`,
+  ].join('\n');
+  const ru = [
+    `📛 ${programme}`,
+    `🕒 Аризона: ${WEEKDAYS_RU[e.date.getUTCDay()]}, ${formatMonthDayRu(e.date)}, ${formatRange24h(e.azStartMin, e.azEndMin)}`,
+    `🕒 Москва: ${formatMonthDayRu(mskDate(e))}, ${formatRange24h(e.mskStartMin, e.mskEndMin)}`,
+  ].join('\n');
+  return { en, ru };
+}
+
+// The private message, plain text (no formatting characters to break on
+// titles from the sheet). `name` is the first name from the person's Telegram
+// profile when the bot has seen it, otherwise empty.
+function nudgeText(freeEvents, name = '') {
+  const many = freeEvents.length > 1;
+  const blocks = freeEvents.map(nudgeEventBlocks);
+  const greeting = name ? `🙏 Dear ${name} / ${name}, дорогой друг,` : '🙏 Dear friend / Дорогой друг,';
+  return [
+    greeting,
+    '',
+    'English:',
+    many ? 'We still need hosts for these broadcasts this week:' : 'We still need a host for a broadcast this week:',
+    blocks.map((b) => b.en).join('\n\n'),
+    `Could you let us know whether you can take ${many ? 'one of them' : 'it'}? Please press ✅ (I'll take it) or ❌ (can't do it) under the announcement in the group. Even a quick ❌ helps us a lot. Thank you for your service 💛`,
+    '',
+    'Русский:',
+    many ? 'На этой неделе нам ещё нужны хосты на эфиры:' : 'На этой неделе нам ещё нужен хост на эфир:',
+    blocks.map((b) => b.ru).join('\n\n'),
+    `Подскажите, пожалуйста, сможете ли вы ${many ? 'провести какой-нибудь из них' : 'его провести'}? Нажмите ✅ (беру) или ❌ (не могу) под Анонсом в группе. Даже быстрое ❌ нам очень помогает. Спасибо за ваше служение 💛`,
+  ].join('\n');
+}
+
+const nudgeKeyboard = (url) => [[{ text: 'Open the announcement / Открыть анонс', url }]];
+
+// What Elena sees before anything is sent (HTML).
+function nudgePreviewText(plan) {
+  const fmt = (e) => `${escapeHtml(programLine(e.tabName, e.title))} — ${String(e.date.getUTCDate()).padStart(2, '0')}.${String(e.date.getUTCMonth() + 1).padStart(2, '0')}, ${formatRange24h(e.azStartMin, e.azEndMin)} AZ`;
+  const lines = ['📋 <b>Напоминание хостам — на проверку</b> (хостам пока ничего не отправлено)', ''];
+  lines.push(`<b>Ответили (${plan.responded.length} из 9):</b>`);
+  if (plan.responded.length === 0) lines.push('— никто');
+  plan.responded.forEach((r) => lines.push(`• ${escapeHtml(r.tag)} — ${r.notes.map(escapeHtml).join('; ')}`));
+  lines.push('', `<b>Не ответили ни разу (${plan.silent.length}):</b>`);
+  if (plan.silent.length === 0) lines.push('— таких нет');
+  plan.silent.forEach((s) =>
+    lines.push(`• ${escapeHtml(s.tag)}${s.name ? ` (${escapeHtml(s.name)})` : ''} — ${s.id ? 'бот знает его Telegram-ID, написать можно попробовать' : 'бот НЕ знает его Telegram-ID — написать ему не сможет'}`)
+  );
+  lines.push('', '<b>Эфиры без хоста сейчас</b> (таблица + брони в Анонсе):');
+  if (plan.freeEvents.length === 0) lines.push('— свободных нет, всё закрыто');
+  plan.freeEvents.forEach((e) => lines.push(`• свободен: ${fmt(e)}`));
+  plan.reservedEvents.forEach((r) => lines.push(`• в таблице хоста нет, но есть бронь ${escapeHtml(displayName(r.by))}: ${fmt(r.event)}`));
+  if (plan.failedTabs.length > 0) lines.push(`⚠️ Не загрузились вкладки: ${escapeHtml(plan.failedTabs.join('; '))}`);
+  if (plan.freeEvents.length > 0) {
+    lines.push('', '<b>Текст, который уйдёт каждому</b> (под ним кнопка «Open the announcement / Открыть анонс» → ссылка на Анонс в группе; если имя в профиле известно, оно подставляется в приветствие):', '', escapeHtml(nudgeText(plan.freeEvents)));
+    lines.push('', `Ссылка кнопки: ${escapeHtml(plan.announceUrl)}`, '', 'Отправлять? Напишите «отправляй» — до этого хостам ничего не уходит.');
+  }
+  return lines.join('\n');
+}
+
+// Sends the nudge to every host in plan.silent once. Returns {sent, failed}.
+async function sendHostNudges(bot, plan) {
+  const sent = [];
+  const failed = [];
+  for (const s of plan.silent) {
+    if (!s.id) {
+      failed.push({ tag: s.tag, reason: 'бот не знает его Telegram-ID' });
+      continue;
+    }
+    try {
+      await withRetry(() => bot.sendMessage(s.id, nudgeText(plan.freeEvents, s.name), { reply_markup: { inline_keyboard: nudgeKeyboard(plan.announceUrl) } }));
+      sent.push(s.tag);
+    } catch (err) {
+      failed.push({ tag: s.tag, reason: err.message });
+    }
+    await sleep(PRIVATE_GAP_MS);
+  }
+  return { sent, failed };
+}
+
 // ---- One reminder, 24h after an announce, to hosts who haven't responded ----
 //
 // Every announce posted to a group (Sunday auto-send or a manual command) is
@@ -844,6 +1008,9 @@ module.exports = {
   handleCardCallback,
   syncCardsWithSheet,
   refreshCardsAfterHostListChange,
+  buildHostNudgePlan,
+  nudgePreviewText,
+  sendHostNudges,
   batchSummaries,
   checkAndSendAnnounceReminders,
   sendReminderNow,
