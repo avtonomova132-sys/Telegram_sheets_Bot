@@ -598,20 +598,23 @@ async function syncCardsWithSheet(bot) {
 // closing tag-line (a plain message the bot doesn't track) cannot be edited.
 function refreshCardsAfterHostListChange(bot) {
   return runSerial(async () => {
+    // The host list in force is remembered IN the state file (meta.hostSig), so
+    // the check cannot be pre-empted by another write that already saved the
+    // cut-down cards (readJson prunes in memory, any later write persists it).
+    const sig = JSON.stringify([loadHostCandidates().map(normUser).sort(), TEMP_EXTRA_HOSTS]);
     const raw = readRawJson(null);
     if (!raw || !raw.messages) return;
-    const fresh = dropFormerHosts(readRawJson(null));
-    const signature = (r) => JSON.stringify([r.candidateTags || null, r.reservedBy || r.takenBy || null]);
-    const changed = Object.keys(raw.messages).filter((k) => signature(raw.messages[k]) !== signature(fresh.messages[k]));
-    if (changed.length === 0) return;
+    if (raw.meta && raw.meta.hostSig === sig) return;
 
+    const fresh = dropFormerHosts(raw);
+    fresh.meta = { ...(fresh.meta || {}), hostSig: sig };
     writeJsonAtomic(fresh);
     const now = Date.now();
-    const toRedraw = changed.filter((k) => {
+    const toRedraw = Object.keys(fresh.messages).filter((k) => {
       const r = fresh.messages[k];
       return !r.mirrorOf && !r.hosted && (!r.event || eventStartMs(r.event) > now);
     });
-    console.log(`[card-buttons] список хостов изменился: записей обновлено ${changed.length}, карточек перерисовать ${toRedraw.length}`);
+    console.log(`[card-buttons] список хостов изменился: карточек перерисовать ${toRedraw.length}`);
     for (const key of toRedraw) {
       await redrawViews(bot, fresh, key);
       await sleep(Number(key.split(':')[0]) < 0 ? GROUP_GAP_MS : PRIVATE_GAP_MS);

@@ -21,7 +21,6 @@ const {
   handleCardCallback,
   syncCardsWithSheet,
   refreshCardsAfterHostListChange,
-  markCoveredSilently,
   checkAndSendAnnounceReminders,
   sendReminderNow,
   TAKE_CALLBACK: CARD_TAKE_CALLBACK,
@@ -1175,37 +1174,6 @@ bot.onText(/^\/(списания|fees)(?:@\w+)?$/i, async (msg) => {
     await bot.sendMessage(msg.chat.id, `Не получилось: ${err.message}`);
   }
 });
-
-// ВРЕМЕННО (разово): неделя 12–18 октября. «Все эфиры закрыты» в группе уже есть
-// (писали вручную), поэтому тут — БЕЗ записи в группу: запомнить состояние
-// «закрыто», отменить напоминания этой недели и один раз написать Елене
-// «🎉 Ура!» в личку. Заодно проверить команду /check на боевых данных (вывод —
-// только в логи). Синхронная часть markCoveredSilently выполняется до любых
-// таймеров, чтобы автоматика не успела отправить второе сообщение в группу.
-// Маркер пишется ДО отправки. Удалить после выполнения.
-(async () => {
-  const fs = require('fs');
-  const markerPath = process.env.COVER_ONESHOT_MARKER_PATH || '/data/cover_oneshot_2026_10_15.json';
-  if (fs.existsSync(markerPath)) return;
-  try {
-    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
-  } catch (err) {
-    console.error('[cover-oneshot] не удалось записать маркер, не запускаю:', err.message);
-    return;
-  }
-  try {
-    const r = await markCoveredSilently(bot, -1001757671785);
-    console.log(`[cover-oneshot] результат: ${JSON.stringify(r)}`);
-  } catch (err) {
-    console.error('[cover-oneshot] ошибка:', err.message);
-  }
-  try {
-    const check = await generateCheckReport(new Date());
-    console.log(`[cover-oneshot] /check на боевых данных:\n${check.text}`);
-  } catch (err) {
-    console.error('[cover-oneshot] /check ошибка:', err.message);
-  }
-})();
 
 // ===== Воскресная авторассылка =====
 // Каждое воскресенье в WEEKLY_ANNOUNCE_HOUR (по умолчанию 10:00) по Бали бот
