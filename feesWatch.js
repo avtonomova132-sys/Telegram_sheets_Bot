@@ -122,6 +122,10 @@ async function accrualsForDay(day) {
   return out;
 }
 
+// Начисления без type_id (категория POSTING и т.п. — суммы по отправлению, а не услуга):
+// в сводке видны, но «новым видом списания» не считаются.
+const UNTYPED = '(без типа)';
+
 function amountOf(o) {
   const v = o.accrued?.amount ?? o.total_amount?.amount ?? o.amount?.amount ?? o.amount ?? o.price ?? o.total;
   const n = Number(v);
@@ -152,7 +156,7 @@ async function listOperations(days = LOOKBACK_DAYS, now = Date.now()) {
     for (const acc of await accrualsForDay(day)) {
       const fees = collectFees(acc);
       if (!fees.length) {
-        ops.push({ name: types.get(String(acc.type_id)) || acc.accrued_category || 'начисление', amount: amountOf(acc) });
+        ops.push({ name: types.get(String(acc.type_id)) || `${UNTYPED} ${acc.accrued_category || 'начисление'}`, amount: amountOf(acc) });
         continue;
       }
       for (const f of fees) ops.push({ name: types.get(f.typeId) || `тип ${f.typeId}`, amount: f.amount });
@@ -197,6 +201,7 @@ function diff(summary, state, monthKey) {
   const paidSeen = { ...(state.paidSeen || {}) };
   const alerts = [];
   for (const [name, v] of summary) {
+    if (name.startsWith(UNTYPED)) continue;
     const paid = isPaidName(name);
     const k = `${name}|${monthKey}`;
     if (paid && !paidSeen[k]) {
