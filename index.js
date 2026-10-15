@@ -21,9 +21,6 @@ const {
   handleCardCallback,
   syncCardsWithSheet,
   refreshCardsAfterHostListChange,
-  buildHostNudgePlan,
-  nudgePreviewText,
-  sendHostNudges,
   checkAndSendAnnounceReminders,
   sendReminderNow,
   TAKE_CALLBACK: CARD_TAKE_CALLBACK,
@@ -1177,39 +1174,6 @@ bot.onText(/^\/(списания|fees)(?:@\w+)?$/i, async (msg) => {
     await bot.sendMessage(msg.chat.id, `Не получилось: ${err.message}`);
   }
 });
-
-// ВРЕМЕННО: проверочное сообщение для Елены (только ей в личку) — кто из хостов
-// ни разу не отметился под Анонсом 12–18 октября и какое напоминание им
-// уйдёт. Хостам НИЧЕГО не отправляется. Маркер пишется ДО отправки. Удалить
-// после просмотра.
-(async () => {
-  const fs = require('fs');
-  const GROUP = -1001757671785;
-  const markerPath = process.env.HOST_NUDGE_PREVIEW_MARKER_PATH || '/data/host_nudge_preview_2026_10_15.json';
-  if (!myChatId || fs.existsSync(markerPath)) return;
-  try {
-    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
-  } catch (err) {
-    console.error('[nudge-preview] не удалось записать маркер, не отправляю:', err.message);
-    return;
-  }
-  try {
-    const range = { start: new Date(Date.UTC(2026, 9, 12)), end: new Date(Date.UTC(2026, 9, 18)) };
-    const plan = await buildHostNudgePlan(GROUP, range);
-    if (plan.error) {
-      await bot.sendMessage(myChatId, `Не нашёл сохранённого Анонса в большой группе (${plan.error}) — проверять нечего.`);
-      return;
-    }
-    console.log(
-      `[nudge-preview] ответили=${plan.responded.map((r) => r.tag).join(',')}; не ответили=${plan.silent.map((s) => `${s.tag}${s.id ? '(id известен)' : '(id неизвестен)'}`).join(',')}; свободных эфиров=${plan.freeEvents.length}; броней=${plan.reservedEvents.length}; ссылка=${plan.announceUrl}`
-    );
-    for (const chunk of chunkMessage(nudgePreviewText(plan), 3900)) {
-      await bot.sendMessage(myChatId, chunk, { parse_mode: 'HTML', disable_web_page_preview: true });
-    }
-  } catch (err) {
-    console.error('[nudge-preview] ошибка:', err.message);
-  }
-})();
 
 // ===== Воскресная авторассылка =====
 // Каждое воскресенье в WEEKLY_ANNOUNCE_HOUR (по умолчанию 10:00) по Бали бот
