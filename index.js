@@ -1046,6 +1046,57 @@ async function checkActionsPeriodic() {
 
 cron.schedule('*/5 * * * *', checkActionsPeriodic);
 
+// ===== Контрольные точки (controlPoints.js) + разбор «Детализации начислений» =====
+const controlPoints = require('./controlPoints');
+const accrualsReport = require('./accrualsReport');
+
+async function checkControlPoints() {
+  if (!myChatId) return;
+  try {
+    const today = baliDateString();
+    const due = controlPoints.dueNow(today, baliHour());
+    if (!due.length) return;
+    for (const p of due) await bot.sendMessage(myChatId, controlPoints.format(p));
+    controlPoints.markReminded(due.map((p) => p.id), today);
+  } catch (err) {
+    console.error('[control] ошибка:', err.message);
+  }
+}
+cron.schedule('*/5 * * * *', checkControlPoints);
+
+bot.onText(/^\/контроль(?:@\S+)?$/, (msg) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  bot.sendMessage(msg.chat.id, controlPoints.list());
+});
+bot.onText(/^\/контроль_готово(?:@\S+)?\s+(\S+)/, (msg, m) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  const p = controlPoints.done(m[1]);
+  bot.sendMessage(msg.chat.id, p ? `Закрыл: ${p.title}` : 'Не нашёл такой точки. Список: /контроль');
+});
+bot.onText(/^\/контроль_добавить(?:@\S+)?\s+(\d{1,2}\.\d{1,2})\s+([\s\S]+)/, (msg, m) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  const p = controlPoints.add(m[1], m[2].trim(), baliDateString().slice(0, 4));
+  bot.sendMessage(msg.chat.id, p ? `Добавил на ${m[1]}: ${p.title}` : 'Формат: /контроль_добавить 25.10 что проверить');
+});
+
+// Файл «Детализация начислений» (xlsx): сводка + сравнение с прошлым + закрытие точек.
+async function handleAccrualsDocument(chatId, document) {
+  try {
+    const fileLink = await bot.getFileLink(document.file_id);
+    const buffer = Buffer.from(await (await fetch(fileLink)).arrayBuffer());
+    const { text, to } = accrualsReport.process(buffer);
+    await bot.sendMessage(chatId, text);
+    const closed = controlPoints.closeByReport(to);
+    if (closed.length) await bot.sendMessage(chatId, '✅ Закрыл контрольные точки: ' + closed.map((p) => p.title).join('; '));
+    return true;
+  } catch (err) {
+    if (String(err.message).startsWith(accrualsReport.NOT_REPORT_PREFIX)) return false;
+    console.error('[accruals] ошибка разбора:', err.message);
+    await bot.sendMessage(chatId, `Не получилось разобрать отчёт 😔 ${err.message}`);
+    return true;
+  }
+}
+
 // ===== Страж платных списаний Ozon (см. feesWatch.js) =====
 // Раз в день после FEES_WATCH_HOUR (10:00 по Бали): новые/платные списания —
 // сразу в личку; тишина, если нового нет. Раз в месяц с FEES_REMINDER_DAY —
@@ -3330,6 +3381,7 @@ bot.on('document', async (msg) => {
   const waitingSince = pendingArticlesUpload.get(chatId);
 
   if (!isUploadCommand && !waitingSince && isTrustedUser(chatId) && /\.xlsx$/i.test(msg.document?.file_name || '')) {
+    if (await handleAccrualsDocument(chatId, msg.document)) return;
     if (await handleFboPlacementDocument(chatId, msg.document)) return;
   }
 
