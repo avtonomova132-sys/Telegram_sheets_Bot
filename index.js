@@ -1055,9 +1055,11 @@ async function checkControlPoints() {
   try {
     const today = baliDateString();
     const due = controlPoints.dueNow(today, baliHour());
-    if (!due.length) return;
     for (const p of due) await bot.sendMessage(myChatId, controlPoints.format(p));
-    controlPoints.markReminded(due.map((p) => p.id), today);
+    if (due.length) controlPoints.markReminded(due.map((p) => p.id), today);
+    const sup = controlPoints.supportDue(today, baliHour());
+    for (const p of sup) await bot.sendMessage(myChatId, controlPoints.formatSupport(p));
+    if (sup.length) controlPoints.markSupportSent(sup.map((p) => p.id));
   } catch (err) {
     console.error('[control] ошибка:', err.message);
   }
