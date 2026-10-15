@@ -78,20 +78,51 @@ async function listParticipants(actionId) {
   return ids;
 }
 
-// Снимок: акции, в которых реально есть наши товары.
+// «Скидка на сток» (в кабинете — «Максимальный бустинг», «…: усиление» и т.п.)
+// продавцу цену НЕ снижает: покупателю скидку даёт Ozon баллами, а продавец
+// получает свою цену целиком (проверено по «Детализации начислений»:
+// «Продажи» = цена продавца × кол-во, выручка + «Баллы за скидки» = она же).
+// Поэтому такие акции не тревожим. Переопределяется env'ами через запятую:
+// ACTIONS_IGNORE_TITLES (подстроки названия, без учёта регистра),
+// ACTIONS_IGNORE_TYPES (точные action_type из /v1/actions).
+function csv(name, def) {
+  const v = process.env[name];
+  return (v === undefined ? def : v).split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+}
+function isIgnored(a) {
+  const title = String(a.title || '').toLowerCase();
+  const type = String(a.type || '').toLowerCase();
+  if (csv('ACTIONS_IGNORE_TITLES', 'максимальный бустинг').some((t) => title.includes(t))) return true;
+  if (csv('ACTIONS_IGNORE_TYPES', '').some((t) => type === t)) return true;
+  return false;
+}
+
+let lastIgnored = { actions: 0, products: 0 };
+
+// Снимок: акции, в которых реально есть наши товары (кроме «Скидки на сток»).
 async function snapshot() {
   const actions = await listActions();
   const out = [];
+  let ignoredActions = 0;
+  let ignoredProducts = 0;
   for (const a of actions) {
     if (!a.count) continue;
     const ids = await listParticipants(a.id);
-    if (ids.length) out.push({ ...a, productIds: ids });
+    if (!ids.length) continue;
+    if (isIgnored(a)) { ignoredActions++; ignoredProducts += ids.length; continue; }
+    out.push({ ...a, productIds: ids });
   }
+  lastIgnored = { actions: ignoredActions, products: ignoredProducts };
   return out;
 }
 
 function formatSnapshot(snap) {
-  if (!snap.length) return 'Сейчас ни один товар не участвует в акциях от Ozon ✅';
+  if (!snap.length) {
+    const note = lastIgnored.actions
+      ? `\n(Ещё ${lastIgnored.products} товар(ов) в «Скидке на сток» — цену продавцу она не снижает, не тревожу.)`
+      : '';
+    return `Сейчас ни один товар не участвует в акциях от Ozon, требующих внимания ✅${note}`;
+  }
   const total = snap.reduce((s, a) => s + a.productIds.length, 0);
   const lines = snap.map((a) => `• ${a.title} — ${a.productIds.length} шт.`);
   return `В акциях от Ozon сейчас ${total} товар(ов):\n${lines.join('\n')}`;
