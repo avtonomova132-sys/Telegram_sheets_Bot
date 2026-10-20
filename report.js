@@ -1237,18 +1237,22 @@ function weekCardDateLine(e) {
   return `🗓 AZ: <b>${formatDDMM(e.date)}</b>, ${formatRange24h(e.azStartMin, e.azEndMin)} · MCK: <b>${formatDDMM(mskDate(e))}</b>, ${formatRange24h(e.mskStartMin, e.mskEndMin)}`;
 }
 
-function buildWeekCardParts(events, range) {
+// `restOfWeek`: an announce sent mid-week for what is still open ("for the rest of
+// the week" / "до конца недели") instead of the usual "upcoming week" one.
+function buildWeekCardParts(events, range, { restOfWeek = false } = {}) {
   const open = events.filter((e) => !e.hasHost);
   const n = open.length;
 
   const header = [
-    `❗️‼️ NEED ${n} HOST${n === 1 ? '' : 'S'} for the upcoming week, ${formatWeekRangeEn(range.start, range.end)}`,
+    `❗️‼️ NEED ${n} HOST${n === 1 ? '' : 'S'} for ${restOfWeek ? 'the rest of the week' : 'the upcoming week'}, ${formatWeekRangeEn(range.start, range.end)}`,
     '',
     'Please mark below by tapping:',
     "✅ - take this session - you'll be taken to that session's tab.",
     "❌ - can't do it - we'll know for sure who's not available 🙏",
     '',
-    `❗️‼️ ${ruHostPhrase(n)} на предстоящую неделю, ${formatWeekRangeRuMonthFirst(range.start, range.end)}`,
+    restOfWeek
+      ? `❗️‼️ ${ruHostPhrase(n)} до конца недели, ${formatWeekRangeRu(range.start, range.end)}`
+      : `❗️‼️ ${ruHostPhrase(n)} на предстоящую неделю, ${formatWeekRangeRuMonthFirst(range.start, range.end)}`,
     '',
     'Отметьтесь, пожалуйста, ниже, нажав на:',
     '✅ - беру эфир - попадёте во вкладку эфира.',

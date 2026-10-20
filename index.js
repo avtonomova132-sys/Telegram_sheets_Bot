@@ -21,6 +21,7 @@ const {
   handleCardCallback,
   syncCardsWithSheet,
   refreshCardsAfterHostListChange,
+  runRestOfWeekCheck,
   checkAndSendAnnounceReminders,
   sendReminderNow,
   TAKE_CALLBACK: CARD_TAKE_CALLBACK,
@@ -1174,6 +1175,35 @@ bot.onText(/^\/(списания|fees)(?:@\w+)?$/i, async (msg) => {
     await bot.sendMessage(msg.chat.id, `Не получилось: ${err.message}`);
   }
 });
+
+// ВРЕМЕННО (разово): проверка «что ещё без хоста до конца недели» по просьбе
+// Елены (20 октября). Случаи А/Б/В — см. cardButtons.js: runRestOfWeekCheck.
+// В группу уходит максимум ОДИН Анонс (случай В). Маркер пишется ДО работы.
+// Удалить после выполнения.
+(async () => {
+  const fs = require('fs');
+  const markerPath = process.env.REST_OF_WEEK_MARKER_PATH || '/data/rest_of_week_2026_10_20.json';
+  if (!myChatId || fs.existsSync(markerPath)) return;
+  try {
+    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
+  } catch (err) {
+    console.error('[rest-of-week] не удалось записать маркер, не запускаю:', err.message);
+    return;
+  }
+  try {
+    const now = new Date();
+    const range = { start: new Date(Date.UTC(2026, 9, 20)), end: new Date(Date.UTC(2026, 9, 25)) };
+    const r = await runRestOfWeekCheck(bot, { chatId: -1001757671785, range, now });
+    const res = r.result || {};
+    console.log(
+      `[rest-of-week] случай=${r.case}; свободно=${r.free ?? ''}; без карточки=${r.withoutCard ?? ''}; aborted=${res.aborted ?? ''}; без хоста в Анонсе=${res.open ?? ''}; сообщений=${res.sent ?? ''}; сомнительных=${res.doubts ?? ''}; вкладки с ошибкой=${JSON.stringify(r.failedTabs || res.failedTabs || [])}`
+    );
+    for (const c of res.cards || []) console.log(`[rest-of-week] карточка: ${c}`);
+    if (r.case === 'failedTabs') await bot.sendMessage(myChatId, `⚠️ Не удалось проверить эфиры: не загрузились вкладки ${r.failedTabs.join('; ')}. В группу ничего не отправлено.`);
+  } catch (err) {
+    console.error(`[rest-of-week] ошибка (отправлено до ошибки: ${err.sentSoFar ?? 0}):`, err.message);
+  }
+})();
 
 // ===== Воскресная авторассылка =====
 // Каждое воскресенье в WEEKLY_ANNOUNCE_HOUR (по умолчанию 10:00) по Бали бот

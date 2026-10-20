@@ -223,10 +223,26 @@ async function sendCard(bot, chatId, { titleLine, dateLine, tabUrl = null, when 
 // `range` overrides the default (next week) — e.g. the current week on a
 // Monday. Sessions whose Arizona start has already passed are left out: asking
 // for a host for something that already happened would be misleading.
-async function sendWeekCards(bot, chatId, { now = new Date(), requireComplete = false, range = getNextWeekRange(now), reviewChatId = null, sendChecklist = false, verify = null } = {}) {
+// Doubts a person has already looked at and approved, so they no longer stop an
+// announce. ACI 18 (Tim Lowenhaupt): the sessions stand on Oct 25 in the Data
+// column while the title still says "(Oct 18, 2026)" — Elena checked it on
+// 2026-10-13 ("эти два эфира относятся к 25 октября"). Matched narrowly: same
+// kind of doubt, same program, same Data date.
+const ACKNOWLEDGED_DOUBTS = [{ code: 'date-mismatch', tabIncludes: 'ACI 18', dateIso: '2026-10-25' }];
+
+function liveDoubts(e) {
+  return (e.doubts || []).filter(
+    (d) => !ACKNOWLEDGED_DOUBTS.some((a) => a.code === d.code && e.tabName.includes(a.tabIncludes) && e.date.toISOString().slice(0, 10) === a.dateIso)
+  );
+}
+
+async function sendWeekCards(bot, chatId, { now = new Date(), requireComplete = false, range = getNextWeekRange(now), reviewChatId = null, sendChecklist = false, verify = null, only = null, restOfWeek = false } = {}) {
   const collected = await collectWeekEvents(range);
   const failedTabs = collected.failedTabs;
-  const events = collected.events.filter((e) => e.hasHost || !isPastAzStart(e, now));
+  let events = collected.events.filter((e) => e.hasHost || !isPastAzStart(e, now));
+  // `only`: the caller wants cards for just some of the sessions (mid-week
+  // top-up for the ones that have no live card in the group yet).
+  if (only) events = events.filter((e) => only(e));
 
   if (events.length === 0) return { aborted: 'empty', failedTabs, events: 0, sent: 0 };
   if (requireComplete && failedTabs.length > 0) return { aborted: 'failedTabs', failedTabs, events: events.length, sent: 0 };
@@ -246,16 +262,16 @@ async function sendWeekCards(bot, chatId, { now = new Date(), requireComplete = 
   // Such an announce NEVER goes to a group by itself: the very same announce is
   // sent to `reviewChatId` (Elena's private chat) with the odd sessions listed
   // at the end. With nothing odd, no such block is added at all.
-  const cardDoubts = openEvents.filter((e) => (e.doubts || []).length > 0);
-  const review = cardDoubts.length > 0 ? { doubts: cardDoubts, blocked: false } : null;
+  const cardDoubts = openEvents.filter((e) => liveDoubts(e).length > 0);
+  const review = cardDoubts.length > 0 ? { doubts: cardDoubts.map((e) => ({ ...e, doubts: liveDoubts(e) })), blocked: false } : null;
 
   let result;
   if (review && chatId < 0) {
     if (!reviewChatId) return { aborted: 'needsReview', failedTabs, events: events.length, doubts: cardDoubts.length, strays: strays.length, sent: 0 };
     review.blocked = true;
-    result = { ...(await postWeekCards(bot, reviewChatId, events, range, failedTabs, review)), aborted: 'needsReview', reviewSent: true };
+    result = { ...(await postWeekCards(bot, reviewChatId, events, range, failedTabs, review, { restOfWeek })), aborted: 'needsReview', reviewSent: true };
   } else {
-    result = await postWeekCards(bot, chatId, events, range, failedTabs, chatId > 0 ? review : null);
+    result = await postWeekCards(bot, chatId, events, range, failedTabs, chatId > 0 ? review : null, { restOfWeek });
   }
 
   // Private extras for Elena (never into a group): the check-list she asked
@@ -316,8 +332,8 @@ function reviewNoteText({ doubts, blocked }) {
 // (split out so a test can post a hand-adjusted list through the exact same
 // code path). `review` (private chats only): {doubts, blocked} — the odd
 // sessions are listed in a last message when there are any.
-async function postWeekCards(bot, chatId, events, range, failedTabs = [], review = null) {
-  const { header, cards, closing, openCount } = buildWeekCardParts(events, range);
+async function postWeekCards(bot, chatId, events, range, failedTabs = [], review = null, { restOfWeek = false } = {}) {
+  const { header, cards, closing, openCount } = buildWeekCardParts(events, range, { restOfWeek });
   // Every event of the week already has a host — nothing to ask for.
   if (openCount === 0) return { aborted: 'allCovered', failedTabs, events: events.length, sent: 0 };
 
@@ -967,6 +983,81 @@ async function markCoveredSilently(bot, chatId) {
   return { done: true, cards: cov.cards.length };
 }
 
+// ---- Mid-week check: what is still free from now to the end of the week ----
+//
+// Elena (2026-10-20): look at every session that starts AFTER this moment (AZ
+// time from the sheet) up to Sunday and still has no host and no active ✅
+// reservation, then:
+//   A) nothing free        -> only a note to Elena listing who covers what;
+//   B) all free ones already have live cards in the group -> no second
+//      announce; Elena is told which sessions and where their cards are;
+//   C) some free ones have NO live card -> ONE announce ("for the rest of the
+//      week") with cards for exactly those sessions, to the group.
+// Odd sessions (see sendWeekCards) still divert the announce to Elena.
+
+const eventKeyOf = (e) => `${e.tabUrl || ''}|${e.date.toISOString()}|${e.azStartMin}`;
+const recordKeyOf = (r) => `${(r.event && r.event.tabUrl) || ''}|${r.event && r.event.dateIso}|${r.event && r.event.azStartMin}`;
+
+async function runRestOfWeekCheck(bot, { chatId, range, now = new Date() }) {
+  const collected = await collectWeekEvents(range);
+  if (collected.failedTabs.length > 0) return { case: 'failedTabs', failedTabs: collected.failedTabs };
+
+  const store = readJson({ messages: {}, batches: [] });
+  // Live cards: cards of this chat's announces that are still open (not hosted).
+  // A reservation sits on the same record.
+  const cardByEvent = new Map();
+  for (const [key, record] of Object.entries(store.messages)) {
+    if (record.mirrorOf || !record.event || Number(key.split(':')[0]) !== chatId) continue;
+    normalizeRecord(record);
+    cardByEvent.set(recordKeyOf(record), { key, record });
+  }
+
+  const upcoming = collected.events.filter((e) => !isPastAzStart(e, now));
+  const closed = []; // {event, who}
+  const free = []; // {event, card|null}
+  for (const e of upcoming) {
+    const card = cardByEvent.get(eventKeyOf(e)) || null;
+    if (e.hasHost) closed.push({ event: e, who: `👤 ${escapeHtml(e.host)}` });
+    else if (card && card.record.reservedBy) closed.push({ event: e, who: `🔒 зарезервировал(а) ${escapeHtml(displayName(card.record.reservedBy))}, ещё не вписан(а) в таблицу` });
+    else free.push({ event: e, card });
+  }
+
+  const eventHtml = (e) =>
+    `<b>${escapeHtml(e.tabName)}</b> — «${escapeHtml(sessionLabel(e.title) || 'без названия')}»\n   AZ: ${ddmm(e.date)}, ${formatRange24h(e.azStartMin, e.azEndMin)} · MCK: ${ddmm(mskDate(e))}, ${formatRange24h(e.mskStartMin, e.mskEndMin)}`;
+  const cardLink = (key) => `https://t.me/c/${String(chatId).replace(/^-100/, '')}/${key.split(':')[1]}`;
+
+  // A) nothing free
+  if (free.length === 0) {
+    const lines = ['✅ <b>Все ближайшие эфиры закрыты</b>', ''];
+    closed.forEach((c) => lines.push(`${eventHtml(c.event)}\n   ${c.who}`, ''));
+    if (closed.length === 0) lines.push('(до конца недели больше нет эфиров)');
+    await sendToElena(bot, lines.join('\n').trim());
+    return { case: 'A', closed: closed.length };
+  }
+
+  // B) every free session already has a live card in the group
+  const without = free.filter((f) => !f.card);
+  if (without.length === 0) {
+    const lines = [`🔔 <b>Свободных эфиров: ${free.length}. Карточки с кнопками уже висят в группе</b> — второй Анонс не отправляю:`, ''];
+    free.forEach((f) => lines.push(`${eventHtml(f.event)}\n   карточка: ${cardLink(f.card.key)}`, ''));
+    lines.push('Отправить напоминание?');
+    await sendToElena(bot, lines.join('\n').trim());
+    return { case: 'B', free: free.length };
+  }
+
+  // C) announce the ones without a live card
+  const wanted = new Set(without.map((f) => eventKeyOf(f.event)));
+  const result = await sendWeekCards(bot, chatId, {
+    now,
+    range,
+    requireComplete: true,
+    reviewChatId: elenaChatId(),
+    restOfWeek: true,
+    only: (e) => wanted.has(eventKeyOf(e)),
+  });
+  return { case: 'C', free: free.length, withoutCard: without.length, covered: free.length - without.length, result };
+}
+
 // ---- One reminder, 24h after an announce, to hosts who haven't responded ----
 //
 // Every announce posted to a group (Sunday auto-send or a manual command) is
@@ -1200,6 +1291,7 @@ module.exports = {
   syncCardsWithSheet,
   refreshCardsAfterHostListChange,
   markCoveredSilently,
+  runRestOfWeekCheck,
   weekFlowTick,
   buildHostNudgePlan,
   tuesdayMessageText,
