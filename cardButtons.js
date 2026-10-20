@@ -81,7 +81,6 @@ function loadHostCandidates() {
 // she previews an announce before it goes to the group.
 const TEMP_EXTRA_HOSTS = {
   '-5172293748': ['@Elena_NangTong_Bali'],
-  ...(process.env.MY_CHAT_ID ? { [String(process.env.MY_CHAT_ID)]: ['@Elena_NangTong_Bali'] } : {}),
 };
 
 function candidatesFor(chatId, base = loadHostCandidates()) {
@@ -236,7 +235,7 @@ function liveDoubts(e) {
   );
 }
 
-async function sendWeekCards(bot, chatId, { now = new Date(), requireComplete = false, range = getNextWeekRange(now), reviewChatId = null, sendChecklist = false, verify = null, only = null, restOfWeek = false } = {}) {
+async function sendWeekCards(bot, chatId, { now = new Date(), requireComplete = false, range = getNextWeekRange(now), reviewChatId = null, sendChecklist = false, verify = null, only = null, restOfWeek = false, allowDoubts = false } = {}) {
   const collected = await collectWeekEvents(range);
   const failedTabs = collected.failedTabs;
   let events = collected.events.filter((e) => e.hasHost || !isPastAzStart(e, now));
@@ -266,7 +265,7 @@ async function sendWeekCards(bot, chatId, { now = new Date(), requireComplete = 
   const review = cardDoubts.length > 0 ? { doubts: cardDoubts.map((e) => ({ ...e, doubts: liveDoubts(e) })), blocked: false } : null;
 
   let result;
-  if (review && chatId < 0) {
+  if (review && chatId < 0 && !allowDoubts) {
     if (!reviewChatId) return { aborted: 'needsReview', failedTabs, events: events.length, doubts: cardDoubts.length, strays: strays.length, sent: 0 };
     review.blocked = true;
     result = { ...(await postWeekCards(bot, reviewChatId, events, range, failedTabs, review, { restOfWeek })), aborted: 'needsReview', reviewSent: true };
@@ -318,13 +317,13 @@ function checklistText(openEvents, skippedOff, strays) {
 }
 
 // The closing block of an announce that has odd sessions (private chat only).
-function reviewNoteText({ doubts, blocked }) {
+function reviewNoteText({ doubts, blocked, preview = false }) {
   return [
     '⚠️ <b>Нужна проверка</b> — эти эфиры показались мне странными:',
     '',
     doubts.map(describeDoubt).join('\n\n'),
     '',
-    blocked ? 'Это тот же Анонс, который ушёл бы в группу, — в группу он НЕ отправлен.' : 'С такими эфирами автоматическая отправка в группу не сработала бы.',
+    blocked ? 'Это тот же Анонс, который ушёл бы в группу, — в группу он НЕ отправлен.' : preview ? 'Решите, отправлять ли Анонс в группу с такими эфирами (кнопки ниже).' : 'С такими эфирами автоматическая отправка в группу не сработала бы.',
   ].join('\n');
 }
 
@@ -570,7 +569,11 @@ function handleCardCallback(bot, query) {
 // load the run is skipped, since "no host found" would be unreliable.
 async function syncCardsWithSheet(bot) {
   const store = readJson({ messages: {} });
-  const pending = Object.entries(store.messages).filter(([, r]) => r.event && !r.hosted);
+  // Only the cards of announces that are still live (the week's, ~9 days) — the
+  // sheet is read every 15 minutes while any of them is not yet confirmed there.
+  const liveKeys = new Set();
+  for (const b of (store.batches || []).filter((x) => isLiveBatch(x, Date.now()))) b.cardKeys.forEach((k) => liveKeys.add(k));
+  const pending = Object.entries(store.messages).filter(([k, r]) => liveKeys.has(k) && r.event && !r.hosted);
   if (pending.length === 0) return { checked: 0, updated: 0 };
 
   const times = pending.map(([, r]) => new Date(r.event.dateIso).getTime());
@@ -851,6 +854,13 @@ async function evaluateCoverage(bot, batchKey) {
       batch.tuesdayDoneAt = now;
       batch.tuesdayCancelledByCover = true;
     }
+    schedulerOf(store);
+    for (const p of Object.values(store.scheduler.pending)) {
+      if (p.kind === 'reminder' && p.batchKey === batchKey && p.status === 'pending') {
+        p.status = 'stale';
+        removeButtons(bot, p);
+      }
+    }
     writeJsonAtomic(store);
     await sendToElena(bot, coveredDmText(cov.cards));
     try {
@@ -911,9 +921,21 @@ function weekRangeOfBatch(store, batch) {
 async function runTuesdayCheck(bot, batchKey, now) {
   const store = readJson({ messages: {}, batches: [] });
   const batch = (store.batches || []).find((b) => batchId(b) === batchKey);
-  if (!batch || !isLiveBatch(batch, now) || batch.tuesdayDoneAt || now < batch.sentAt + TUESDAY_DELAY_MS) return;
+  if (!batch || !isLiveBatch(batch, now) || batch.tuesdayDoneAt) return;
   const range = weekRangeOfBatch(store, batch);
   if (!range) return;
+  const due = tuesdayDueAt(batch, range);
+  if (now < due) return;
+  if (now > due + CATCHUP_MS) {
+    // Missed by more than 3 hours (bot unavailable): not run, and said out loud.
+    const activatedAt = store.scheduler?.activatedAt || 0;
+    updateScheduler((s, st) => {
+      const x = (st.batches || []).find((y) => batchId(y) === batchKey);
+      if (x) x.tuesdayDoneAt = now;
+    });
+    if (due >= activatedAt) await sendToElena(bot, `⚠️ Вторничная проверка по Анонсу ${weekLabel(range)} не выполнилась вовремя (бот был недоступен больше 3 часов). Состояние недели: /check`);
+    return;
+  }
   const plan = await buildHostNudgePlan(batch.chatId, range, new Date(now), batch);
   const after = readJson({ messages: {}, batches: [] });
   const b = (after.batches || []).find((x) => batchId(x) === batchKey);
@@ -938,7 +960,7 @@ async function weekFlowTick(bot, now) {
       await evaluateCoverage(bot, key);
       await runTuesdayCheck(bot, key, now);
     } catch (err) {
-      console.error(`[week-flow] ошибка (${key}):`, err.message);
+      await reportProblem(bot, `flow:${key}`, `Проверка недели (Анонс ${key}) не сработала: ${err.message}`);
     }
   }
 }
@@ -1225,48 +1247,476 @@ function batchSummaries() {
   }));
 }
 
-// Called every few minutes (catch-up style: a missed tick or a restart just
-// sends it on the next one). Returns any send errors so the caller can tell
-// Elena; an ordinary "nothing to remind about" is not an error.
-async function checkAndSendAnnounceReminders(bot, now = Date.now()) {
-  const errors = [];
-  // First: "all covered" / Tuesday check — which may cancel a reminder below.
-  await runSerial(() => weekFlowTick(bot, now));
-  const dueIds = (readJson({ messages: {} }).batches || [])
-    .filter((b) => !b.remindedAt && now >= b.sentAt + REMINDER_DELAY_MS)
-    .map(batchId);
+// ---- The weekly schedule WITH Elena's confirmation ----
+//
+// Nothing goes to the group by itself any more (Elena, 2026-10-21). All times
+// are Bali (UTC+8, no DST); the only things written to the group without a
+// "yes" from Elena are the thank-you replies of the "all covered" flow.
+//
+//   Sunday 09:00   preview of NEXT week's announce -> Elena only, exactly as it
+//                  would look in the group, plus "Send / Don't send" buttons
+//   Monday 09:00   preview of the reminder (header + cards of what is still
+//                  free + tags of those who never pressed) -> Elena, same buttons
+//   Tuesday 09:00  (only if something is still free) a note to Elena: whom to
+//                  write to, whom not, and a ready text. The bot never writes to
+//                  a host.
+//   any time       "all covered" (see evaluateCoverage) — automatic.
+//
+// "Yes" = the inline button, the word да/yes as a REPLY to the preview, or
+// /yes (/no for the opposite). Before sending, the table is checked again: if
+// the list of sessions changed since the preview, nothing is sent and an
+// updated preview with what changed is shown instead.
+//
+// No AI anywhere in here. Everything is a plain clock + saved state, so it
+// survives restarts: the state lives in the same /data/card_buttons.json
+// (store.scheduler), a slot that is due is done once (a "done" mark), and a slot
+// that was missed by up to 3 hours (bot down/restarting) is still run on start;
+// older than that it is NOT run and Elena is told. Any failure is reported to
+// her in private, never silently.
 
-  for (const id of dueIds) {
-    await runSerial(async () => {
-      const store = readJson({ messages: {} });
-      const batch = (store.batches || []).find((b) => batchId(b) === id);
-      if (!batch || batch.remindedAt) return;
+const CATCHUP_MS = 3 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
-      const superseded = store.batches.some((b) => b.chatId === batch.chatId && b.sentAt > batch.sentAt);
-      const plan = superseded ? { skip: 'superseded' } : planReminder(store, batch, now);
-      batch.remindedAt = now;
-      batch.outcome = plan.skip || 'sent';
-      writeJsonAtomic(store);
+const isoOf = (d) => d.toISOString().slice(0, 10);
+const addDaysUtc = (d, n) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + n));
+const range7 = (monday) => ({ start: monday, end: addDaysUtc(monday, 6) });
+// 09:00 Bali of the given calendar date (a UTC-midnight Date) = 01:00 UTC.
+const at0900 = (d, plusDays = 0) => Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + plusDays, 1, 0, 0);
 
-      if (plan.skip) {
-        console.log(`[announce-reminder] ${id}: напоминание не нужно (${plan.skip})`);
-        return;
-      }
-      try {
-        await postReminder(bot, batch, plan);
-        console.log(`[announce-reminder] ${id}: отправлено, свободных эфиров ${plan.free.length}, не отметились совсем: ${plan.tagged}`);
-      } catch (err) {
-        errors.push({ chatId: batch.chatId, message: err.message });
-        const after = readJson({ messages: {} });
-        const b = (after.batches || []).find((x) => batchId(x) === id);
-        if (b) {
-          b.outcome = `failed: ${err.message}`;
-          writeJsonAtomic(after);
-        }
+function baliMonday(ms) {
+  const b = new Date(ms + 8 * 3600 * 1000);
+  const back = (b.getUTCDay() + 6) % 7;
+  return new Date(Date.UTC(b.getUTCFullYear(), b.getUTCMonth(), b.getUTCDate() - back));
+}
+
+function schedulerOf(store) {
+  store.scheduler = store.scheduler || {};
+  const s = store.scheduler;
+  s.done = s.done || {};
+  s.pending = s.pending || {};
+  s.errors = s.errors || {};
+  return s;
+}
+
+// Read–change–write of the scheduler part of the state, synchronously.
+function updateScheduler(fn) {
+  const store = readJson({ messages: {}, batches: [] });
+  const s = schedulerOf(store);
+  const result = fn(s, store);
+  writeJsonAtomic(store);
+  return result;
+}
+
+// A problem is told to Elena at most once per `everyMs` per key.
+async function reportProblem(bot, key, text, everyMs = 60 * 60 * 1000) {
+  const now = Date.now();
+  const due = updateScheduler((s) => {
+    if (s.errors[key] && now - s.errors[key] < everyMs) return false;
+    s.errors[key] = now;
+    return true;
+  });
+  console.error(`[week-schedule] ${key}: ${text}`);
+  if (due) await sendToElena(bot, `⚠️ ${escapeHtml(text)}`);
+}
+
+// ---- When each thing is due ----
+// The reminder: Monday 09:00 of the announce's week; for an announce sent after
+// that (mid-week top-up) 24 hours after it was sent.
+const reminderDueAt = (batch, range) => (batch.sentAt < at0900(range.start) ? at0900(range.start) : batch.sentAt + DAY_MS);
+// Tuesday's note: the day after the reminder.
+const tuesdayDueAt = (batch, range) => Math.max(at0900(range.start, 1), reminderDueAt(batch, range) + DAY_MS);
+
+// ---- Signatures: "is this still the list that was previewed?" ----
+function announceItems(openEvents) {
+  return openEvents.map((e) => `${e.tabName} | ${isoOf(e.date)} ${formatRange24h(e.azStartMin, e.azEndMin)} AZ | ${sessionLabel(e.title) || '—'}`).sort();
+}
+function announceSignature(openEvents) {
+  return JSON.stringify(openEvents.map((e) => [e.tabUrl || '', isoOf(e.date), e.azStartMin, e.azEndMin, liveDoubts(e).map((d) => d.code).sort()]).sort());
+}
+function diffNote(oldItems, newItems) {
+  const added = newItems.filter((x) => !oldItems.includes(x));
+  const removed = oldItems.filter((x) => !newItems.includes(x));
+  const lines = ['⚠️ <b>Список эфиров изменился с момента предыдущего превью</b> — в группу ничего не отправлено. Что поменялось:'];
+  added.forEach((x) => lines.push(`➕ ${escapeHtml(x)}`));
+  removed.forEach((x) => lines.push(`➖ ${escapeHtml(x)}`));
+  if (added.length === 0 && removed.length === 0) lines.push('(поменялись детали эфиров — даты, время или сомнения)');
+  return lines.join('\n');
+}
+
+const controlKeyboard = (id) => [[{ text: '✅ Отправить в группу / Send to group', callback_data: `wk:ok:${id}` }, { text: "❌ Не отправлять / Don't send", callback_data: `wk:no:${id}` }]];
+const weekLabel = (range) => `${ddmm(range.start)}–${ddmm(range.end)}`;
+const HOW_TO_ANSWER = 'Нажмите кнопку, ответьте на это сообщение словом «да» / «нет» или напишите /yes / /no.';
+
+async function removeButtons(bot, p) {
+  if (!p || !p.controlMessageId) return;
+  try {
+    await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: elenaChatId(), message_id: p.controlMessageId });
+  } catch {
+    /* already gone / unchanged */
+  }
+}
+
+// ---- A) Announce preview ----
+// `prev`: items of the preview this one replaces (to show what changed).
+async function createAnnouncePreview(bot, { monday, now = Date.now(), prevItems = null, manual = false }) {
+  const elena = elenaChatId();
+  if (!elena) throw new Error('MY_CHAT_ID не задан — некому слать превью');
+  const range = range7(monday);
+  const key = `announce:${isoOf(monday)}`;
+  const collected = await collectWeekEvents(range);
+  if (collected.failedTabs.length > 0) throw new Error(`не загрузились вкладки таблицы: ${collected.failedTabs.join('; ')}`);
+  const events = collected.events.filter((e) => e.hasHost || !isPastAzStart(e, new Date(now)));
+  const openEvents = events.filter((e) => !e.hasHost);
+
+  if (openEvents.length === 0) {
+    // A manual run never uses up the Sunday slot.
+    if (!manual) {
+      updateScheduler((s) => {
+        s.done[key] = { at: now, outcome: 'none' };
+      });
+    }
+    await sendToElena(bot, manual ? `На неделю ${weekLabel(range)} эфиров без хоста нет` : 'На следующую неделю эфиров без хоста нет');
+    return { none: true };
+  }
+
+  const doubts = openEvents.filter((e) => liveDoubts(e).length > 0).map((e) => ({ ...e, doubts: liveDoubts(e) }));
+  const review = doubts.length > 0 ? { doubts, blocked: false, preview: true } : null;
+  await postWeekCards(bot, elena, events, range, [], review);
+
+  const items = announceItems(openEvents);
+  const id = `a-${isoOf(monday)}`;
+  const text = [
+    prevItems ? diffNote(prevItems, items) : null,
+    `👆 <b>Превью Анонса на неделю ${weekLabel(range)}</b> — эфиров без хоста: ${openEvents.length}. Отправить в группу «WorldView Productions»?`,
+    HOW_TO_ANSWER,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+  const control = await withRetry(() => bot.sendMessage(elena, text, { parse_mode: 'HTML', reply_markup: { inline_keyboard: controlKeyboard(id) } }));
+  updateScheduler((s) => {
+    const old = s.pending[id];
+    if (old && old.status === 'pending' && old.controlMessageId !== control.message_id) old.status = 'superseded';
+    s.pending[id] = {
+      id,
+      kind: 'announce',
+      weekStart: isoOf(monday),
+      signature: announceSignature(openEvents),
+      items,
+      controlMessageId: control.message_id,
+      createdAt: now,
+      nudgedAt: null,
+      expiresAt: at0900(addDaysUtc(monday, 7)),
+      status: 'pending',
+    };
+    if (!manual) s.done[key] = { at: now, outcome: 'preview' };
+  });
+  return { preview: true, id, open: openEvents.length };
+}
+
+// ---- B) Reminder preview ----
+const reminderSignature = (store, batch, plan) => JSON.stringify([plan.free.map((f) => f.key).sort(), unrespondedHosts(store, batch).map(normUser).sort()]);
+
+async function createReminderPreview(bot, batchKey, { now = Date.now(), prevItems = null } = {}) {
+  const elena = elenaChatId();
+  if (!elena) throw new Error('MY_CHAT_ID не задан — некому слать превью');
+  const store = readJson({ messages: {}, batches: [] });
+  const batch = (store.batches || []).find((b) => batchId(b) === batchKey);
+  if (!batch) return { gone: true };
+  const plan = planReminder(store, batch, now);
+  if (plan.skip) {
+    updateScheduler((s, st) => {
+      const b = (st.batches || []).find((x) => batchId(x) === batchKey);
+      if (b) {
+        b.remindedAt = now;
+        b.outcome = plan.skip;
       }
     });
+    console.log(`[week-schedule] ${batchKey}: напоминание не нужно (${plan.skip})`);
+    return { skipped: plan.skip };
   }
-  return { errors };
+
+  // The preview: the same header, then the same cards (their buttons do
+  // nothing here — only the 8 hosts can use them, and only in the group).
+  await withRetry(() => bot.sendMessage(elena, plan.text, { parse_mode: 'HTML' }));
+  for (const f of plan.free) {
+    await sleep(PRIVATE_GAP_MS);
+    const record = store.messages[f.key];
+    await withRetry(() => bot.sendMessage(elena, cardText(record), { parse_mode: 'HTML', reply_markup: { inline_keyboard: cardKeyboard(record) } }));
+  }
+  const items = plan.free.map((f) => `${f.record.titleLine.replace(/<[^>]+>/g, '')} ${f.record.when || ''}`.trim()).sort();
+  const id = `r${Math.abs(batch.chatId)}_${batch.headerMessageId}`;
+  const range = weekRangeOfBatch(store, batch);
+  const text = [
+    prevItems ? diffNote(prevItems, items) : null,
+    `👆 <b>Превью напоминания</b> — свободных эфиров: ${plan.free.length}, не отметились ни разу: ${plan.tagged}. В группе оно уйдёт ответом на шапку Анонса, под карточками будут рабочие кнопки. Отправить?`,
+    HOW_TO_ANSWER,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+  const control = await withRetry(() => bot.sendMessage(elena, text, { parse_mode: 'HTML', reply_markup: { inline_keyboard: controlKeyboard(id) } }));
+  updateScheduler((s, st) => {
+    const old = s.pending[id];
+    if (old && old.status === 'pending' && old.controlMessageId !== control.message_id) old.status = 'superseded';
+    s.pending[id] = {
+      id,
+      kind: 'reminder',
+      batchKey,
+      signature: reminderSignature(store, batch, plan),
+      items,
+      controlMessageId: control.message_id,
+      createdAt: now,
+      nudgedAt: null,
+      expiresAt: range ? at0900(addDaysUtc(range.start, 7)) : now + 7 * DAY_MS,
+      status: 'pending',
+    };
+    const b = (st.batches || []).find((x) => batchId(x) === batchKey);
+    if (b) {
+      b.remindedAt = now;
+      b.outcome = 'preview';
+    }
+  });
+  return { preview: true, id, free: plan.free.length };
+}
+
+// ---- The answer: button, "да"/"нет" reply, /yes, /no ----
+async function confirmPending(bot, id, approve) {
+  const now = Date.now();
+  const p = readJson({ messages: {}, batches: [] }).scheduler?.pending?.[id];
+  if (!p) return sendToElena(bot, 'Не нашла такое превью — возможно, оно уже устарело.');
+  if (p.status !== 'pending') return sendToElena(bot, `Это превью уже обработано (${p.status}).`);
+  if (now > p.expiresAt) {
+    updateScheduler((s) => {
+      s.pending[id].status = 'stale';
+    });
+    await removeButtons(bot, p);
+    return sendToElena(bot, 'Это превью устарело (неделя прошла) — в группу ничего не отправляю.');
+  }
+
+  if (!approve) {
+    updateScheduler((s, st) => {
+      s.pending[id].status = 'declined';
+      if (p.kind === 'reminder') {
+        const b = (st.batches || []).find((x) => batchId(x) === p.batchKey);
+        if (b) b.outcome = 'declined';
+      }
+    });
+    await removeButtons(bot, p);
+    return sendToElena(bot, 'Хорошо, в группу ничего не отправляю.');
+  }
+
+  // Marked first, so a second tap while sending cannot send twice.
+  updateScheduler((s) => {
+    s.pending[id].status = 'sending';
+  });
+  await removeButtons(bot, p);
+  try {
+    if (p.kind === 'announce') await sendApprovedAnnounce(bot, p, now);
+    else await sendApprovedReminder(bot, p, now);
+  } catch (err) {
+    updateScheduler((s) => {
+      s.pending[id].status = 'failed';
+    });
+    console.error('[week-schedule] отправка в группу не удалась:', err.message);
+    await sendToElena(bot, `⚠️ Не получилось отправить в группу: ${escapeHtml(err.message)}. Ничего повторно автоматически не отправляю — можно запросить превью заново (/announce).`);
+  }
+}
+
+async function sendApprovedAnnounce(bot, p, now) {
+  const monday = new Date(`${p.weekStart}T00:00:00.000Z`);
+  const range = range7(monday);
+  const res = await sendWeekCards(bot, WVP_GROUP_ID, {
+    now: new Date(now),
+    range,
+    requireComplete: true,
+    reviewChatId: elenaChatId(),
+    allowDoubts: true,
+    verify: (open) => (announceSignature(open) === p.signature ? null : 'changed'),
+  });
+  if (res.aborted === 'mismatch') {
+    updateScheduler((s) => {
+      s.pending[p.id].status = 'superseded';
+    });
+    await createAnnouncePreview(bot, { monday, now, prevItems: p.items });
+    return;
+  }
+  if (res.aborted) {
+    updateScheduler((s) => {
+      s.pending[p.id].status = 'failed';
+    });
+    const why = { allCovered: 'эфиров без хоста уже нет', empty: 'на этой неделе нет эфиров', failedTabs: 'не загрузились вкладки таблицы' }[res.aborted] || res.aborted;
+    return sendToElena(bot, `В группу не отправила: ${escapeHtml(why)}.`);
+  }
+  updateScheduler((s) => {
+    s.pending[p.id].status = 'sent';
+  });
+  await sendToElena(bot, `✅ Отправлено в группу: Анонс на неделю ${weekLabel(range)}, эфиров без хоста — ${res.open}.`);
+}
+
+async function sendApprovedReminder(bot, p, now) {
+  const store = readJson({ messages: {}, batches: [] });
+  const batch = (store.batches || []).find((b) => batchId(b) === p.batchKey);
+  if (!batch) throw new Error('Анонс не найден в сохранённых данных');
+  const plan = planReminder(store, batch, now);
+  if (plan.skip) {
+    updateScheduler((s) => {
+      s.pending[p.id].status = 'stale';
+    });
+    return sendToElena(bot, `Напоминание уже не нужно (${escapeHtml(plan.skip === 'no-free' ? 'свободных эфиров не осталось' : plan.skip)}) — в группу ничего не отправляю.`);
+  }
+  if (reminderSignature(store, batch, plan) !== p.signature) {
+    updateScheduler((s) => {
+      s.pending[p.id].status = 'superseded';
+    });
+    await createReminderPreview(bot, p.batchKey, { now, prevItems: p.items });
+    return;
+  }
+  await postReminder(bot, batch, plan);
+  updateScheduler((s, st) => {
+    s.pending[p.id].status = 'sent';
+    const b = (st.batches || []).find((x) => batchId(x) === p.batchKey);
+    if (b) {
+      b.remindedAt = now;
+      b.outcome = 'sent';
+    }
+  });
+  await sendToElena(bot, `✅ Напоминание отправлено в группу (свободных эфиров: ${plan.free.length}).`);
+}
+
+function pendingList() {
+  const pending = readJson({ messages: {}, batches: [] }).scheduler?.pending || {};
+  return Object.values(pending).filter((p) => p.status === 'pending').sort((a, b) => b.createdAt - a.createdAt);
+}
+
+// Button on a preview.
+function handleWeekCallback(bot, query) {
+  const elena = elenaChatId();
+  const answer = (text) => bot.answerCallbackQuery(query.id, text ? { text } : {}).catch(() => {});
+  if (!elena || !query.from || query.from.id !== elena) return answer();
+  const m = String(query.data || '').match(/^wk:(ok|no):(.+)$/);
+  if (!m) return answer();
+  answer(m[1] === 'ok' ? 'Отправляю…' : 'Не отправляю');
+  return runSerial(() => confirmPending(bot, m[2], m[1] === 'ok'));
+}
+
+// "да"/"нет" as a REPLY to a preview's question. Returns true if it was one.
+async function handleWeekTextReply(bot, msg) {
+  const elena = elenaChatId();
+  if (!elena || !msg.from || msg.from.id !== elena || !msg.reply_to_message || !msg.text) return false;
+  const word = msg.text.trim().toLowerCase().replace(/[.!\s]+$/g, '');
+  const approve = ['да', 'yes', 'ага', 'отправляй'].includes(word);
+  const decline = ['нет', 'no', 'не надо'].includes(word);
+  if (!approve && !decline) return false;
+  const p = pendingList().find((x) => x.controlMessageId === msg.reply_to_message.message_id);
+  if (!p) return false;
+  await runSerial(() => confirmPending(bot, p.id, approve));
+  return true;
+}
+
+// /yes, /no (the newest preview waiting), /announce [next|this|YYYY-MM-DD].
+async function handleWeekCommand(bot, msg, command, arg = '') {
+  const elena = elenaChatId();
+  if (!elena || !msg.from || msg.from.id !== elena || msg.chat.type !== 'private') return;
+  if (command === 'yes' || command === 'no') {
+    const p = pendingList()[0];
+    if (!p) return sendToElena(bot, 'Сейчас нет превью, которое ждёт ответа.');
+    return runSerial(() => confirmPending(bot, p.id, command === 'yes'));
+  }
+  if (command === 'announce') {
+    const a = String(arg || '').trim().toLowerCase();
+    let monday;
+    if (!a || a === 'next') monday = addDaysUtc(baliMonday(Date.now()), 7);
+    else if (a === 'this' || a === 'current') monday = baliMonday(Date.now());
+    else if (/^\d{4}-\d{2}-\d{2}$/.test(a)) monday = baliMonday(Date.parse(`${a}T04:00:00Z`));
+    else return sendToElena(bot, 'Формат: /announce — следующая неделя; /announce this — текущая; /announce 2026-11-02 — неделя с этой датой.');
+    return runSerialStrict(() => createAnnouncePreview(bot, { monday, manual: true })).catch((err) =>
+      reportProblem(bot, `announce-manual:${isoOf(monday)}`, `Не получилось подготовить превью на неделю ${weekLabel(range7(monday))}: ${err.message}`, 0)
+    );
+  }
+}
+
+// ---- The tick: every 5 minutes and once after a start ----
+async function announceSlotStep(bot, now) {
+  const activatedAt = updateScheduler((s) => {
+    if (!s.activatedAt) s.activatedAt = now;
+    return s.activatedAt;
+  });
+  const cur = baliMonday(now);
+  for (const monday of [cur, addDaysUtc(cur, 7)]) {
+    const key = `announce:${isoOf(monday)}`;
+    const due = at0900(monday, -1); // Sunday 09:00 before that Monday
+    const done = readJson({ messages: {}, batches: [] }).scheduler?.done?.[key];
+    if (done || now < due) continue;
+    if (now <= due + CATCHUP_MS) {
+      await createAnnouncePreview(bot, { monday, now });
+      continue;
+    }
+    // Missed by more than 3 hours: not run, and said out loud (unless it
+    // predates this feature being switched on).
+    updateScheduler((s) => {
+      s.done[key] = { at: now, outcome: 'missed' };
+    });
+    if (due >= activatedAt) {
+      await sendToElena(bot, `⚠️ Воскресное превью Анонса на неделю ${weekLabel(range7(monday))} не удалось подготовить вовремя (бот был недоступен больше 3 часов). Подготовить вручную: /announce`);
+    }
+  }
+}
+
+async function reminderSlotStep(bot, now) {
+  const store = readJson({ messages: {}, batches: [] });
+  const activatedAt = store.scheduler?.activatedAt || 0;
+  for (const b of (store.batches || []).filter((x) => isLiveBatch(x, now) && !x.remindedAt)) {
+    const range = weekRangeOfBatch(store, b);
+    if (!range) continue;
+    const due = reminderDueAt(b, range);
+    if (now < due) continue;
+    const key = batchId(b);
+    if (now <= due + CATCHUP_MS) {
+      await createReminderPreview(bot, key, { now });
+      continue;
+    }
+    updateScheduler((s, st) => {
+      const x = (st.batches || []).find((y) => batchId(y) === key);
+      if (x) {
+        x.remindedAt = now;
+        x.outcome = 'missed';
+      }
+    });
+    if (due >= activatedAt) {
+      await sendToElena(bot, `⚠️ Превью напоминания по Анонсу ${weekLabel(range)} не удалось подготовить вовремя (бот был недоступен больше 3 часов). Состояние недели: /check`);
+    }
+  }
+}
+
+// One reminder to Elena (at 12:00 Bali, or 3 hours after the preview if that
+// is later) when a preview is still waiting.
+async function nudgeStep(bot, now) {
+  for (const p of pendingList()) {
+    if (p.nudgedAt) continue;
+    const created = new Date(p.createdAt + 8 * 3600 * 1000);
+    const noon = Date.UTC(created.getUTCFullYear(), created.getUTCMonth(), created.getUTCDate(), 4, 0, 0); // 12:00 Bali
+    const nudgeAt = p.createdAt < noon ? noon : p.createdAt + CATCHUP_MS;
+    if (now < nudgeAt) continue;
+    updateScheduler((s) => {
+      s.pending[p.id].nudgedAt = now;
+    });
+    await sendToElena(bot, `⏰ Превью ${p.kind === 'announce' ? 'Анонса' : 'напоминания'} всё ещё ждёт вашего ответа. Нажмите кнопку под ним, ответьте «да» / «нет» или напишите /yes / /no. Пока вы не ответили, в группу ничего не уходит.`);
+  }
+}
+
+async function weekSchedulerTick(bot, now = Date.now()) {
+  const steps = [
+    ['coverage-tuesday', () => runSerialStrict(() => weekFlowTick(bot, now))],
+    ['announce-sunday', () => runSerialStrict(() => announceSlotStep(bot, now))],
+    ['reminder-monday', () => runSerialStrict(() => reminderSlotStep(bot, now))],
+    ['nudge', () => runSerialStrict(() => nudgeStep(bot, now))],
+  ];
+  for (const [name, run] of steps) {
+    try {
+      await run();
+    } catch (err) {
+      await reportProblem(bot, `tick:${name}`, `Автоматика недели («${name}») не сработала: ${err.message}. Попробую снова через 5 минут; если не получится — бот напишет ещё раз.`);
+    }
+  }
 }
 
 // Manual test: the same reminder for the latest announce in `chatId`, sent
@@ -1296,7 +1746,11 @@ module.exports = {
   buildHostNudgePlan,
   tuesdayMessageText,
   batchSummaries,
-  checkAndSendAnnounceReminders,
+  weekSchedulerTick,
+  handleWeekCallback,
+  handleWeekTextReply,
+  handleWeekCommand,
+  reportProblem,
   sendReminderNow,
   TAKE_CALLBACK,
   PASS_CALLBACK,

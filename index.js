@@ -21,7 +21,11 @@ const {
   handleCardCallback,
   syncCardsWithSheet,
   refreshCardsAfterHostListChange,
-  checkAndSendAnnounceReminders,
+  weekSchedulerTick,
+  handleWeekCallback,
+  handleWeekTextReply,
+  handleWeekCommand,
+  reportProblem,
   sendReminderNow,
   TAKE_CALLBACK: CARD_TAKE_CALLBACK,
   PASS_CALLBACK: CARD_PASS_CALLBACK,
@@ -397,6 +401,10 @@ bot.on('message', async (msg) => {
   if (msg.chat.type !== 'private') return;
 
   if (!text || text.startsWith('/')) return;
+
+  // «да» / «нет» ОТВЕТОМ на превью Анонса или напоминания (Елене) — решение
+  // отправлять/не отправлять в группу; обычный текст сюда не попадает.
+  if (await handleWeekTextReply(bot, msg)) return;
 
   // Уточнение стороны измерения (/габариты) перехватывает свободный текст
   // первым — пока сессия ждёт ответа "ширина/длина/высота", это сообщение
@@ -900,6 +908,12 @@ bot.onText(/^\/(следующая_неделя|next_week)(?:@\S+)?$/, (msg) => 
 // — см. cardButtons.js.
 bot.on('callback_query', (query) => {
   const data = query.data || '';
+  // Кнопки под превью Анонса/напоминания (Елене): «Отправить в группу» / «Не
+  // отправлять» — см. cardButtons.js: weekSchedulerTick.
+  if (data.startsWith('wk:')) {
+    handleWeekCallback(bot, query);
+    return;
+  }
   // Карточки в напоминании — копии карточек Анонса с теми же кнопками, так что
   // нажатия приходят сюда же; см. cardButtons.js.
   if (data !== CARD_TAKE_CALLBACK && data !== CARD_PASS_CALLBACK && data !== CARD_UNDO_CALLBACK) return;
@@ -1196,87 +1210,42 @@ function notifyElena(text) {
   bot.sendMessage(myChatId, text).catch((err) => console.error('[weekly-announce] не удалось написать Елене:', err.message));
 }
 
-// НА ПАУЗЕ по просьбе Elena (сначала обсуждает формат/логику с коллегой):
-// автоматическая воскресная рассылка не отправляется, пока не задано
-// WEEKLY_ANNOUNCE_ENABLED=1 — после её отдельного "можно отправлять". Ручной
-// /next_week, карточки, счётчик и список хостов от этого не зависят.
-const WEEKLY_ANNOUNCE_ENABLED = process.env.WEEKLY_ANNOUNCE_ENABLED === '1';
-
-async function checkAndSendWeeklyAnnounce() {
-  if (!WEEKLY_ANNOUNCE_ENABLED) return;
-
-  const nowBali = new Date(Date.now() + 8 * 60 * 60 * 1000);
-  if (nowBali.getUTCDay() !== 0) return; // не воскресенье (по Бали)
-
-  const today = baliDateString();
-  if (getWeeklyAnnounceLastSentDate() === today) return; // сегодня уже отправляли
-  if (baliHour() < WEEKLY_ANNOUNCE_HOUR) return; // ещё не наступил нужный час
-  if (Date.now() - weeklyAnnounceLastAttemptAt < WEEKLY_ANNOUNCE_RETRY_MS) return;
-  weeklyAnnounceLastAttemptAt = Date.now();
-
-  const groupId = process.env.VOLUNTEER_GROUP_ID;
-  const target = groupId || myChatId;
-
+// ВРЕМЕННО (разово): пробное превью Анонса на следующую неделю — ТОЛЬКО Елене в
+// личку (как при /announce). В группу ничего не уходит, пока она не подтвердит.
+// Слот воскресенья этим не расходуется. Маркер пишется ДО отправки. Удалить после.
+(async () => {
+  const fs = require('fs');
+  const markerPath = process.env.SCHEDULE_PREVIEW_MARKER_PATH || '/data/schedule_preview_2026_10_21.json';
+  if (!myChatId || fs.existsSync(markerPath)) return;
   try {
-    const result = await sendWeekCards(bot, target, { requireComplete: Boolean(groupId), reviewChatId: myChatId ? Number(myChatId) : null });
-
-    if (result.aborted === 'failedTabs') {
-      if (weeklyAnnounceWarnedDate !== today) {
-        weeklyAnnounceWarnedDate = today;
-        notifyElena(
-          `⚠️ Воскресная рассылка не отправлена: часть вкладок таблицы не загрузилась, а в группу неполное расписание я не публикую.\n${result.failedTabs.join('\n')}\n\nПопробую снова через 30 минут; можно и вручную командой /next_week.`
-        );
-      }
-      return;
-    }
-
-    markWeeklyAnnounceSent(today);
-
-    if (result.aborted === 'needsReview') {
-      notifyElena('⚠️ Воскресная рассылка в группу НЕ ушла: в расписании есть сомнительные эфиры. Анонс с пометкой «Нужна проверка» и списком этих эфиров отправлен тебе в личку.');
-      return;
-    }
-
-    if (result.aborted === 'empty') {
-      notifyElena('На следующей неделе нет запланированных сессий — воскресная рассылка не отправлялась.');
-      return;
-    }
-
-    if (result.aborted === 'allCovered') {
-      notifyElena('На следующей неделе у всех эфиров уже есть хост — воскресная рассылка не отправлялась (просить некого).');
-      return;
-    }
-
-    if (result.failedTabs.length > 0) {
-      notifyElena(`⚠️ Расписание отправлено, но часть вкладок не загрузилась:\n${result.failedTabs.join('\n')}`);
-    }
-    console.log(`[weekly-announce] отправлено в ${groupId ? 'группу' : 'личку'}: эфиров=${result.events}, сообщений=${result.sent}`);
+    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
   } catch (err) {
-    // Часть карточек могла уже уйти — автоматически не повторяем, чтобы не
-    // задвоить их; Елена решает сама (/next_week).
-    markWeeklyAnnounceSent(today);
-    console.error('[weekly-announce] ошибка воскресной рассылки:', err.message);
-    notifyElena(
-      `⚠️ Воскресная рассылка в ${groupId ? 'группу' : 'личку'} упала: ${err.message}\nОтправлено сообщений до ошибки: ${err.sentSoFar ?? 0}. Автоматически не повторяю — при необходимости запусти /next_week.`
-    );
+    console.error('[schedule-preview] не удалось записать маркер, не запускаю:', err.message);
+    return;
   }
-}
+  try {
+    await handleWeekCommand(bot, { from: { id: Number(myChatId) }, chat: { type: 'private' } }, 'announce', '');
+    console.log('[schedule-preview] превью на следующую неделю подготовлено (в личку Елене)');
+  } catch (err) {
+    console.error('[schedule-preview] ошибка:', err.message);
+  }
+})();
 
-if (myChatId) {
-  cron.schedule('*/5 * * * *', checkAndSendWeeklyAnnounce);
-}
+// Прямая воскресная авторассылка В ГРУППУ УДАЛЕНА (Елена, 2026-10-21): в группу
+// без её подтверждения ничего не уходит. Вместо неё — расписание с превью
+// «Елене в личку → кнопка/да/нет → группа»: cardButtons.js, weekSchedulerTick
+// (воскресенье 09:00 превью Анонса, понедельник 09:00 превью напоминания,
+// вторник 09:00 сообщение Елене). Ручной запуск превью — /announce.
 
 // Проверка при старте, КУДА уйдёт воскресная рассылка: название группы и
 // статус бота в ней пишутся в лог; если бот группу не видит (не добавлен /
 // исключён) или писать в ней не может — Елене сразу в личку, а не в
 // воскресенье в 10:00, когда рассылка уже упадёт.
 (async () => {
-  if (!WEEKLY_ANNOUNCE_ENABLED) {
-    console.log('[weekly-announce] НА ПАУЗЕ (WEEKLY_ANNOUNCE_ENABLED не задан) — автоматическая воскресная рассылка не отправляется');
-  }
+  console.log('[weekly-announce] расписание недели ВКЛЮЧЕНО: воскресенье 09:00 превью Анонса, понедельник 09:00 превью напоминания, вторник 09:00 сообщение Елене (по Бали); в группу — только после её подтверждения');
   const groupId = process.env.VOLUNTEER_GROUP_ID;
   if (!groupId) {
-    console.log('[weekly-announce] VOLUNTEER_GROUP_ID не задан — воскресная рассылка пойдёт в личку MY_CHAT_ID');
+    console.log('[weekly-announce] VOLUNTEER_GROUP_ID не задан — в группе по умолчанию WorldView Productions (-1001757671785)');
     return;
   }
   try {
@@ -1909,9 +1878,12 @@ async function runCardSheetSync() {
     await syncCardsWithSheet(bot);
   } catch (err) {
     console.error('[card-buttons] ошибка синхронизации карточек с таблицей:', err.message);
+    reportProblem(bot, 'card-sync', `Не получилось сверить карточки Анонса с таблицей: ${err.message}. Повторю через 15 минут (эфиры, куда хост вписал себя в таблицу, пока не засчитываются).`, 3 * 60 * 60 * 1000).catch(() => {});
   }
 }
-cron.schedule(buildIntervalCronExpression(HOST_DIFF_CHECK_INTERVAL_MINUTES), runCardSheetSync);
+// Каждые 15 минут, пока у живых Анонсов есть карточки без хоста в таблице: так
+// «все эфиры закрыты» замечается и когда хост вписал себя в таблицу без кнопки.
+cron.schedule('*/15 * * * *', runCardSheetSync);
 setTimeout(runCardSheetSync, 30 * 1000);
 
 // После смены списка хостов (host-candidates.json) — один раз при старте
@@ -1928,14 +1900,23 @@ setTimeout(() => {
 // а метка "уже напомнили" ставится ДО отправки, так что повторов нет).
 cron.schedule('*/5 * * * *', async () => {
   try {
-    const { errors } = await checkAndSendAnnounceReminders(bot);
-    for (const e of errors) {
-      notifyElena(`⚠️ Напоминание хостам в группе ${e.chatId} не отправилось: ${e.message}. Повторно автоматически не отправляю.`);
-    }
+    await weekSchedulerTick(bot);
   } catch (err) {
-    console.error('[announce-reminder] ошибка проверки:', err.message);
+    console.error('[week-schedule] ошибка тика:', err.message);
   }
 });
+// И один раз после старта: если бот был выключен/перезапускался в момент
+// срабатывания (до 3 часов), то, что пропущено, делается сейчас — один раз.
+setTimeout(() => {
+  weekSchedulerTick(bot).catch((err) => console.error('[week-schedule] ошибка тика при старте:', err.message));
+}, 45 * 1000);
+
+// /yes, /no — ответ на превью (то же, что кнопки «Отправить» / «Не отправлять»);
+// /announce [next|this|ГГГГ-ММ-ДД] — подготовить превью Анонса вручную (по
+// умолчанию на следующую неделю). Только Елене в личке.
+bot.onText(/^\/yes(?:@\S+)?$/i, (msg) => handleWeekCommand(bot, msg, 'yes'));
+bot.onText(/^\/no(?:@\S+)?$/i, (msg) => handleWeekCommand(bot, msg, 'no'));
+bot.onText(/^\/announce(?:@\S+)?(?:\s+(\S+))?\s*$/i, (msg, match) => handleWeekCommand(bot, msg, 'announce', match && match[1]));
 
 // /remind_test — сразу отправить такое же напоминание в тестовую группу
 // "Дебаты" по последнему Анонсу, отправленному туда ботом. Только для Elena
