@@ -1228,43 +1228,6 @@ function notifyElena(text) {
   bot.sendMessage(myChatId, text).catch((err) => console.error('[weekly-announce] не удалось написать Елене:', err.message));
 }
 
-// ВРЕМЕННО (разово): после перехода на хранилище хостов — показать Елене /hosts
-// на настоящем списке (только ей в личку) и записать в лог диагностику: статус
-// бота в группе и отвечает ли Telegram на getChatMember по ID хостов (от этого
-// зависит запасная проверка ухода). Хостам ничего не пишется, в группу тоже.
-// Маркер пишется ДО работы. Удалить после выполнения.
-(async () => {
-  const fs = require('fs');
-  const markerPath = process.env.HOSTS_ONESHOT_MARKER_PATH || '/data/hosts_oneshot_2026_10_21.json';
-  if (!myChatId || fs.existsSync(markerPath)) return;
-  try {
-    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
-  } catch (err) {
-    console.error('[hosts-oneshot] не удалось записать маркер, не запускаю:', err.message);
-    return;
-  }
-  try {
-    await new Promise((r) => setTimeout(r, 8000)); // after the id pick-up from saved cards
-    await hostAdmin.handleCommand(bot, { from: { id: Number(myChatId) }, chat: { type: 'private' } }, 'hosts', '');
-    const group = Number(process.env.VOLUNTEER_GROUP_ID) || -1001757671785;
-    const me = await bot.getMe();
-    const myStatus = await bot.getChatMember(group, me.id);
-    console.log(`[hosts-oneshot] статус бота в группе: ${myStatus.status}`);
-    const hosts = require('./hostsStore').hosts.entries();
-    console.log(`[hosts-oneshot] хостов в хранилище: ${hosts.length}; с известным Telegram-ID: ${hosts.filter((h) => h.id).length}`);
-    for (const h of hosts.filter((x) => x.id)) {
-      try {
-        const m = await bot.getChatMember(group, h.id);
-        console.log(`[hosts-oneshot] getChatMember ${h.tag}: ${m.status}`);
-      } catch (err) {
-        console.log(`[hosts-oneshot] getChatMember ${h.tag}: ошибка ${err.message}`);
-      }
-    }
-  } catch (err) {
-    console.error('[hosts-oneshot] ошибка:', err.message);
-  }
-})();
-
 // Прямая воскресная авторассылка В ГРУППУ УДАЛЕНА (Елена, 2026-10-21): в группу
 // без её подтверждения ничего не уходит. Вместо неё — расписание с превью
 // «Елене в личку → кнопка/да/нет → группа»: cardButtons.js, weekSchedulerTick
