@@ -63,13 +63,15 @@ const TAKE_CALLBACK = 'card:take';
 const PASS_CALLBACK = 'card:pass';
 const UNDO_CALLBACK = 'card:undo';
 
-// The real hosts (8): both the people allowed to press the buttons and the
-// denominator of the "N of M" counter. Deliberately separate from
-// community-tags.json (the 5 @mentions closing /check, /weekly).
-const CANDIDATES_PATH = path.join(__dirname, 'host-candidates.json');
+// The real hosts: both the people allowed to press the buttons and the
+// denominator of the "N of M" counter. The list lives in the bot's own store
+// (hostsStore.js: /data/hosts.json), changed with /host_add, /host_remove and
+// the join/leave questions to Elena — never in code. Deliberately separate
+// from community-tags.json (the @mentions closing /check, /weekly).
+const hostsStore = require('./hostsStore');
 
 function loadHostCandidates() {
-  return JSON.parse(fs.readFileSync(CANDIDATES_PATH, 'utf8'));
+  return hostsStore.hosts.tags();
 }
 
 // TEMPORARY test mode, per Elena: in the test group "Дебаты" ONLY, she is
@@ -89,21 +91,17 @@ function candidatesFor(chatId, base = loadHostCandidates()) {
 }
 
 // Cards remember the host list they were created with. Whenever the state is
-// read, that list is cut down to the CURRENT one, so someone removed from
-// host-candidates.json (or from TEMP_EXTRA_HOSTS) stops counting on cards that
-// were already sent: not in "N of M", not allowed to press, not tagged, and a
-// reservation of theirs is dropped. It only ever removes people.
+// read, that list is brought to the CURRENT one (hosts added or removed since),
+// so the "N of M" counter, the "haven't responded" line, the tags and who may
+// press all follow the list in the store. A ✅ reservation of someone who is no
+// longer a host is NOT cancelled automatically — Elena is told which sessions
+// are on it and decides (see hostAdmin.js).
 function dropFormerHosts(store) {
   if (!store || !store.messages) return store;
   const base = loadHostCandidates();
   for (const [key, record] of Object.entries(store.messages)) {
     if (!record.candidateTags) continue;
-    const allowed = candidatesFor(key.split(':')[0], base).map(normUser);
-    record.candidateTags = record.candidateTags.filter((t) => allowed.includes(normUser(t)));
-    for (const field of ['reservedBy', 'takenBy']) {
-      const taker = record[field];
-      if (taker && !(taker.username && allowed.includes(normUser(taker.username)))) record[field] = null;
-    }
+    record.candidateTags = candidatesFor(key.split(':')[0], base);
   }
   return store;
 }
@@ -129,8 +127,17 @@ function writeJsonAtomic(data) {
 
 const normUser = (s) => String(s).replace(/^@/, '').toLowerCase();
 
+// Does this person correspond to this tag? By Telegram id when the store knows
+// it (survives a changed @username), otherwise by @username.
+function tagMatchesUser(tag, user) {
+  if (!user) return false;
+  const entry = hostsStore.hosts.entryForTag(tag);
+  if (entry) return hostsStore.hosts.matches(entry, user);
+  return Boolean(user.username) && normUser(tag) === normUser(user.username);
+}
+
 function isHost(user, candidateTags) {
-  return Boolean(user && user.username) && candidateTags.some((t) => normUser(t) === normUser(user.username));
+  return Boolean(user) && candidateTags.some((t) => tagMatchesUser(t, user));
 }
 
 function displayName(user) {
@@ -149,11 +156,10 @@ function normalizeRecord(record) {
 function refusalCounterBlock(refusers, candidateTags) {
   const hostRefusers = (refusers || []).filter((r) => isHost(r, candidateTags));
   if (hostRefusers.length === 0) return null;
-  const refusedNames = new Set(hostRefusers.map((r) => normUser(r.username)));
-  const rest = candidateTags.filter((t) => !refusedNames.has(normUser(t)));
+  const rest = candidateTags.filter((t) => !hostRefusers.some((r) => tagMatchesUser(t, r)));
   const m = candidateTags.length;
   const lines = [
-    `❌ <b>Can't do it / Не могут (${hostRefusers.length} of ${m} / из ${m}):</b> ${hostRefusers.map((r) => `@${r.username}`).join(', ')}`,
+    `❌ <b>Can't do it / Не могут (${hostRefusers.length} of ${m} / из ${m}):</b> ${hostRefusers.map((r) => displayName(r)).join(', ')}`,
   ];
   if (rest.length > 0) {
     lines.push(`<b>Haven't responded yet / Ещё не отметились:</b> ${rest.map((t) => escapeHtml(formatCommunityTag(t))).join(', ')}`);
@@ -506,6 +512,7 @@ async function processCardCallback(bot, query) {
     await safeAck(bot, query);
     return;
   }
+  noteHostSeen(bot, user);
 
   if (!record) {
     await safeAck(bot, query, GONE_TOAST);
@@ -677,11 +684,10 @@ async function buildHostNudgePlan(chatId, range, now = new Date(), batch = null)
     const record = store.messages[key];
     if (!record) return;
     const label = `эфир ${i + 1} (${record.when || ''})`;
-    if (record.reservedBy && record.reservedBy.username && responses.has(normUser(record.reservedBy.username))) {
-      responses.get(normUser(record.reservedBy.username)).push(`✅ ${label}`);
-    }
+    const tagOfUser = (u) => hosts.find((t) => tagMatchesUser(t, u));
+    if (record.reservedBy && tagOfUser(record.reservedBy)) responses.get(normUser(tagOfUser(record.reservedBy))).push(`✅ ${label}`);
     for (const u of record.refusers || []) {
-      if (u.username && responses.has(normUser(u.username))) responses.get(normUser(u.username)).push(`❌ ${label}`);
+      if (tagOfUser(u)) responses.get(normUser(tagOfUser(u))).push(`❌ ${label}`);
     }
   });
 
@@ -703,7 +709,8 @@ async function buildHostNudgePlan(chatId, range, now = new Date(), batch = null)
   const silent = [];
   for (const tag of hosts) {
     const notes = responses.get(normUser(tag));
-    const person = known.get(normUser(tag)) || null;
+    const entry = hostsStore.hosts.entryForTag(tag);
+    const person = (entry && entry.id ? { id: entry.id, first_name: entry.name } : null) || known.get(normUser(tag)) || null;
     if (notes.length > 0) responded.push({ tag, notes });
     else silent.push({ tag, id: person ? person.id : null });
   }
@@ -1137,12 +1144,9 @@ function freeSessions(store, batch, now) {
 function unrespondedHosts(store, batch) {
   const records = batch.cardKeys.map((k) => store.messages[k]).filter(Boolean);
   if (records.length === 0) return [];
-  const responded = new Set();
-  for (const r of records) {
-    for (const u of r.refusers || []) if (u.username) responded.add(normUser(u.username));
-    if (r.reservedBy && r.reservedBy.username) responded.add(normUser(r.reservedBy.username));
-  }
-  return records[0].candidateTags.filter((t) => !responded.has(normUser(t)));
+  return records[0].candidateTags.filter(
+    (t) => !records.some((r) => (r.refusers || []).some((u) => tagMatchesUser(t, u)) || (r.reservedBy && tagMatchesUser(t, r.reservedBy)))
+  );
 }
 
 // The reminder's header message as it should look RIGHT NOW.
@@ -1245,6 +1249,65 @@ function batchSummaries() {
     eventDates: b.cardKeys.map((k) => (store.messages[k] && store.messages[k].event ? store.messages[k].event.dateIso.slice(0, 10) : '?')),
     outcome: b.outcome,
   }));
+}
+
+// ---- Hosts: what the card state tells hostAdmin.js ----
+
+// A host was seen pressing a button: remember the id / name, follow a changed
+// @username. A rename also refreshes the cards (tags and counters).
+function noteHostSeen(bot, user) {
+  const seen = hostsStore.hosts.learn(user);
+  if (seen && seen.renamedFrom) {
+    sendToElena(bot, `ℹ️ ${escapeHtml(seen.renamedFrom)} сменил(а) имя пользователя на ${escapeHtml(seen.entry.tag)} — в списке хостов обновила.`);
+    refreshCardsAfterHostListChange(bot).catch(() => {});
+  }
+}
+
+// At start: remember the Telegram ids of hosts who already pressed buttons on
+// saved cards (so people can be matched by id, and "known id" shows in /hosts).
+function learnHostIdsFromCards() {
+  const store = readJson({ messages: {} });
+  let learned = 0;
+  for (const record of Object.values(store.messages)) {
+    for (const u of [...(record.refusers || []), record.reservedBy].filter(Boolean)) {
+      if (!u.id) continue;
+      const before = hostsStore.hosts.findByUser(u);
+      if (before && !before.id) {
+        hostsStore.hosts.learn(u);
+        learned++;
+      }
+    }
+  }
+  return learned;
+}
+
+// Sessions of live announces that carry this person's ✅ reservation.
+function reservationsOfHost(entry) {
+  const store = readJson({ messages: {}, batches: [] });
+  const keys = new Set();
+  for (const b of (store.batches || []).filter((x) => isLiveBatch(x, Date.now()))) b.cardKeys.forEach((k) => keys.add(k));
+  const out = [];
+  for (const key of keys) {
+    const r = store.messages[key];
+    if (!r || r.hosted || !r.reservedBy || !hostsStore.hosts.matches(entry, r.reservedBy)) continue;
+    out.push({ key, text: `${(r.titleLine || '').replace(/<[^>]+>/g, '')}${r.label ? ` — ${r.label}` : ''} (${r.when || ''})` });
+  }
+  return out;
+}
+
+// Elena frees a reservation (the holder left or is no longer a host).
+function releaseReservation(bot, key) {
+  return runSerialStrict(async () => {
+    const store = readJson({ messages: {}, batches: [] });
+    const record = store.messages[key];
+    if (!record || !record.reservedBy) return { released: false };
+    record.reservedBy = null;
+    store.messages[key] = record;
+    writeJsonAtomic(store);
+    await redrawViews(bot, store, key);
+    await evaluateCoverageForCard(bot, key);
+    return { released: true };
+  });
 }
 
 // ---- The weekly schedule WITH Elena's confirmation ----
@@ -1747,6 +1810,10 @@ module.exports = {
   tuesdayMessageText,
   batchSummaries,
   weekSchedulerTick,
+  noteHostSeen,
+  learnHostIdsFromCards,
+  reservationsOfHost,
+  releaseReservation,
   handleWeekCallback,
   handleWeekTextReply,
   handleWeekCommand,

@@ -31,6 +31,8 @@ const {
   PASS_CALLBACK: CARD_PASS_CALLBACK,
   UNDO_CALLBACK: CARD_UNDO_CALLBACK,
 } = require('./cardButtons');
+const hostAdmin = require('./hostAdmin');
+const cardButtons = require('./cardButtons');
 const { generateAssistanceReport } = require('./assistance');
 const { generateSeriesCheckReport } = require('./assistantsSeries');
 const {
@@ -197,7 +199,18 @@ ensureProgressSeeded();
 applyForceOverride();
 ensureGroupLinksSeeded();
 
-const bot = new TelegramBot(token, { polling: true });
+// allowed_updates: помимо обычных — chat_member (вступил/вышел из группы). Telegram
+// присылает их только если бот АДМИНИСТРАТОР группы (см. hostAdmin.js).
+const bot = new TelegramBot(token, {
+  polling: {
+    params: {
+      allowed_updates: [
+        'message', 'edited_message', 'channel_post', 'edited_channel_post', 'inline_query', 'chosen_inline_result',
+        'callback_query', 'shipping_query', 'pre_checkout_query', 'poll', 'poll_answer', 'my_chat_member', 'chat_member', 'chat_join_request',
+      ],
+    },
+  },
+});
 const openai = openaiKey ? new OpenAI({ apiKey: openaiKey, maxRetries: 0, timeout: 60000 }) : null;
 
 console.log('Бот запущен и слушает сообщения...');
@@ -908,6 +921,11 @@ bot.onText(/^\/(следующая_неделя|next_week)(?:@\S+)?$/, (msg) => 
 // — см. cardButtons.js.
 bot.on('callback_query', (query) => {
   const data = query.data || '';
+  // Ответы Елене-вопросам о хостах (вышел из группы / вступил / снять бронь).
+  if (data.startsWith('hw:') || data.startsWith('hr:')) {
+    hostAdmin.onCallback(bot, query).catch((err) => console.error('[hosts] ошибка обработки кнопки:', err.message));
+    return;
+  }
   // Кнопки под превью Анонса/напоминания (Елене): «Отправить в группу» / «Не
   // отправлять» — см. cardButtons.js: weekSchedulerTick.
   if (data.startsWith('wk:')) {
@@ -1209,6 +1227,43 @@ function notifyElena(text) {
   if (!myChatId) return;
   bot.sendMessage(myChatId, text).catch((err) => console.error('[weekly-announce] не удалось написать Елене:', err.message));
 }
+
+// ВРЕМЕННО (разово): после перехода на хранилище хостов — показать Елене /hosts
+// на настоящем списке (только ей в личку) и записать в лог диагностику: статус
+// бота в группе и отвечает ли Telegram на getChatMember по ID хостов (от этого
+// зависит запасная проверка ухода). Хостам ничего не пишется, в группу тоже.
+// Маркер пишется ДО работы. Удалить после выполнения.
+(async () => {
+  const fs = require('fs');
+  const markerPath = process.env.HOSTS_ONESHOT_MARKER_PATH || '/data/hosts_oneshot_2026_10_21.json';
+  if (!myChatId || fs.existsSync(markerPath)) return;
+  try {
+    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
+  } catch (err) {
+    console.error('[hosts-oneshot] не удалось записать маркер, не запускаю:', err.message);
+    return;
+  }
+  try {
+    await new Promise((r) => setTimeout(r, 8000)); // after the id pick-up from saved cards
+    await hostAdmin.handleCommand(bot, { from: { id: Number(myChatId) }, chat: { type: 'private' } }, 'hosts', '');
+    const group = Number(process.env.VOLUNTEER_GROUP_ID) || -1001757671785;
+    const me = await bot.getMe();
+    const myStatus = await bot.getChatMember(group, me.id);
+    console.log(`[hosts-oneshot] статус бота в группе: ${myStatus.status}`);
+    const hosts = require('./hostsStore').hosts.entries();
+    console.log(`[hosts-oneshot] хостов в хранилище: ${hosts.length}; с известным Telegram-ID: ${hosts.filter((h) => h.id).length}`);
+    for (const h of hosts.filter((x) => x.id)) {
+      try {
+        const m = await bot.getChatMember(group, h.id);
+        console.log(`[hosts-oneshot] getChatMember ${h.tag}: ${m.status}`);
+      } catch (err) {
+        console.log(`[hosts-oneshot] getChatMember ${h.tag}: ошибка ${err.message}`);
+      }
+    }
+  } catch (err) {
+    console.error('[hosts-oneshot] ошибка:', err.message);
+  }
+})();
 
 // Прямая воскресная авторассылка В ГРУППУ УДАЛЕНА (Елена, 2026-10-21): в группу
 // без её подтверждения ничего не уходит. Вместо неё — расписание с превью
@@ -1893,6 +1948,37 @@ setTimeout(() => {
 // /yes, /no — ответ на превью (то же, что кнопки «Отправить» / «Не отправлять»);
 // /announce [next|this|ГГГГ-ММ-ДД] — подготовить превью Анонса вручную (по
 // умолчанию на следующую неделю). Только Елене в личке.
+// Список хостов — в хранилище бота (hostsStore.js), не в коде: /hosts, /host_add
+// @имя, /host_remove @имя (только Елене, в личке); см. hostAdmin.js.
+bot.onText(/^\/hosts(?:@\S+)?(?:\s+(\S+))?\s*$/i, (msg, match) => hostAdmin.handleCommand(bot, msg, 'hosts', match && match[1]));
+bot.onText(/^\/host_add(?:@\S+)?(?:\s+(.+?))?\s*$/i, (msg, match) => hostAdmin.handleCommand(bot, msg, 'host_add', match && match[1]));
+bot.onText(/^\/host_remove(?:@\S+)?(?:\s+(.+?))?\s*$/i, (msg, match) => hostAdmin.handleCommand(bot, msg, 'host_remove', match && match[1]));
+// Вступление/выход участников группы → вопрос Елене (ничего не меняется без её ответа).
+bot.on('chat_member', (update) => hostAdmin.onChatMember(bot, update).catch((err) => console.error('[hosts] chat_member:', err.message)));
+bot.on('new_chat_members', (msg) => hostAdmin.onNewMembers(bot, msg).catch((err) => console.error('[hosts] new_chat_members:', err.message)));
+bot.on('left_chat_member', (msg) => hostAdmin.onLeftMember(bot, msg).catch((err) => console.error('[hosts] left_chat_member:', err.message)));
+// Любое сообщение: запомнить Telegram-ID / имя хоста и то, что человек писал боту.
+bot.on('message', (msg) => {
+  try {
+    hostAdmin.noteMessage(msg);
+  } catch (err) {
+    console.error('[hosts] noteMessage:', err.message);
+  }
+});
+// Раз в 5 минут: общий вопрос про вступивших + запасная проверка ухода хостов.
+cron.schedule('*/5 * * * *', () => {
+  hostAdmin.tick(bot).catch((err) => reportProblem(bot, 'hosts-tick', `Наблюдение за списком хостов не сработало: ${err.message}`).catch(() => {}));
+});
+// После старта: подхватить Telegram-ID хостов из сохранённых карточек.
+setTimeout(() => {
+  try {
+    const n = cardButtons.learnHostIdsFromCards();
+    console.log(`[hosts] Telegram-ID подхвачены из карточек: ${n}`);
+  } catch (err) {
+    console.error('[hosts] learnHostIdsFromCards:', err.message);
+  }
+}, 5 * 1000);
+
 bot.onText(/^\/yes(?:@\S+)?$/i, (msg) => handleWeekCommand(bot, msg, 'yes'));
 bot.onText(/^\/no(?:@\S+)?$/i, (msg) => handleWeekCommand(bot, msg, 'no'));
 bot.onText(/^\/announce(?:@\S+)?(?:\s+(\S+))?\s*$/i, (msg, match) => handleWeekCommand(bot, msg, 'announce', match && match[1]));

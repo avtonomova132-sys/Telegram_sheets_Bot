@@ -15,10 +15,18 @@ function loadConfig() {
 // code change needed), this is just a safety ceiling on top of it.
 const MAX_COMMUNITY_TAGS = 5;
 
+// Tags of people removed from the host list (hostsStore.js) never appear in
+// these tags, even if community-tags.json still names them.
 function loadCommunityTags() {
   try {
     const tags = JSON.parse(fs.readFileSync(TAGS_PATH, 'utf8'));
-    return tags.slice(0, MAX_COMMUNITY_TAGS);
+    let removed = [];
+    try {
+      removed = require('./hostsStore').hosts.removedTags().map((t) => String(t).replace(/^@/, '').toLowerCase());
+    } catch {
+      removed = [];
+    }
+    return tags.filter((t) => !removed.includes(String(t).replace(/^@/, '').toLowerCase())).slice(0, MAX_COMMUNITY_TAGS);
   } catch {
     return [];
   }
