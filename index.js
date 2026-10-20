@@ -1210,27 +1210,6 @@ function notifyElena(text) {
   bot.sendMessage(myChatId, text).catch((err) => console.error('[weekly-announce] не удалось написать Елене:', err.message));
 }
 
-// ВРЕМЕННО (разово): пробное превью Анонса на следующую неделю — ТОЛЬКО Елене в
-// личку (как при /announce). В группу ничего не уходит, пока она не подтвердит.
-// Слот воскресенья этим не расходуется. Маркер пишется ДО отправки. Удалить после.
-(async () => {
-  const fs = require('fs');
-  const markerPath = process.env.SCHEDULE_PREVIEW_MARKER_PATH || '/data/schedule_preview_2026_10_21.json';
-  if (!myChatId || fs.existsSync(markerPath)) return;
-  try {
-    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
-  } catch (err) {
-    console.error('[schedule-preview] не удалось записать маркер, не запускаю:', err.message);
-    return;
-  }
-  try {
-    await handleWeekCommand(bot, { from: { id: Number(myChatId) }, chat: { type: 'private' } }, 'announce', '');
-    console.log('[schedule-preview] превью на следующую неделю подготовлено (в личку Елене)');
-  } catch (err) {
-    console.error('[schedule-preview] ошибка:', err.message);
-  }
-})();
-
 // Прямая воскресная авторассылка В ГРУППУ УДАЛЕНА (Елена, 2026-10-21): в группу
 // без её подтверждения ничего не уходит. Вместо неё — расписание с превью
 // «Елене в личку → кнопка/да/нет → группа»: cardButtons.js, weekSchedulerTick
