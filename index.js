@@ -1260,52 +1260,6 @@ function notifyElena(text) {
   bot.sendMessage(myChatId, text).catch((err) => console.error('[weekly-announce] не удалось написать Елене:', err.message));
 }
 
-// ВРЕМЕННО (разово), по просьбе Елены 22.10: (1) прямо сейчас — срочные превью/сообщения по
-// свободным эфирам, которые начинаются в ближайшие 48 часов (ночное правило тут
-// отключено явно); (2) вторничная сводка с RU/EN текстами; (3) тест срочного
-// сообщения в тестовую группу «Дебаты». В большую группу ничего не уходит без «да»
-// Елены; хостам в личку бот не пишет. Маркер пишется ДО работы. Удалить после.
-(async () => {
-  const fs = require('fs');
-  const markerPath = process.env.URGENT_ONESHOT_MARKER_PATH || '/data/urgent_oneshot_2026_10_22.json';
-  if (!myChatId || fs.existsSync(markerPath)) return;
-  try {
-    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
-  } catch (err) {
-    console.error('[urgent-oneshot] не удалось записать маркер, не запускаю:', err.message);
-    return;
-  }
-  await new Promise((r) => setTimeout(r, 12000));
-  try {
-    const r = await cardButtons.urgentStep(bot, Date.now(), { windowMs: 48 * 3600 * 1000, force: true });
-    console.log(`[urgent-oneshot] срочные (48 ч): ${JSON.stringify(r)}`);
-    if (r.candidates === 0) {
-      await bot.sendMessage(
-        myChatId,
-        r.nextFree
-          ? `В ближайшие 48 часов свободных эфиров без хоста нет. Ближайший свободный: ${r.nextFree.text} (через ~${r.nextFree.hoursAway} ч). Срочное напоминание по нему придёт автоматически, когда до эфира останется 24 часа (а если это время ночью — в 08:00 по Бали).`
-          : 'В ближайшие 48 часов свободных эфиров без хоста нет, и дальше на этой неделе тоже.'
-      );
-    }
-  } catch (err) {
-    console.error('[urgent-oneshot] срочные:', err.message);
-    reportProblem(bot, 'urgent-oneshot', `Не получилось проверить срочные эфиры: ${err.message}`, 0).catch(() => {});
-  }
-  try {
-    await cardButtons.runTuesdayPreview(bot);
-    console.log('[urgent-oneshot] вторничная сводка отправлена Елене');
-  } catch (err) {
-    console.error('[urgent-oneshot] вторничная сводка:', err.message);
-  }
-  try {
-    await cardButtons.runUrgentTest(bot);
-    console.log('[urgent-oneshot] тест в «Дебатах» выполнен');
-  } catch (err) {
-    console.error('[urgent-oneshot] тест в «Дебатах»:', err.message);
-    reportProblem(bot, 'urgent-test', `Тест срочного сообщения в «Дебатах» не удался: ${err.message}`, 0).catch(() => {});
-  }
-})();
-
 // Прямая воскресная авторассылка В ГРУППУ УДАЛЕНА (Елена, 2026-10-21): в группу
 // без её подтверждения ничего не уходит. Вместо неё — расписание с превью
 // «Елене в личку → кнопка/да/нет → группа»: cardButtons.js, weekSchedulerTick
