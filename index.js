@@ -1131,6 +1131,38 @@ async function handleAccrualsDocument(chatId, document) {
   }
 }
 
+// ===== Письма Ozon от Google Apps Script (ozonMail.js) =====
+// POST /ozon-mail (X-Secret = OZON_MAIL_SECRET) → классификация → алерт Елене.
+const ozonMail = require('./ozonMail');
+if (myChatId) ozonMail.register(app, { bot, chatId: myChatId });
+
+const isOwnerPrivate = (msg) => msg.chat.type === 'private' && myChatId && String(msg.chat.id) === String(myChatId);
+
+bot.onText(/^\/почта(?:@\S+)?$/, (msg) => {
+  if (!isOwnerPrivate(msg)) return;
+  bot.sendMessage(msg.chat.id, ozonMail.recentSummary(10));
+});
+bot.onText(/^\/почта_скрипт(?:@\S+)?$/, async (msg) => {
+  if (!isOwnerPrivate(msg)) return;
+  const r = ozonMail.buildScript();
+  await bot.sendMessage(msg.chat.id, r.text);
+  if (r.ok) await bot.sendMessage(msg.chat.id, 'Как поставить: script.google.com → Новый проект → вставь код → выбери функцию setup → «Выполнить» (разреши доступ к Gmail) → один раз. Дальше скрипт сам проверяет почту раз в час.');
+});
+
+// Понедельник 10:00 по Бали — напоминание про «Детализацию начислений».
+cron.schedule('*/5 * * * *', async () => {
+  if (!myChatId) return;
+  try {
+    const today = baliDateString();
+    const weekday = new Date(Date.now() + 8 * 3600 * 1000).getUTCDay();
+    if (!ozonMail.weeklyReminderDue(today, weekday, baliHour())) return;
+    await bot.sendMessage(myChatId, ozonMail.WEEKLY_TEXT);
+    ozonMail.markWeeklyReminder(today);
+  } catch (err) {
+    console.error('[ozon-weekly] ошибка:', err.message);
+  }
+});
+
 // ===== Страж платных списаний Ozon (см. feesWatch.js) =====
 // Раз в день после FEES_WATCH_HOUR (10:00 по Бали): новые/платные списания —
 // сразу в личку; тишина, если нового нет. Раз в месяц с FEES_REMINDER_DAY —
