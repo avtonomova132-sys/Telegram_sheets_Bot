@@ -620,6 +620,7 @@ function parseTabEvents(tabName, rows) {
       const mskEnd = azEndMin !== null ? deriveMsk(azEndMin) : { min: null, dayOffset: mskStart.dayOffset };
 
       const event = {
+        row: r + 1, // sheet row of this session (1-based) — lets a link point straight at it
         tabName: seg.programLabel,
         title,
         host,

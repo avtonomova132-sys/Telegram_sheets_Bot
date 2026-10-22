@@ -120,6 +120,7 @@ function createHostsStore({ filePath, seedFrom = null, initial = null } = {}) {
     const name = nameOf(user);
     if (name) host.name = name;
     if (privateChat) host.started = true;
+    if (user.language_code) host.lang = user.language_code;
     if (user.username && normUser(user.username) !== normUser(host.username)) {
       renamedFrom = host.tag;
       host.username = user.username;

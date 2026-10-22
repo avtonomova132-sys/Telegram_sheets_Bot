@@ -1260,6 +1260,29 @@ function notifyElena(text) {
   bot.sendMessage(myChatId, text).catch((err) => console.error('[weekly-announce] не удалось написать Елене:', err.message));
 }
 
+// ВРЕМЕННО (разово): пробная вторничная сводка для текущей недели — ТОЛЬКО Елене
+// в личку (то же, что команда /tuesday). Хостам ничего не пишется. Маркер
+// пишется ДО отправки. Удалить после выполнения.
+(async () => {
+  const fs = require('fs');
+  const markerPath = process.env.TUESDAY_TRIAL_MARKER_PATH || '/data/tuesday_trial_2026_10_22.json';
+  if (!myChatId || fs.existsSync(markerPath)) return;
+  try {
+    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
+  } catch (err) {
+    console.error('[tuesday-trial] не удалось записать маркер, не запускаю:', err.message);
+    return;
+  }
+  try {
+    await new Promise((r) => setTimeout(r, 10000));
+    await cardButtons.runTuesdayPreview(bot);
+    console.log('[tuesday-trial] пробная вторничная сводка отправлена Елене');
+  } catch (err) {
+    console.error('[tuesday-trial] ошибка:', err.message);
+    reportProblem(bot, 'tuesday-trial', `Не получилось собрать пробную вторничную сводку: ${err.message}`, 0).catch(() => {});
+  }
+})();
+
 // Прямая воскресная авторассылка В ГРУППУ УДАЛЕНА (Елена, 2026-10-21): в группу
 // без её подтверждения ничего не уходит. Вместо неё — расписание с превью
 // «Елене в личку → кнопка/да/нет → группа»: cardButtons.js, weekSchedulerTick
@@ -1973,6 +1996,13 @@ setTimeout(() => {
     console.error('[hosts] learnHostIdsFromCards:', err.message);
   }
 }, 5 * 1000);
+
+// /tuesday — вторничную сводку (кому писать + готовые тексты) показать СЕЙЧАС, по
+// запросу; сама она приходит только во вторник в 09:00 по Бали. Только Елене в личке.
+bot.onText(/^\/tuesday(?:@\S+)?\s*$/i, (msg) => {
+  if (!myChatId || !msg.from || String(msg.from.id) !== String(myChatId) || msg.chat.type !== 'private') return;
+  cardButtons.runTuesdayPreview(bot).catch((err) => reportProblem(bot, 'tuesday-manual', `Не получилось собрать вторничную сводку: ${err.message}`, 0).catch(() => {}));
+});
 
 bot.onText(/^\/yes(?:@\S+)?$/i, (msg) => handleWeekCommand(bot, msg, 'yes'));
 bot.onText(/^\/no(?:@\S+)?$/i, (msg) => handleWeekCommand(bot, msg, 'no'));

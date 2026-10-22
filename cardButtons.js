@@ -434,7 +434,7 @@ function applyHostAction(record, user, action) {
         changed: false,
       };
     }
-    record.reservedBy = { id: user.id, username: user.username, first_name: user.first_name, last_name: user.last_name, at: Date.now() };
+    record.reservedBy = { id: user.id, username: user.username, first_name: user.first_name, last_name: user.last_name, language_code: user.language_code, at: Date.now() };
     record.refusers = (record.refusers || []).filter((r) => r.id !== user.id);
     return { toast: 'Reserved for you. Tap "Open the sheet" and add yourself / Зарезервировано за вами. Нажмите «Открыть таблицу» и впишите себя 🙏', changed: true };
   }
@@ -447,7 +447,7 @@ function applyHostAction(record, user, action) {
       record.refusers.splice(at, 1);
       return { toast: 'Mark removed / Отметка снята', changed: true };
     }
-    record.refusers.push({ id: user.id, username: user.username, first_name: user.first_name, last_name: user.last_name });
+    record.refusers.push({ id: user.id, username: user.username, first_name: user.first_name, last_name: user.last_name, language_code: user.language_code });
     return { toast: "Noted: you can't do it / Записано: вы не можете 🙏", changed: true };
   }
 
@@ -717,61 +717,131 @@ async function buildHostNudgePlan(chatId, range, now = new Date(), batch = null)
   return { batch, hostCount: hosts.length, responded, silent, freeEvents, reservedEvents, failedTabs: collected.failedTabs };
 }
 
-function nudgeEventBlocks(e) {
+// ---- The Tuesday note to Elena: short, three (or four) separate messages ----
+//
+// (1) how many hosts are needed, which sessions, and — one per line — whom to
+//     write to with the language to use; (2) the ready Russian text; (3) the
+//     ready English text; (4) a bilingual text for people whose language could
+//     not be told. Plain text, so each message can be copied as it is. Whom NOT
+//     to write to is not shown at all, nor are reserved sessions.
+
+const WD_RU_SHORT = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+// Telegram language codes treated as Russian-speaking.
+const RU_LANG_CODES = new Set(['ru', 'uk', 'be', 'kk', 'ky', 'uz', 'tg', 'tk', 'az', 'hy', 'ka', 'mo']);
+const hasCyrillic = (s) => /[Ѐ-ӿ]/.test(s || '');
+
+// 'RU' | 'EN' | 'RU+EN'. First the language_code Telegram gave the bot for this
+// person; without one — Cyrillic in the profile name means RU; otherwise the
+// bot does not guess ('RU+EN') and Elena decides.
+function hostLanguage(entry) {
+  const code = entry && entry.lang ? String(entry.lang).toLowerCase().split('-')[0] : '';
+  if (code) return RU_LANG_CODES.has(code) ? 'RU' : 'EN';
+  if (entry && hasCyrillic(entry.name)) return 'RU';
+  return 'RU+EN';
+}
+
+// Link to the session's tab and, when the row is known, to its row — the same
+// tab link the "Open the sheet" button of the card uses.
+function eventLink(e) {
+  if (!e.tabUrl) return '';
+  return e.row ? `${e.tabUrl}&range=A${e.row}` : e.tabUrl;
+}
+
+function nudgeEventBlocks(e, withLink = false) {
   const programme = programLine(e.tabName, e.title);
+  const link = withLink ? eventLink(e) : '';
   const en = [
     `📛 ${programme}`,
     `🕒 Arizona: ${WEEKDAYS_EN[e.date.getUTCDay()]}, ${formatMonthDayEn(e.date)}, ${formatRange12h(e.azStartMin, e.azEndMin)}`,
     `🕒 Moscow: ${formatMonthDayEn(mskDate(e))}, ${formatRange24h(e.mskStartMin, e.mskEndMin)}`,
-  ].join('\n');
+    link ? `🔗 ${link}` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
   const ru = [
     `📛 ${programme}`,
     `🕒 Аризона: ${WEEKDAYS_RU[e.date.getUTCDay()]}, ${formatMonthDayRu(e.date)}, ${formatRange24h(e.azStartMin, e.azEndMin)}`,
     `🕒 Москва: ${formatMonthDayRu(mskDate(e))}, ${formatRange24h(e.mskStartMin, e.mskEndMin)}`,
-  ].join('\n');
+    link ? `🔗 ${link}` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
   return { en, ru };
 }
 
-// The ready text for Elena to send herself: a plain question, answered with
-// "yes"/"no" in words — no buttons and no "press" (answers do not go through
-// the bot, so they must not be asked for as presses).
-function hostQuestionText(freeEvents) {
+// The ready text for one language ('RU' or 'EN'). One session: the link ends
+// the paragraph; several: each session carries its own link line.
+function hostMessageText(freeEvents, lang) {
   const many = freeEvents.length > 1;
-  const blocks = freeEvents.map(nudgeEventBlocks);
+  const blocks = freeEvents.map((e) => nudgeEventBlocks(e, many));
+  const link = many ? '' : eventLink(freeEvents[0]);
+  if (lang === 'EN') {
+    return [
+      '🙏 Dear friend, hello!',
+      many ? 'This week we still need hosts for these broadcasts:' : 'This week we still need a host for a broadcast:',
+      blocks.map((b) => b.en).join('\n\n'),
+      `We haven't seen your response in the group yet. Could you please let us know if you can take ${many ? 'one of them' : 'it'}? A simple "yes" or "no" is all we need, it really helps us plan the week. If "yes", please add your name in the Host column of the spreadsheet${many ? ' (the link is under the broadcast above)' : `: ${link}`}`,
+      'Thank you for your service 💛',
+    ].join('\n');
+  }
   return [
-    '🙏 Dear friend / Дорогой друг,',
-    '',
-    'English:',
-    many ? 'We still need hosts for these broadcasts this week:' : 'We still need a host for a broadcast this week:',
-    blocks.map((b) => b.en).join('\n\n'),
-    `Would you be able to take ${many ? 'one of them' : 'it'}? A simple "yes" or "no" is all we need — it really helps us plan. Thank you for your service 💛`,
-    '',
-    'Русский:',
+    '🙏 Дорогой друг, добрый день!',
     many ? 'На этой неделе нам ещё нужны хосты на эфиры:' : 'На этой неделе нам ещё нужен хост на эфир:',
     blocks.map((b) => b.ru).join('\n\n'),
-    `Сможете ли вы ${many ? 'взять какой-нибудь из них' : 'его взять'}? Достаточно ответить «да» или «нет» — это очень поможет нам спланировать. Спасибо за ваше служение 💛`,
+    `В группе мы не получили от вас отметки. Подскажите, пожалуйста, сможете ли вы ${many ? 'взять один из них' : 'его взять'}? Достаточно ответить «да» или «нет», это очень помогает нам спланировать неделю. Если «да», впишите, пожалуйста, своё имя в колонку Host в таблице${many ? ' (ссылка под нужным эфиром выше)' : `: ${link}`}`,
+    'Спасибо за ваше служение 💛',
   ].join('\n');
 }
 
-// The Tuesday message to Elena (HTML): free sessions, whom to write to (with a
-// mark for people the bot cannot reach), whom not to (already answered), and
-// the ready text.
-function tuesdayMessageText(plan) {
-  const ddmm = (d) => `${String(d.getUTCDate()).padStart(2, '0')}.${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
-  const lines = ['📋 <b>Вторник: на этой неделе ещё есть свободные эфиры</b>', '', '<b>Свободны:</b>'];
-  plan.freeEvents.forEach((e) =>
-    lines.push(`• ${escapeHtml(programLine(e.tabName, e.title))} — AZ ${ddmm(e.date)}, ${formatRange24h(e.azStartMin, e.azEndMin)} · MCK ${ddmm(mskDate(e))}, ${formatRange24h(e.mskStartMin, e.mskEndMin)}`)
-  );
-  plan.reservedEvents.forEach((r) => lines.push(`• (уже есть бронь ${escapeHtml(displayName(r.by))} — не считается свободным: ${escapeHtml(programLine(r.event.tabName, r.event.title))})`));
-  lines.push('', '<b>Писать этим людям</b> (ни разу не нажали ✅/❌ на этой неделе):');
-  if (plan.silent.length === 0) lines.push('— таких нет, все уже ответили');
-  plan.silent.forEach((s) => lines.push(`• ${escapeHtml(s.tag)}${s.id ? '' : ' — ⚠️ бот не знает его Telegram-ID, написать придётся вам лично или отметить в группе'}`));
-  lines.push('', '<b>Не писать (уже ответили):</b>');
-  if (plan.responded.length === 0) lines.push('— никто');
-  plan.responded.forEach((r) => lines.push(`• ${escapeHtml(r.tag)} — ${r.notes.map(escapeHtml).join('; ')}`));
-  if (plan.failedTabs.length > 0) lines.push('', `⚠️ Не загрузились вкладки: ${escapeHtml(plan.failedTabs.join('; '))}`);
-  lines.push('', '<b>Готовый текст для личного сообщения</b> (без кнопок):', '', escapeHtml(hostQuestionText(plan.freeEvents)));
-  return lines.join('\n');
+function hostsNeededPhrase(n) {
+  const one = n % 10 === 1 && n % 100 !== 11;
+  const few = [2, 3, 4].includes(n % 10) && ![12, 13, 14].includes(n % 100);
+  if (one) return `Нужен ${n} хост`;
+  return `Нужны ${n} ${few ? 'хоста' : 'хостов'}`;
+}
+
+// -> array of plain-text messages (empty when nothing is free).
+function buildTuesdayMessages(plan) {
+  if (plan.error || plan.freeEvents.length === 0) return [];
+  const ddmm2 = (d) => `${String(d.getUTCDate()).padStart(2, '0')}.${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+  const lines = [`📋 ${hostsNeededPhrase(plan.freeEvents.length)} на этой неделе`, ''];
+  for (const e of plan.freeEvents) {
+    const msk = mskDate(e);
+    const mskDay = msk.getTime() === e.date.getTime() ? '' : `${WD_RU_SHORT[msk.getUTCDay()]} ${ddmm2(msk)} `;
+    lines.push(`📛 ${programLine(e.tabName, e.title)}`);
+    lines.push(`   ${WD_RU_SHORT[e.date.getUTCDay()]}, ${ddmm2(e.date)} · AZ ${formatRange24h(e.azStartMin, e.azEndMin)} / MCK ${mskDay}${formatRange24h(e.mskStartMin, e.mskEndMin)}`);
+  }
+  lines.push('');
+
+  const people = plan.silent.map((s) => {
+    const entry = hostsStore.hosts.entryForTag(s.tag) || {};
+    return { tag: s.tag, lang: hostLanguage(entry), knownId: Boolean(entry.id || s.id) };
+  });
+  if (people.length === 0) {
+    lines.push('Писать никому не нужно — все уже отметились.');
+  } else {
+    lines.push('Кому написать:');
+    people.forEach((p, i) => lines.push(`${i + 1}) ${p.tag}: ${p.lang}${p.knownId ? '' : ', ⚠️ бот не знает его Telegram-ID, нужно написать самой'}`));
+  }
+  if (plan.failedTabs.length > 0) lines.push('', `⚠️ Не загрузились вкладки: ${plan.failedTabs.join('; ')}`);
+
+  const messages = [lines.join('\n')];
+  const has = (l) => people.some((p) => p.lang === l);
+  if (has('RU')) messages.push(hostMessageText(plan.freeEvents, 'RU'));
+  if (has('EN')) messages.push(hostMessageText(plan.freeEvents, 'EN'));
+  if (has('RU+EN')) messages.push(`${hostMessageText(plan.freeEvents, 'RU')}\n\n— — —\n\n${hostMessageText(plan.freeEvents, 'EN')}`);
+  return messages;
+}
+
+async function sendPlainToElena(bot, text) {
+  const id = elenaChatId();
+  if (!id) return;
+  try {
+    await withRetry(() => bot.sendMessage(id, text, { disable_web_page_preview: true }));
+  } catch (err) {
+    console.error('[week-flow] не удалось написать Елене:', err.message);
+  }
+  await sleep(PRIVATE_GAP_MS);
 }
 
 // ---- The week's flow around an announce: "all covered", Tuesday check ----
@@ -933,6 +1003,13 @@ async function runTuesdayCheck(bot, batchKey, now) {
   if (!range) return;
   const due = tuesdayDueAt(batch, range);
   if (now < due) return;
+  if (batch.sentAt >= due) {
+    updateScheduler((s, st) => {
+      const x = (st.batches || []).find((y) => batchId(y) === batchKey);
+      if (x) x.tuesdayDoneAt = now;
+    });
+    return;
+  }
   if (now > due + CATCHUP_MS) {
     // Missed by more than 3 hours (bot unavailable): not run, and said out loud.
     const activatedAt = store.scheduler?.activatedAt || 0;
@@ -943,18 +1020,45 @@ async function runTuesdayCheck(bot, batchKey, now) {
     if (due >= activatedAt) await sendToElena(bot, `⚠️ Вторничная проверка по Анонсу ${weekLabel(range)} не выполнилась вовремя (бот был недоступен больше 3 часов). Состояние недели: /check`);
     return;
   }
-  const plan = await buildHostNudgePlan(batch.chatId, range, new Date(now), batch);
+  const plan = await buildHostNudgePlan(batch.chatId, range, new Date(now), mergedWeekBatch(store, batch, range));
   const after = readJson({ messages: {}, batches: [] });
   const b = (after.batches || []).find((x) => batchId(x) === batchKey);
   if (!b || b.tuesdayDoneAt) return;
   b.tuesdayDoneAt = now; // once, whatever happens next
   writeJsonAtomic(after);
-  if (plan.error || plan.freeEvents.length === 0) {
+  const messages = buildTuesdayMessages(plan);
+  if (messages.length === 0) {
     console.log(`[week-flow] ${batchKey}: во вторник свободных эфиров нет — ничего не пишу`);
     return;
   }
-  await sendToElena(bot, tuesdayMessageText(plan));
-  console.log(`[week-flow] ${batchKey}: вторничное сообщение отправлено Елене (свободных эфиров ${plan.freeEvents.length})`);
+  for (const m of messages) await sendPlainToElena(bot, m);
+  console.log(`[week-flow] ${batchKey}: вторничные сообщения отправлены Елене (${messages.length} шт., свободных эфиров ${plan.freeEvents.length})`);
+}
+
+// All announces of the same chat and week taken together (the Sunday one and a
+// later top-up), so "has this host answered this week" looks at every card.
+function mergedWeekBatch(store, batch, range) {
+  const keys = new Set(batch.cardKeys);
+  for (const other of store.batches || []) {
+    if (other.chatId !== batch.chatId) continue;
+    const r = weekRangeOfBatch(store, other);
+    if (r && r.start.getTime() === range.start.getTime()) other.cardKeys.forEach((k) => keys.add(k));
+  }
+  return { ...batch, cardKeys: [...keys] };
+}
+
+// /tuesday — the same note on demand (any day), for the newest live announce in
+// the WVP group. Unlike the Tuesday run it also says when nothing is free.
+async function runTuesdayPreview(bot, now = Date.now()) {
+  const store = readJson({ messages: {}, batches: [] });
+  const batch = (store.batches || []).filter((b) => b.chatId === WVP_GROUP_ID && isLiveBatch(b, now)).sort((a, b) => b.sentAt - a.sentAt)[0];
+  if (!batch) return sendPlainToElena(bot, 'Сейчас нет живого Анонса в большой группе — нечего проверять.');
+  const range = weekRangeOfBatch(store, batch);
+  if (!range) return sendPlainToElena(bot, 'Не нашла эфиры этого Анонса.');
+  const plan = await buildHostNudgePlan(batch.chatId, range, new Date(now), mergedWeekBatch(store, batch, range));
+  const messages = buildTuesdayMessages(plan);
+  if (messages.length === 0) return sendPlainToElena(bot, `Свободных эфиров на неделе ${weekLabel(range)} нет — во вторник я бы ничего не отправляла.`);
+  for (const m of messages) await sendPlainToElena(bot, m);
 }
 
 // The periodic tick (every 5 minutes, from checkAndSendAnnounceReminders):
@@ -1386,8 +1490,9 @@ async function reportProblem(bot, key, text, everyMs = 60 * 60 * 1000) {
 // The reminder: Monday 09:00 of the announce's week; for an announce sent after
 // that (mid-week top-up) 24 hours after it was sent.
 const reminderDueAt = (batch, range) => (batch.sentAt < at0900(range.start) ? at0900(range.start) : batch.sentAt + DAY_MS);
-// Tuesday's note: the day after the reminder.
-const tuesdayDueAt = (batch, range) => Math.max(at0900(range.start, 1), reminderDueAt(batch, range) + DAY_MS);
+// Tuesday's note: Tuesday 09:00 of the announce's week — and ONLY then. An
+// announce sent after that moment (a mid-week top-up) gets no Tuesday note.
+const tuesdayDueAt = (batch, range) => at0900(range.start, 1);
 
 // ---- Signatures: "is this still the list that was previewed?" ----
 function announceItems(openEvents) {
@@ -1807,9 +1912,10 @@ module.exports = {
   runRestOfWeekCheck,
   weekFlowTick,
   buildHostNudgePlan,
-  tuesdayMessageText,
+  buildTuesdayMessages,
   batchSummaries,
   weekSchedulerTick,
+  runTuesdayPreview,
   noteHostSeen,
   learnHostIdsFromCards,
   reservationsOfHost,
