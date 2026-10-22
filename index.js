@@ -1260,29 +1260,6 @@ function notifyElena(text) {
   bot.sendMessage(myChatId, text).catch((err) => console.error('[weekly-announce] не удалось написать Елене:', err.message));
 }
 
-// ВРЕМЕННО (разово): пробная вторничная сводка для текущей недели — ТОЛЬКО Елене
-// в личку (то же, что команда /tuesday). Хостам ничего не пишется. Маркер
-// пишется ДО отправки. Удалить после выполнения.
-(async () => {
-  const fs = require('fs');
-  const markerPath = process.env.TUESDAY_TRIAL_MARKER_PATH || '/data/tuesday_trial_2026_10_22.json';
-  if (!myChatId || fs.existsSync(markerPath)) return;
-  try {
-    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
-  } catch (err) {
-    console.error('[tuesday-trial] не удалось записать маркер, не запускаю:', err.message);
-    return;
-  }
-  try {
-    await new Promise((r) => setTimeout(r, 10000));
-    await cardButtons.runTuesdayPreview(bot);
-    console.log('[tuesday-trial] пробная вторничная сводка отправлена Елене');
-  } catch (err) {
-    console.error('[tuesday-trial] ошибка:', err.message);
-    reportProblem(bot, 'tuesday-trial', `Не получилось собрать пробную вторничную сводку: ${err.message}`, 0).catch(() => {});
-  }
-})();
-
 // Прямая воскресная авторассылка В ГРУППУ УДАЛЕНА (Елена, 2026-10-21): в группу
 // без её подтверждения ничего не уходит. Вместо неё — расписание с превью
 // «Елене в личку → кнопка/да/нет → группа»: cardButtons.js, weekSchedulerTick
