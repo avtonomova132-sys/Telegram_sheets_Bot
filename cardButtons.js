@@ -34,7 +34,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { escapeHtml, formatCommunityTag, getNextWeekRange, collectWeekEvents, buildWeekCardParts, isPastAzStart, describeDoubt, formatRange24h, formatRange12h, formatMonthDayEn, formatMonthDayRu, mskDate, programLine, setReservationLookup, sessionLabel } = require('./report');
+const { escapeHtml, formatCommunityTag, getNextWeekRange, collectWeekEvents, buildWeekCardParts, isPastAzStart, describeDoubt, formatRange24h, formatRange12h, formatMonthDayEn, formatMonthDayRu, mskDate, programLine, setReservationLookup, sessionLabel, sundayButtonWhen, weekCardDateLine } = require('./report');
 
 // Telegram allows roughly 20 messages/minute into one group — a week is
 // ~25 cards, so group sends are paced ~3.2s apart (a burst gets HTTP 429).
@@ -910,42 +910,97 @@ function cardSummaryHtml(record) {
 const coveredDmText = (cards) =>
   ['🎉 <b>Ура! Все эфиры недели закрыты / All sessions this week are covered</b>', '', cards.map((c) => cardSummaryHtml(c.record)).join('\n\n')].join('\n');
 
-// Compares the announce's sessions with what was last told, and acts on the
-// CHANGE only (so each transition happens once). Call inside the serial queue.
+// The week as a whole: every live announce of the same chat and the same
+// Monday–Sunday week (the Sunday one, a mid-week top-up, urgent single-session
+// cards) is ONE picture. "All covered" fires only when every card of all of them
+// is closed AND the last hourly sheet scan knows of no free session without a
+// card — otherwise a top-up that still had open cards would be thanked too early.
+function weekBatchesOf(store, batch) {
+  const range = weekRangeOfBatch(store, batch);
+  if (!range) return { range: null, batches: [batch] };
+  const iso = isoOf(range.start);
+  const now = Date.now();
+  const batches = (store.batches || []).filter((b) => {
+    if (b.chatId !== batch.chatId || !isLiveBatch(b, now)) return false;
+    const r = weekRangeOfBatch(store, b);
+    return r && isoOf(r.start) === iso;
+  });
+  return { range, batches: batches.length > 0 ? batches : [batch] };
+}
+
+function weekCoverage(store, batches) {
+  const seen = new Set();
+  const cards = [];
+  for (const b of batches) {
+    for (const key of b.cardKeys) {
+      const record = store.messages[key];
+      if (!record || seen.has(key)) continue;
+      seen.add(key);
+      normalizeRecord(record);
+      cards.push({ key, record });
+    }
+  }
+  const open = cards.filter((c) => !c.record.hosted && !c.record.reservedBy);
+  return { cards, open, covered: cards.length > 0 && open.length === 0 };
+}
+
+// Free sessions of this week seen by the last scan that still have no card.
+function freeWithoutCardNow(store, chatId, mondayIso, now) {
+  const scan = store.scheduler && store.scheduler.lastScan;
+  if (!scan || scan.weekMonday !== mondayIso || now - scan.at > 3 * 60 * 60 * 1000) return [];
+  const have = new Set();
+  for (const [key, r] of Object.entries(store.messages)) {
+    if (!r.mirrorOf && r.event && Number(key.split(':')[0]) === chatId) have.add(recordKeyOf(r));
+  }
+  return (scan.freeNoCardKeys || []).filter((k) => !have.has(k));
+}
+
+// Compares the week's sessions with what was last told, and acts on the CHANGE
+// only (so each transition happens once). Call inside the serial queue.
 async function evaluateCoverage(bot, batchKey) {
   const store = readJson({ messages: {}, batches: [] });
   const batch = (store.batches || []).find((b) => batchId(b) === batchKey);
   const now = Date.now();
   if (!batch || !isLiveBatch(batch, now)) return;
-  const cov = coverageOf(store, batch);
+  const { range, batches } = weekBatchesOf(store, batch);
+  const cov = weekCoverage(store, batches);
+  const iso = range ? isoOf(range.start) : '';
+  const stray = freeWithoutCardNow(store, batch.chatId, iso, now);
+  const covered = cov.covered && stray.length === 0;
+  const wasCovered = batches.some((b) => b.coveredAt);
+  const prefix = batch.chatId === TEST_GROUP_ID ? '🧪 [Дебаты, тест] ' : '';
 
-  if (cov.covered && !batch.coveredAt) {
+  if (covered && !wasCovered) {
     // Marked BEFORE anything is sent, so a failure never turns into a repeat.
-    batch.coveredAt = now;
-    if (!batch.remindedAt) {
-      batch.remindedAt = now;
-      batch.outcome = 'covered';
-      batch.cancelledByCover = true;
-    }
-    if (!batch.tuesdayDoneAt) {
-      batch.tuesdayDoneAt = now;
-      batch.tuesdayCancelledByCover = true;
+    for (const b of batches) {
+      b.coveredAt = now;
+      if (!b.remindedAt) {
+        b.remindedAt = now;
+        b.outcome = 'covered';
+        b.cancelledByCover = true;
+      }
+      if (!b.tuesdayDoneAt) {
+        b.tuesdayDoneAt = now;
+        b.tuesdayCancelledByCover = true;
+      }
     }
     schedulerOf(store);
+    const keys = new Set(batches.map(batchId));
     for (const p of Object.values(store.scheduler.pending)) {
-      if (p.kind === 'reminder' && p.batchKey === batchKey && p.status === 'pending') {
+      if (['reminder', 'urgent'].includes(p.kind) && p.status === 'pending' && (keys.has(p.batchKey) || p.chatId === batch.chatId)) {
         p.status = 'stale';
         removeButtons(bot, p);
       }
     }
     writeJsonAtomic(store);
-    await sendToElena(bot, coveredDmText(cov.cards));
+    await sendToElena(bot, prefix + coveredDmText(cov.cards));
+    const newest = batches.slice().sort((a, b) => b.sentAt - a.sentAt)[0];
     try {
       const sent = await withRetry(() =>
-        bot.sendMessage(batch.chatId, COVERED_TEXT, { reply_to_message_id: batch.headerMessageId, allow_sending_without_reply: true })
+        bot.sendMessage(batch.chatId, COVERED_TEXT, { reply_to_message_id: newest.headerMessageId, allow_sending_without_reply: true })
       );
       const after = readJson({ messages: {}, batches: [] });
-      const b = (after.batches || []).find((x) => batchId(x) === batchKey);
+      const b = (after.batches || []).find((x) => batchId(x) === batchId(newest));
       if (b) {
         b.coveredMessageId = sent.message_id;
         writeJsonAtomic(after);
@@ -953,23 +1008,27 @@ async function evaluateCoverage(bot, batchKey) {
     } catch (err) {
       console.error(`[week-flow] не удалось написать в группу «все эфиры закрыты» (${batchKey}):`, err.message);
     }
-    console.log(`[week-flow] ${batchKey}: все эфиры закрыты — написала Елене и в группу, напоминания отменены`);
+    console.log(`[week-flow] ${batchKey}: все эфиры недели закрыты — написала Елене и в группу, напоминания отменены`);
     return;
   }
 
-  if (!cov.covered && batch.coveredAt) {
-    batch.coveredAt = null;
-    if (batch.cancelledByCover) {
-      batch.remindedAt = null;
-      batch.outcome = null;
-      batch.cancelledByCover = false;
-    }
-    if (batch.tuesdayCancelledByCover) {
-      batch.tuesdayDoneAt = null;
-      batch.tuesdayCancelledByCover = false;
+  if (!covered && wasCovered) {
+    for (const b of batches) {
+      b.coveredAt = null;
+      if (b.cancelledByCover) {
+        b.remindedAt = null;
+        b.outcome = null;
+        b.cancelledByCover = false;
+      }
+      if (b.tuesdayCancelledByCover) {
+        b.tuesdayDoneAt = null;
+        b.tuesdayCancelledByCover = false;
+      }
     }
     writeJsonAtomic(store);
-    await sendToElena(bot, ['🔓 <b>Эфир снова свободен:</b>', '', cov.open.map((c) => cardSummaryHtml(c.record)).join('\n\n')].join('\n'));
+    const lines = cov.open.map((c) => cardSummaryHtml(c.record));
+    stray.forEach(() => lines.push('⭕ ещё один свободный эфир без карточки — смотрите /check'));
+    await sendToElena(bot, [`${prefix}🔓 <b>Эфир снова свободен:</b>`, '', lines.join('\n\n')].join('\n'));
     console.log(`[week-flow] ${batchKey}: эфир снова свободен — обычная схема возвращена`);
   }
 }
@@ -979,6 +1038,7 @@ async function evaluateCoverageForCard(bot, cardKey) {
   const store = readJson({ messages: {}, batches: [] });
   const batch = (store.batches || []).find((b) => b.cardKeys.includes(cardKey));
   if (batch) await evaluateCoverage(bot, batchId(batch));
+  await voidUrgentForCard(bot, cardKey);
 }
 
 // Monday of the week the announce's sessions fall in, through Sunday.
@@ -1462,6 +1522,7 @@ function schedulerOf(store) {
   s.done = s.done || {};
   s.pending = s.pending || {};
   s.errors = s.errors || {};
+  s.urgent = s.urgent || {};
   return s;
 }
 
@@ -1657,7 +1718,7 @@ async function confirmPending(bot, id, approve) {
       s.pending[id].status = 'stale';
     });
     await removeButtons(bot, p);
-    return sendToElena(bot, 'Это превью устарело (неделя прошла) — в группу ничего не отправляю.');
+    return sendToElena(bot, p.kind === 'urgent' ? 'Эфир уже начался — в группу ничего не отправляю.' : 'Это превью устарело (неделя прошла) — в группу ничего не отправляю.');
   }
 
   if (!approve) {
@@ -1667,6 +1728,7 @@ async function confirmPending(bot, id, approve) {
         const b = (st.batches || []).find((x) => batchId(x) === p.batchKey);
         if (b) b.outcome = 'declined';
       }
+      if (p.kind === 'urgent' && s.urgent[p.eventKey]) s.urgent[p.eventKey].status = 'declined'; // never asked again for this session
     });
     await removeButtons(bot, p);
     return sendToElena(bot, 'Хорошо, в группу ничего не отправляю.');
@@ -1679,6 +1741,7 @@ async function confirmPending(bot, id, approve) {
   await removeButtons(bot, p);
   try {
     if (p.kind === 'announce') await sendApprovedAnnounce(bot, p, now);
+    else if (p.kind === 'urgent') await sendApprovedUrgent(bot, p, now);
     else await sendApprovedReminder(bot, p, now);
   } catch (err) {
     updateScheduler((s) => {
@@ -1877,6 +1940,7 @@ async function weekSchedulerTick(bot, now = Date.now()) {
     ['announce-sunday', () => runSerialStrict(() => announceSlotStep(bot, now))],
     ['reminder-monday', () => runSerialStrict(() => reminderSlotStep(bot, now))],
     ['nudge', () => runSerialStrict(() => nudgeStep(bot, now))],
+    ['urgent-24h', () => runSerialStrict(() => urgentStep(bot, now))],
   ];
   for (const [name, run] of steps) {
     try {
@@ -1885,6 +1949,284 @@ async function weekSchedulerTick(bot, now = Date.now()) {
       await reportProblem(bot, `tick:${name}`, `Автоматика недели («${name}») не сработала: ${err.message}. Попробую снова через 5 минут; если не получится — бот напишет ещё раз.`);
     }
   }
+}
+
+// ---- "Less than 24 hours left" for a session that still has no host ----
+//
+// Elena (2026-10-22). Every hour (no AI, just the sheet and the saved card
+// state) the bot looks for a FREE session (no name in the Host column, no active
+// ✅ reservation) that starts in 24 hours or less and has not been handled yet:
+//   a) there are hosts who never pressed ✅/❌ on this week's announce(s) -> a
+//      PREVIEW goes to Elena: the group message exactly as it would look (a
+//      bilingual text with the tags of ONLY those hosts + a card with ✅/❌ for
+//      ONLY this session) and "Send to group / Don't send". Only after her "yes"
+//      does it go to the group;
+//   b) everyone has answered but the session is still open -> ONE note to Elena
+//      ("everyone answered, the session is not closed, decide yourself"),
+//      nothing for the group, no buttons;
+//   c) each session is handled once; "Don't send" means never again for it;
+//   d) never at night: nothing is sent to Elena between 22:00 and 08:00 Bali —
+//      what falls into that window is done at 08:00 (even if less than 24 h
+//      remain by then);
+//   e) a preview whose session closed before Elena answered is withdrawn with
+//      "эфир уже закрыт".
+// The bot never writes to a host privately.
+
+const URGENT_WINDOW_MS = 24 * 60 * 60 * 1000;
+const URGENT_EVERY_MS = 55 * 60 * 1000;
+
+const baliHourOf = (ms) => new Date(ms + 8 * 3600 * 1000).getUTCHours();
+const startMsOf = (e) => azStartInstantMs(e);
+const azStartInstantMs = (e) => e.date.getTime() + e.azStartMin * 60000 + 7 * 3600 * 1000;
+
+// Active ✅ reservation for a session, from the cards of this chat.
+function reservationOnCards(store, chatId, e) {
+  const k = eventKeyOf(e);
+  for (const [key, r] of Object.entries(store.messages)) {
+    if (r.mirrorOf || !r.event || r.hosted || !r.reservedBy || Number(key.split(':')[0]) !== chatId) continue;
+    if (recordKeyOf(r) === k) return r.reservedBy;
+  }
+  return null;
+}
+
+// Hosts (tags) who never pressed ✅ or ❌ on ANY card of this chat's live
+// announces of the session's week.
+function unrespondedForWeek(store, chatId, eventDate) {
+  const mondayIso = isoOf(baliMonday(eventDate.getTime() + 12 * 3600 * 1000));
+  const keys = new Set();
+  for (const b of (store.batches || []).filter((x) => x.chatId === chatId && isLiveBatch(x, Date.now()))) {
+    const r = weekRangeOfBatch(store, b);
+    if (r && isoOf(r.start) === mondayIso) b.cardKeys.forEach((k) => keys.add(k));
+  }
+  const records = [...keys].map((k) => store.messages[k]).filter(Boolean);
+  const tags = candidatesFor(chatId);
+  return tags.filter((t) => !records.some((r) => (r.refusers || []).some((u) => tagMatchesUser(t, u)) || (r.reservedBy && tagMatchesUser(t, r.reservedBy))));
+}
+
+const urgentSignature = (e, tags) => JSON.stringify([eventKeyOf(e), tags.map(normUser).sort()]);
+
+function urgentTexts(e, tags, { test = false } = {}) {
+  const label = sessionLabel(e.title);
+  const what = `${escapeHtml(e.tabName)}${label ? ` — ${escapeHtml(label)}` : ''}`;
+  const when = `AZ: ${ddmm(e.date)}, ${formatRange24h(e.azStartMin, e.azEndMin)} · MCK: ${ddmm(mskDate(e))}, ${formatRange24h(e.mskStartMin, e.mskEndMin)}`;
+  const header = [
+    `${test ? '🧪 <i>ТЕСТ (тестовая группа)</i>\n' : ''}⏰ <b>Less than 24 hours left / Осталось меньше 24 часов</b>`,
+    '',
+    `EN: Less than 24 hours until <b>${what}</b> (${when}). There is no host yet. Please tap ✅ if you can take it, or ❌ if you can't. 🙏`,
+    `RU: Осталось меньше 24 часов до эфира <b>${what}</b> (${when}). Хоста пока нет. Нажмите ✅, если сможете, или ❌, если не можете. 🙏`,
+    '',
+    tags.map((t) => escapeHtml(formatCommunityTag(t))).join(' '),
+  ].join('\n');
+  const card = {
+    titleLine: `⏰ <b>${escapeHtml(e.tabName)}</b>`,
+    dateLine: weekCardDateLine(e),
+    tabUrl: e.tabUrl || null,
+    when: sundayButtonWhen(e),
+    event: { tabUrl: e.tabUrl || null, dateIso: e.date.toISOString(), azStartMin: e.azStartMin },
+    label: label || '',
+  };
+  return { header, card };
+}
+
+// Header (with the tags) and the single-session card, as an urgent batch.
+async function postUrgent(bot, chatId, e, tags, { test = false } = {}) {
+  const { header, card } = urgentTexts(e, tags, { test });
+  const h = await withRetry(() => bot.sendMessage(chatId, header, { parse_mode: 'HTML', disable_web_page_preview: true }));
+  const sentAt = Date.now();
+  await sleep(chatId < 0 ? GROUP_GAP_MS : PRIVATE_GAP_MS);
+  const c = await sendCard(bot, chatId, { ...card, candidateTags: candidatesFor(chatId) });
+  recordBatch(chatId, h.message_id, [`${chatId}:${c.message_id}`], sentAt);
+  updateScheduler((s, st) => {
+    const b = (st.batches || []).find((x) => x.chatId === chatId && x.headerMessageId === h.message_id);
+    if (b) {
+      b.kind = 'urgent';
+      b.remindedAt = sentAt; // no Monday reminder / Tuesday note for a single-session card
+      b.tuesdayDoneAt = sentAt;
+      b.outcome = 'urgent';
+    }
+  });
+  return { headerId: h.message_id, cardId: c.message_id };
+}
+
+async function createUrgentPreview(bot, { event: e, tags, chatId, now = Date.now(), prevNote = null }) {
+  const elena = elenaChatId();
+  const { header, card } = urgentTexts(e, tags);
+  await withRetry(() => bot.sendMessage(elena, header, { parse_mode: 'HTML', disable_web_page_preview: true }));
+  await sleep(PRIVATE_GAP_MS);
+  const record = { ...card, candidateTags: candidatesFor(chatId), refusers: [], reservedBy: null, hosted: null };
+  await withRetry(() => bot.sendMessage(elena, cardText(record), { parse_mode: 'HTML', reply_markup: { inline_keyboard: cardKeyboard(record) } }));
+  const id = `u${Math.abs(chatId)}_${createHash8(eventKeyOf(e))}`;
+  const text = [
+    prevNote,
+    `👆 <b>Превью срочного напоминания</b> — до эфира меньше 24 часов, хоста нет; отметиться не успели: ${tags.length}. В группу уйдёт ровно так (кнопки на карточке там будут рабочие). Отправить?`,
+    HOW_TO_ANSWER,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+  const control = await withRetry(() => bot.sendMessage(elena, text, { parse_mode: 'HTML', reply_markup: { inline_keyboard: controlKeyboard(id) } }));
+  updateScheduler((s) => {
+    const old = s.pending[id];
+    if (old && old.status === 'pending' && old.controlMessageId !== control.message_id) old.status = 'superseded';
+    s.pending[id] = {
+      id,
+      kind: 'urgent',
+      chatId,
+      eventKey: eventKeyOf(e),
+      eventLabel: `${e.tabName} ${ddmm(e.date)} ${formatRange24h(e.azStartMin, e.azEndMin)} AZ`,
+      weekDate: e.date.getTime(),
+      signature: urgentSignature(e, tags),
+      items: tags,
+      controlMessageId: control.message_id,
+      createdAt: now,
+      nudgedAt: null,
+      expiresAt: startMsOf(e),
+      status: 'pending',
+    };
+    s.urgent[eventKeyOf(e)] = { status: 'preview', at: now, chatId };
+  });
+  return { preview: true, id };
+}
+
+// Tiny deterministic id fragment from the session key (callback_data is limited to 64 bytes).
+function createHash8(str) {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
+
+// One hourly pass. `windowMs`/`force` are for the one-off run Elena asked for
+// ("everything starting within ~48 h, right now, even at night").
+async function urgentStep(bot, now, { windowMs = URGENT_WINDOW_MS, force = false, chatId = WVP_GROUP_ID } = {}) {
+  if (!force) {
+    const last = readJson({ messages: {}, batches: [] }).scheduler?.urgentLastRun || 0;
+    if (now - last < URGENT_EVERY_MS) return { skipped: 'throttled' };
+  }
+  updateScheduler((s) => {
+    s.urgentLastRun = now;
+  });
+
+  const monday = baliMonday(now);
+  const range = { start: addDaysUtc(monday, -1), end: addDaysUtc(monday, 13) };
+  const collected = await collectWeekEvents(range);
+  if (collected.failedTabs.length > 0) throw new Error(`не загрузились вкладки таблицы: ${collected.failedTabs.join('; ')}`);
+  const store = readJson({ messages: {}, batches: [] });
+  const upcoming = collected.events.filter((e) => startMsOf(e) > now);
+  const isFree = (e) => !e.hasHost && !reservationOnCards(store, chatId, e);
+
+  // What the week-coverage check needs to know: free sessions of this Bali week with no card yet.
+  const weekMonday = isoOf(monday);
+  const weekEnd = addDaysUtc(monday, 6);
+  const have = new Set();
+  for (const [key, r] of Object.entries(store.messages)) if (!r.mirrorOf && r.event && Number(key.split(':')[0]) === chatId) have.add(recordKeyOf(r));
+  const freeNoCardKeys = upcoming.filter((e) => e.date >= monday && e.date <= weekEnd && isFree(e) && !have.has(eventKeyOf(e))).map(eventKeyOf);
+  updateScheduler((s) => {
+    s.lastScan = { at: now, weekMonday, freeNoCardKeys };
+  });
+
+  // previews whose session has been closed (or has started) in the meantime
+  const keyed = new Map(collected.events.map((e) => [eventKeyOf(e), e]));
+  for (const p of pendingList().filter((x) => x.kind === 'urgent' && x.chatId === chatId)) {
+    const e = keyed.get(p.eventKey);
+    const closed = !e || startMsOf(e) <= now || !isFree(e);
+    if (closed) await withdrawUrgent(bot, p, e && startMsOf(e) <= now ? 'эфир уже начался' : 'эфир уже закрыт');
+  }
+
+  const handled = readJson({ messages: {}, batches: [] }).scheduler?.urgent || {};
+  const candidates = upcoming
+    .filter((e) => startMsOf(e) - now <= windowMs && isFree(e) && !handled[eventKeyOf(e)])
+    .sort((a, b) => startMsOf(a) - startMsOf(b));
+  const nextFree = upcoming.filter(isFree).sort((a, b) => startMsOf(a) - startMsOf(b))[0] || null;
+  const out = { candidates: candidates.length, previews: 0, allAnswered: 0, deferred: 0, nextFree: nextFree ? { text: `${nextFree.tabName} — ${eventWhen(nextFree)}`, hoursAway: Math.round((startMsOf(nextFree) - now) / 3600000) } : null };
+  if (candidates.length === 0) return out;
+
+  const hour = baliHourOf(now);
+  if (!force && (hour < 8 || hour >= 22)) {
+    out.deferred = candidates.length; // night: done at 08:00
+    return out;
+  }
+  for (const e of candidates) {
+    const tags = unrespondedForWeek(readJson({ messages: {}, batches: [] }), chatId, e.date);
+    if (tags.length === 0) {
+      updateScheduler((s) => {
+        s.urgent[eventKeyOf(e)] = { status: 'allAnswered', at: now, chatId };
+      });
+      await sendToElena(
+        bot,
+        `Все хосты ответили, но эфир <b>${escapeHtml(e.tabName)}</b>${sessionLabel(e.title) ? ` — ${escapeHtml(sessionLabel(e.title))}` : ''}, ${eventWhen(e)} (MCK ${ddmm(mskDate(e))}, ${formatRange24h(e.mskStartMin, e.mskEndMin)}), не закрыт. Нужно решить самой (например, написать Михаилу).`
+      );
+      out.allAnswered++;
+    } else {
+      await createUrgentPreview(bot, { event: e, tags, chatId, now });
+      out.previews++;
+    }
+  }
+  return out;
+}
+
+async function withdrawUrgent(bot, p, why) {
+  updateScheduler((s) => {
+    if (s.pending[p.id]) s.pending[p.id].status = 'stale';
+    if (s.urgent[p.eventKey]) s.urgent[p.eventKey].status = 'closed';
+  });
+  await removeButtons(bot, p);
+  await sendToElena(bot, `ℹ️ Срочное напоминание по эфиру «${escapeHtml(p.eventLabel)}» отменено: ${escapeHtml(why)}.`);
+}
+
+// A card just changed: a pending urgent preview for that session may be moot.
+async function voidUrgentForCard(bot, cardKey) {
+  const store = readJson({ messages: {}, batches: [] });
+  const r = store.messages[cardKey];
+  if (!r || !r.event || !(r.reservedBy || r.hosted)) return;
+  const k = recordKeyOf(r);
+  for (const p of pendingList().filter((x) => x.kind === 'urgent' && x.eventKey === k)) await withdrawUrgent(bot, p, 'эфир уже закрыт');
+}
+
+async function sendApprovedUrgent(bot, p, now) {
+  const monday = baliMonday(p.weekDate + 12 * 3600 * 1000);
+  const collected = await collectWeekEvents({ start: addDaysUtc(monday, -1), end: addDaysUtc(monday, 7) });
+  if (collected.failedTabs.length > 0) throw new Error(`не загрузились вкладки таблицы: ${collected.failedTabs.join('; ')}`);
+  const e = collected.events.find((x) => eventKeyOf(x) === p.eventKey);
+  const store = readJson({ messages: {}, batches: [] });
+  if (!e || startMsOf(e) <= now || e.hasHost || reservationOnCards(store, p.chatId, e)) {
+    updateScheduler((s) => {
+      s.pending[p.id].status = 'stale';
+      if (s.urgent[p.eventKey]) s.urgent[p.eventKey].status = 'closed';
+    });
+    return sendToElena(bot, 'Эфир уже закрыт (или начался) — в группу ничего не отправляю.');
+  }
+  const tags = unrespondedForWeek(store, p.chatId, e.date);
+  if (urgentSignature(e, tags) !== p.signature) {
+    updateScheduler((s) => {
+      s.pending[p.id].status = 'superseded';
+    });
+    if (tags.length === 0) {
+      updateScheduler((s) => {
+        s.urgent[p.eventKey] = { status: 'allAnswered', at: now, chatId: p.chatId };
+      });
+      return sendToElena(bot, `За это время все хосты ответили, но эфир «${escapeHtml(p.eventLabel)}» не закрыт — в группу ничего не отправляю. Нужно решить самой.`);
+    }
+    return createUrgentPreview(bot, { event: e, tags, chatId: p.chatId, now, prevNote: '⚠️ <b>Список не отметившихся изменился с момента предыдущего превью</b> — в группу ничего не отправлено. Вот обновлённое превью:' });
+  }
+  await postUrgent(bot, p.chatId, e, tags);
+  updateScheduler((s) => {
+    s.pending[p.id].status = 'sent';
+    s.urgent[p.eventKey] = { status: 'sent', at: now, chatId: p.chatId };
+  });
+  await sendToElena(bot, `✅ Срочное напоминание отправлено в группу: «${escapeHtml(p.eventLabel)}».`);
+}
+
+// /urgent_test — the same message into the TEST group «Дебаты» straight away
+// (no confirmation needed there), for the nearest free session. Real state is untouched.
+async function runUrgentTest(bot, now = Date.now()) {
+  const monday = baliMonday(now);
+  const collected = await collectWeekEvents({ start: addDaysUtc(monday, -1), end: addDaysUtc(monday, 13) });
+  if (collected.failedTabs.length > 0) throw new Error(`не загрузились вкладки таблицы: ${collected.failedTabs.join('; ')}`);
+  const e = collected.events.filter((x) => startMsOf(x) > now && !x.hasHost).sort((a, b) => startMsOf(a) - startMsOf(b))[0];
+  if (!e) return sendToElena(bot, 'Для теста нет ни одного предстоящего эфира без хоста.');
+  const store = readJson({ messages: {}, batches: [] });
+  const tags = unrespondedForWeek(store, TEST_GROUP_ID, e.date);
+  await postUrgent(bot, TEST_GROUP_ID, e, tags, { test: true });
+  await sendToElena(bot, `🧪 Тест: срочное напоминание по эфиру «${escapeHtml(e.tabName)}» (${eventWhen(e)}) отправлено в «Дебаты». В большую группу ничего не уходило.`);
 }
 
 // Manual test: the same reminder for the latest announce in `chatId`, sent
@@ -1916,6 +2258,8 @@ module.exports = {
   batchSummaries,
   weekSchedulerTick,
   runTuesdayPreview,
+  urgentStep,
+  runUrgentTest,
   noteHostSeen,
   learnHostIdsFromCards,
   reservationsOfHost,

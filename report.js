@@ -2043,6 +2043,8 @@ module.exports = {
   formatCommunityTag,
   isPastAzStart,
   setReservationLookup,
+  sundayButtonWhen,
+  weekCardDateLine,
   describeDoubt,
   formatProgramNameHtml,
   csvUrl,
