@@ -333,14 +333,14 @@ test('/остатки: число только в строке «1 шт», ос�
     ['Бирка50Петелька1ШТ', 40], ['Бирка50Петелька2ШТ', 20], ['Бирка50Петелька10ШТ', 4],
     ['Бирка100Петелька1ШТ', 0], ['Бирка100Петелька5ШТ', 0],
   ]);
-  assert.deepStrictEqual(plan.unrecounted, ['Карамель Эвкалипт-ментол 200 г']);
+  assert.deepStrictEqual(plan.unrecounted, ['200КарамельЭквалиптМентол']);
   assert.strictEqual(plan.notInOzon.length, 1);
   const text = ost.buildText({ from: 200, to: 206, hint: 'бирки петельки', rows, products: ostCatalog, plan });
-  assert.ok(text.includes('названия совпадают ✅'));
-  assert.ok(text.includes('Диапазон: «Бирки с петелькой» … «НетТакого1ШТ»'));
-  assert.ok(text.includes('⏳ Не пересчитано: 1 товар') && text.includes('• Карамель Эвкалипт-ментол 200 г'));
-  assert.ok(!/строк[аи]? \d|\(\d{3}\)/.test(text.split('\n').slice(2).join('\n')), 'номера строк не показываем');
-  assert.ok(!text.includes('Пустое количество'));
+  assert.strictEqual(text.split('\n')[0], 'Строки 200–206: найдено 7 артикулов в 3 семьях');
+  assert.ok(text.includes('Бирка50Петелька1ШТ — 40\nБирка50Петелька2ШТ — 20\nБирка50Петелька10ШТ — 4\n\nБирка100Петелька1ШТ — 0\nБирка100Петелька5ШТ — 0'));
+  assert.ok(text.includes('Не пересчитано: 1\n200КарамельЭквалиптМентол'));
+  assert.ok(!/[📦📋⏳]|Бирки с петелькой|Диапазон|строк[аи]? \d/.test(text.split('\n').slice(1).join('\n')), 'без эмодзи, названий и номеров строк');
+  assert.ok(!text.includes('названия не похожи'));
   assert.ok(ost.buildText({ from: 200, to: 206, hint: 'мармелад', rows, products: ostCatalog, plan }).includes('⚠️ названия не похожи на «мармелад»'));
 });
 
@@ -350,7 +350,7 @@ test('/остатки: много не пересчитанного — толь
   const rows = cat.map((p, i) => ({ row: 10 + i, article: p.article, qtyRaw: '' }));
   const plan = ost.buildPlan(rows, cat, families);
   const text = ost.buildText({ from: 10, to: 21, hint: '', rows, products: cat, plan });
-  assert.ok(text.includes('Не пересчитано: 12 товаров') && !text.includes('• Товар 0'));
+  assert.ok(text.includes('Не пересчитано: 12') && !text.includes('Товар0Х'));
   assert.strictEqual(plan.items.length, 0);
 });
 
@@ -361,7 +361,7 @@ test('/остатки: конфликт одним предложением, р�
     { row: 4, article: 'Бирка50Петелька10ШТ', qtyRaw: '5' },
   ], ostCatalog, families);
   assert.strictEqual(conflict.conflicts.length, 1);
-  assert.ok(conflict.conflicts[0].text.includes('набор 1 шт = 40') && conflict.conflicts[0].text.includes('должно быть 4'));
+  assert.ok(conflict.conflicts[0].title === 'Бирка50Петелька' && conflict.conflicts[0].text.includes('набор 1 шт = 40') && conflict.conflicts[0].text.includes('должно быть 4'));
   assert.strictEqual(conflict.items.length, 0);
   const derived = ost.buildPlan([{ row: 3, article: 'Бирка50Петелька10ШТ', qtyRaw: '4' }], ostCatalog, families);
   assert.deepStrictEqual(derived.items.map((i) => i.qty), [40, 20, 4]);
