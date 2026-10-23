@@ -299,11 +299,6 @@ function buildReport(s) {
     L.push('🚫 Нет в Озоне:');
     for (const l of plan.notInOzon) L.push(`• ${l.name} — ${fmt(l.qty)} шт`);
   }
-  if (plan.remainders.length) {
-    L.push('');
-    L.push('Остаток от деления:');
-    for (const r of plan.remainders) L.push(`• ${r.article} — ${r.remainder} шт`);
-  }
   L.push('');
   L.push(plan.check.ok ? `${plan.check.reason} ✅` : `⚠️ ${plan.check.reason}`);
   return { text: L.join('\n'), plan };
@@ -346,7 +341,8 @@ async function build(chatId, s) {
     await bot.sendDocument(chatId, out, { caption: `Строк в файле: ${plan.items.length}. Загрузи в Озон сама — бот туда ничего не пишет.` },
       { filename: fileName, contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const S = [`✅ Файл проверен (шапка цела). ${plan.check.reason}.`];
-    if (plan.remainders.length) S.push(`Остаток от деления: ${plan.remainders.map((r) => `${r.article} — ${r.remainder} шт`).join('; ')}.`);
+    if (plan.remainders.length) console.log(`[prihod] остатки от деления: ${plan.remainders.map((r) => `${r.article} — ${r.remainder} шт`).join('; ')}`);
+    if (plan.zeroSets.length) console.log(`[prihod] наборы с нулём (в файл не пишутся): ${plan.zeroSets.map((z) => z.article).join(', ')}`);
     if (plan.notInOzon.length) S.push(`Нет в Озоне: ${plan.notInOzon.map((l) => `${l.name} (${fmt(l.qty)} шт)`).join('; ')}.`);
     await send(chatId, S.join('\n'));
     sessions.delete(chatId);
@@ -445,7 +441,7 @@ async function onCallback(query) {
       if (!l) return undefined;
       if (b === 'x') {
         l.decision = { status: 'none', via: 'Елена: нет в Озоне' };
-        try { nameMap.rememberNone(l.name, s.families.length); } catch (err) { console.error('[prihod] карта названий:', err.message); }
+        try { nameMap.rememberNone(l.name, (l.opts || (l.match && l.match.options) || candidatesFor(l, s.families)).flatMap((f) => f.members.map((m) => m.article))); } catch (err) { console.error('[prihod] карта названий:', err.message); }
       } else {
         const f = (l.opts || l.match.options || [])[Number(b)];
         if (!f) return undefined;

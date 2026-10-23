@@ -91,7 +91,8 @@ function buildFamilies(products) {
       skipped.push({ article: p.article, reason: 'в архиве' });
       continue;
     }
-    const weightG = parseArticleWeight(p.article) ?? parseWeightG(p.name) ?? parseWeightG(p.article) ?? embeddedWeight(articleBase(p.article, p.name));
+    // Вес из артикула надёжнее названия (в названии бывают вес штуки, коробки и т.п.).
+    const weightG = parseArticleWeight(p.article) ?? embeddedWeight(articleBase(p.article, p.name)) ?? parseWeightG(p.name) ?? parseWeightG(p.article);
     const base = articleBase(p.article, p.name);
     const key = dense(baseNoWeight(base)) || dense(base);
     if (!byStem.has(key)) byStem.set(key, []);

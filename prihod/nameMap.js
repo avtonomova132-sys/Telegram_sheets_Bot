@@ -6,7 +6,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { norm, dense } = require('./text');
+const { norm, dense, trigrams, dice } = require('./text');
 const { articleBase, baseNoWeight } = require('./family');
 
 const MAP_PATH = process.env.PRIHOD_NAME_MAP_PATH || '/data/ozon_name_map.json';
@@ -19,6 +19,7 @@ const SEED = [
   { pattern: 'карамель лимончики', family: '250КАРАМЕЛЬ_Лимончики', not: ['250ЛимоннаяКарамель'] },
   { pattern: 'прозрачные? крафт', family: 'КомбиКрафт' },
   { pattern: 'прозрачные? бел', family: 'КомбиБелые' },
+  { pattern: 'маска.*вафл', family: 'Маска300СВафлями' },
 ];
 
 // В словаре хранится только «название в накладной → ОСНОВА семьи» (артикул без
@@ -46,19 +47,26 @@ function migrate(data) {
   return { version: VERSION, entries: [...byPattern.values()] };
 }
 
+// Начальные записи всегда берутся из кода (новые SEED подхватываются без
+// ручной правки файла); решения Елены лежат после них и важнее.
+function withSeeds(data) {
+  const learned = data.entries.filter((e) => !e.seed);
+  return { version: VERSION, entries: [...SEED.map((e) => ({ ...e, seed: true })), ...learned] };
+}
+
 function read() {
   try {
     const d = JSON.parse(fs.readFileSync(MAP_PATH, 'utf8'));
     if (Array.isArray(d.entries)) {
-      if ((d.version || 1) >= VERSION) return d;
+      if ((d.version || 1) >= VERSION) return withSeeds(d);
       const migrated = migrate(d);
       try { write(migrated); } catch (err) { console.error('[prihod] не удалось записать мигрированный словарь:', err.message); }
-      return migrated;
+      return withSeeds(migrated);
     }
   } catch (err) {
     if (err.code !== 'ENOENT') console.error('[prihod] ozon_name_map.json повреждён, читаю seed:', err.message);
   }
-  return { version: VERSION, entries: SEED.map((e) => ({ ...e, seed: true })) };
+  return withSeeds({ entries: [] });
 }
 
 function write(data) {
@@ -79,7 +87,20 @@ function lookup(invoiceName) {
       if (new RegExp(e.pattern, 'i').test(n)) return e;
     } catch { /* битая регулярка — пропускаем */ }
   }
-  return null;
+  // Модель читает одно и то же название чуть по-разному («вафлям и» / «вафлями»):
+  // решение Елены узнаём и по похожему написанию при тех же числах (вес, 1/300).
+  const digits = (t) => (t.match(/\d+/g) || []).join(',');
+  const tri = trigrams(n);
+  let best = null;
+  let bestScore = 0.86;
+  for (const e of entries) {
+    if (e.seed || !e.pattern.startsWith('^')) continue;
+    const en = e.pattern.replace(/^\^|\$$/g, '').replace(/\\(.)/g, '$1');
+    if (digits(en) !== digits(n)) continue;
+    const sc = dice(tri, trigrams(en));
+    if (sc > bestScore) { best = e; bestScore = sc; }
+  }
+  return best;
 }
 
 function familyMatches(entry, family) {
@@ -102,10 +123,10 @@ function remember(invoiceName, family) {
   save({ pattern: exactPattern(invoiceName), family: family.base, exact: true, weightG: family.weightG ?? null });
 }
 
-// «Нет в Озоне»: familyCount — сколько семей было в каталоге; если их
-// станет больше, строку можно переспросить.
-function rememberNone(invoiceName, familyCount) {
-  save({ pattern: exactPattern(invoiceName), none: true, recheck: true, familyCount });
+// «Нет в Озоне»: seenArticles — артикулы-кандидаты, которые Елена уже видела и
+// отвергла; появится новый подходящий артикул — строку можно переспросить.
+function rememberNone(invoiceName, seenArticles = []) {
+  save({ pattern: exactPattern(invoiceName), none: true, recheck: true, seen: seenArticles });
 }
 
 module.exports = { lookup, familyMatches, remember, rememberNone, SEED };
