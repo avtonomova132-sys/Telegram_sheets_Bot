@@ -30,7 +30,9 @@ function parseWeightG(text) {
 
 // Артикул каталога: {вес}{БРЕНД_название}{N}ШТ, напр. 200КОМамаПриехала1ШТ,
 // 250КАРАМЕЛЬ_Лимончики_1шт. Штуки — хвост «N шт», вес — число в начале.
-const TRAIL_PIECES_RE = /[\s_\-]*(\d{1,2})\s*шт\.?$/i;
+// Хвост артикула: «…Ментол1», «…Конфета10», «…_2шт», «…4ШТ» — число штук в
+// наборе (одна-две цифры, перед ними не цифра, чтобы не резать вес «…200»).
+const TRAIL_PIECES_RE = /[\s_\-]*(?<![0-9])(\d{1,2})\s*(?:шт\.?|pcs)?$/i;
 
 function parsePieces(article, name) {
   const t = TRAIL_PIECES_RE.exec(String(article || '').trim());
@@ -62,6 +64,13 @@ function isArchived(p) {
   return Boolean(p.archived) || /архив/i.test(String(p.status || ''));
 }
 
+// Вес «внутри» артикула: Маска300СВафлями → 300 (последний запасной признак).
+function embeddedWeight(article) {
+  const m = /(?<![0-9])(\d{2,4})(?=[A-Za-zА-Яа-я])/.exec(String(article || ''));
+  const v = m ? Number(m[1]) : null;
+  return v !== null && v >= 20 && v <= 5000 ? v : null;
+}
+
 // Основа без ведущего веса: 200КОМамаПриехала → КОМамаПриехала. Так члены
 // семьи, у которых вес в артикуле записан не везде, не расходятся по разным семьям.
 function baseNoWeight(base) {
@@ -82,7 +91,7 @@ function buildFamilies(products) {
       skipped.push({ article: p.article, reason: 'в архиве' });
       continue;
     }
-    const weightG = parseArticleWeight(p.article) ?? parseWeightG(p.name) ?? parseWeightG(p.article);
+    const weightG = parseArticleWeight(p.article) ?? parseWeightG(p.name) ?? parseWeightG(p.article) ?? embeddedWeight(articleBase(p.article, p.name));
     const base = articleBase(p.article, p.name);
     const key = dense(baseNoWeight(base)) || dense(base);
     if (!byStem.has(key)) byStem.set(key, []);
@@ -98,7 +107,7 @@ function buildFamilies(products) {
       const id = `${key}|${w ?? ''}`;
       let fam = map.get(id);
       if (!fam) {
-        fam = { id, stem: dense(x.base), stems: new Set(), base: x.base, weightG: w, members: [], names: new Set() };
+        fam = { id, key, stem: dense(x.base), stems: new Set(), base: x.base, weightG: w, members: [], names: new Set() };
         map.set(id, fam);
       }
       fam.stems.add(dense(x.base));
@@ -140,4 +149,4 @@ function distribute(family, totalPieces) {
   }));
 }
 
-module.exports = { findFamilyByArticle, SET_SIZES, parseWeightG, parseArticleWeight, articleBase, parsePieces, buildFamilies, distribute };
+module.exports = { baseNoWeight, findFamilyByArticle, SET_SIZES, parseWeightG, parseArticleWeight, articleBase, parsePieces, buildFamilies, distribute };

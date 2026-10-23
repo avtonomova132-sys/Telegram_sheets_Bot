@@ -7,6 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const { norm, dense } = require('./text');
+const { articleBase, baseNoWeight } = require('./family');
 
 const MAP_PATH = process.env.PRIHOD_NAME_MAP_PATH || '/data/ozon_name_map.json';
 
@@ -20,14 +21,44 @@ const SEED = [
   { pattern: 'прозрачные? бел', family: 'КомбиБелые' },
 ];
 
+// В словаре хранится только «название в накладной → ОСНОВА семьи» (артикул без
+// числа штук). Семья (все числа штук) каждый раз собирается из каталога заново.
+// Версия 2: старые записи могли хранить конкретный артикул («…Ментол1») —
+// приводим к основе, дубли по названию схлопываем (последняя запись главнее).
+const VERSION = 2;
+
+function migrate(data) {
+  const byPattern = new Map();
+  let changed = 0;
+  for (const e of data.entries) {
+    let entry = e;
+    if (!e.seed && !e.none && e.family) {
+      const base = articleBase(e.family);
+      if (base !== e.family || 'article' in e) changed += 1;
+      entry = { ...e, family: base };
+      delete entry.article;
+    }
+    if (byPattern.has(e.pattern)) changed += 1;
+    byPattern.delete(e.pattern);
+    byPattern.set(e.pattern, entry);
+  }
+  if (changed) console.log(`[prihod] словарь названий приведён к основам семей (изменено записей: ${changed})`);
+  return { version: VERSION, entries: [...byPattern.values()] };
+}
+
 function read() {
   try {
     const d = JSON.parse(fs.readFileSync(MAP_PATH, 'utf8'));
-    if (Array.isArray(d.entries)) return d;
+    if (Array.isArray(d.entries)) {
+      if ((d.version || 1) >= VERSION) return d;
+      const migrated = migrate(d);
+      try { write(migrated); } catch (err) { console.error('[prihod] не удалось записать мигрированный словарь:', err.message); }
+      return migrated;
+    }
   } catch (err) {
     if (err.code !== 'ENOENT') console.error('[prihod] ozon_name_map.json повреждён, читаю seed:', err.message);
   }
-  return { entries: SEED.map((e) => ({ ...e, seed: true })) };
+  return { version: VERSION, entries: SEED.map((e) => ({ ...e, seed: true })) };
 }
 
 function write(data) {
@@ -53,7 +84,8 @@ function lookup(invoiceName) {
 
 function familyMatches(entry, family) {
   const want = dense(entry.family);
-  const ok = entry.exact ? family.stems.includes(want) : family.stems.some((s) => s.includes(want));
+  const wantKey = dense(baseNoWeight(String(entry.family)));
+  const ok = entry.exact ? family.stems.includes(want) || family.key === wantKey : family.stems.some((s) => s.includes(want));
   return ok && !(entry.not || []).some((x) => family.stems.some((s) => s.includes(dense(x))));
 }
 
@@ -61,13 +93,13 @@ function save(entry) {
   const data = read();
   const rest = data.entries.filter((e) => e.pattern !== entry.pattern);
   rest.push({ ...entry, added: new Date().toISOString() });
-  write({ entries: rest });
+  write({ version: VERSION, entries: rest });
 }
 
 const exactPattern = (name) => `^${norm(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`;
 
 function remember(invoiceName, family) {
-  save({ pattern: exactPattern(invoiceName), family: family.base, exact: true, weightG: family.weightG ?? null, article: family.members[0].article });
+  save({ pattern: exactPattern(invoiceName), family: family.base, exact: true, weightG: family.weightG ?? null });
 }
 
 // «Нет в Озоне»: familyCount — сколько семей было в каталоге; если их
