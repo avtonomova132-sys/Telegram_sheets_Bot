@@ -383,6 +383,14 @@ async function handleText(msg) {
   const chatId = msg.chat.id;
   const s = session(chatId);
   if (!s || !s.input || !msg.text || msg.text.startsWith('/')) return false;
+  if (s.input.kind === 'ostatki_bad') {
+    const q = ostatki.parseQty(msg.text);
+    if (q.state !== 'ok') { await bot.sendMessage(chatId, 'Нужно число, например 12 или 0.'); return true; }
+    s.overrides[s.input.row] = q.value;
+    await showOstatki(chatId, s);
+    if (s.plan.bad.length) await askBadValue(chatId, s);
+    return true;
+  }
   if (s.input.kind === 'ostatki_range') {
     const r = ostatki.parseRange(msg.text);
     if (!r) { await bot.sendMessage(chatId, 'Напиши диапазон строк, например 200-260 (можно с подсказкой: 200-260 бирки петельки).'); return true; }
@@ -443,7 +451,8 @@ async function onCallback(query) {
   if (!s) return bot.sendMessage(chatId, 'Сессия закончилась. /приход — начать заново.');
   try {
     if (cmd === 'done' && s.state === 'collect') return await finishCollecting(chatId, s);
-    if (cmd === 'ost_ok') return s.kind === 'ostatki' && s.state === 'review' ? await buildOstatki(chatId, s) : undefined;
+    if (cmd === 'ost_ok') return s.kind === 'ostatki' && s.state === 'review' && !s.plan.bad.length ? await buildOstatki(chatId, s) : undefined;
+    if (cmd === 'ost_fix') return s.kind === 'ostatki' ? await askBadValue(chatId, s) : undefined;
     if (!s.lines) return undefined;
     const [op, a, b] = cmd.split(':');
     const n = Number(a);
@@ -507,26 +516,44 @@ async function runOstatki(chatId, r) {
   await bot.sendMessage(chatId, `Читаю строки ${r.from}–${r.to} таблицы «Склад Заказы»… 📊`);
   try {
     const [{ rows }, cat] = await Promise.all([sheet.fetchRange(r.from, r.to), getCatalog()]);
-    const { families } = buildFamilies(cat.products);
-    const plan = ostatki.buildPlan(rows, cat.products, families);
-    if (!plan.articles) {
+    const families = buildFamilies(cat.products).families;
+    const s = { kind: 'ostatki', state: 'review', rows, products: cat.products, families, range: r, overrides: {}, touched: Date.now() };
+    sessions.set(chatId, s);
+    if (!rows.some((x) => x.article)) {
+      sessions.delete(chatId);
       return bot.sendMessage(chatId, `В строках ${r.from}–${r.to} нет артикулов. Проверь диапазон.`);
     }
-    sessions.set(chatId, { kind: 'ostatki', state: 'review', plan, range: r, touched: Date.now() });
-    const text = ostatki.buildText({ ...r, rows, products: cat.products, plan });
-    const buttons = [];
-    if (plan.items.length) buttons.push([{ text: '✅ Всё верно', callback_data: `${CB}ost_ok` }]);
-    buttons.push(cancelRow);
-    const body = plan.items.length ? text : `${text}\n\nВ файл нечего писать.`;
-    const parts = chunkMessage(body, 3800); // по пустым строкам = границам семей
-    for (let i = 0; i < parts.length; i += 1) {
-      await bot.sendMessage(chatId, parts[i], i === parts.length - 1 ? kb(buttons) : undefined);
-    }
+    await showOstatki(chatId, s);
   } catch (err) {
     sessions.delete(chatId);
     if (err instanceof sheet.SheetAccessError) await bot.sendMessage(chatId, `Не могу прочитать таблицу: ${err.message}`);
     else await fail(chatId, 'прочитать остатки', err);
   }
+}
+
+// Экран проверки; значения, которые Елена уточнила (текст/дата в G), подставляются поверх таблицы.
+async function showOstatki(chatId, s) {
+  const rows = s.rows.map((x) => (s.overrides[x.row] !== undefined ? { ...x, qtyRaw: String(s.overrides[x.row]) } : x));
+  const plan = ostatki.buildPlan(rows, s.products, s.families);
+  s.plan = plan;
+  s.input = null;
+  const text = ostatki.buildText({ ...s.range, rows, products: s.products, plan });
+  const buttons = [];
+  if (plan.bad.length) buttons.push([{ text: '✏️ Ввести значения', callback_data: `${CB}ost_fix` }]);
+  else if (plan.items.length) buttons.push([{ text: '✅ Всё верно', callback_data: `${CB}ost_ok` }]);
+  buttons.push(cancelRow);
+  const body = plan.bad.length || plan.items.length ? text : `${text}\n\nВ файл нечего писать.`;
+  const parts = chunkMessage(body, 3800); // по пустым строкам = границам семей
+  for (let i = 0; i < parts.length; i += 1) {
+    await bot.sendMessage(chatId, parts[i], i === parts.length - 1 ? kb(buttons) : undefined);
+  }
+}
+
+async function askBadValue(chatId, s) {
+  const b = s.plan.bad[0];
+  if (!b) return showOstatki(chatId, s);
+  s.input = { kind: 'ostatki_bad', row: b.row };
+  return bot.sendMessage(chatId, `П${b.row} ${b.article}: в таблице «${b.raw}». Какое количество? Напиши число (0 — обнулить).`);
 }
 
 async function buildOstatki(chatId, s) {
@@ -538,7 +565,7 @@ async function buildOstatki(chatId, s) {
     const d = new Date(Date.now() + 8 * 3600 * 1000);
     const dd = (n) => String(n).padStart(2, '0');
     const fileName = `Шаблон_остатки_${dd(d.getUTCDate())}_${dd(d.getUTCMonth() + 1)}_${d.getUTCFullYear()}.xlsx`;
-    await bot.sendDocument(chatId, out, { caption: `Строки ${s.range.from}–${s.range.to}: ${items.length} артикулов. Это установка остатка (не прибавка). Загрузи в Озон сама — бот туда ничего не пишет.` },
+    await bot.sendDocument(chatId, out, { caption: `Строки ${s.range.from}–${s.range.to}: ${items.length} артикулов (нули — обнуление). Это установка остатка, не прибавка. Загрузи в Озон сама — бот туда ничего не пишет.` },
       { filename: fileName, contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     sessions.delete(chatId);
   } catch (err) {
