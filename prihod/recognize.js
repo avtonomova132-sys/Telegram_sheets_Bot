@@ -70,6 +70,10 @@ function prepareLine(raw) {
     }
     if (!unitWeightG) unitWeightG = Math.round(byNetto);
   }
+  if (!unitWeightG && !raw.sterilization_pack) {
+    const fr = /(?:^|[^\d])1\s*\/\s*(\d{2,4})(?!\d)/.exec(String(raw.name || ''));
+    if (fr) unitWeightG = Number(fr[1]);
+  }
   return {
     n: raw.n, name: String(raw.name || '').trim(), qty, printedQty, packMult: mult,
     price, sum, nettoKg, unitWeightG: raw.sterilization_pack ? null : unitWeightG, flags,

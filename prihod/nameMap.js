@@ -1,6 +1,8 @@
-// Подтверждённые Еленой соответствия «название в накладной → семья в Озоне».
+// Словарь «название в накладной → основа семьи артикулов Озона».
 // Хранится в /data/ozon_name_map.json (переживает передеплой). Начальные
-// записи зашиты в SEED и добавляются при первом чтении.
+// записи зашиты в SEED. Елена нажала кнопку → соответствие запоминается
+// сразу (в том числе «Нет в Озоне» — с пометкой, что можно переспросить,
+// когда в каталоге появятся новые карточки).
 
 const fs = require('fs');
 const path = require('path');
@@ -9,7 +11,7 @@ const { norm, dense } = require('./text');
 const MAP_PATH = process.env.PRIHOD_NAME_MAP_PATH || '/data/ozon_name_map.json';
 
 // pattern — регулярка по нормализованному названию накладной (norm()),
-// family — часть артикула/основы семьи (dense), not — запрещённые семьи.
+// family — основа семьи (часть артикула, dense-сравнение), not — запрещённые.
 const SEED = [
   { pattern: "крем для депиляции ladys? для чувствительной кожи|крем для депиляции lady s для чувствительной кожи", family: 'ЗонаБикини' },
   { pattern: 'вдохновение 1 180', family: 'ВдохновеньеДробФунд' },
@@ -35,31 +37,43 @@ function write(data) {
   fs.renameSync(tmp, MAP_PATH);
 }
 
-// Находит запись для названия строки накладной.
+// Находит запись для названия строки накладной; позднее добавленное
+// (решение Елены) важнее начальных записей.
 function lookup(invoiceName) {
   const n = norm(invoiceName);
-  for (const e of read().entries) {
+  const entries = read().entries;
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const e = entries[i];
     try {
       if (new RegExp(e.pattern, 'i').test(n)) return e;
-    } catch { /* битая регулярка в файле — пропускаем */ }
+    } catch { /* битая регулярка — пропускаем */ }
   }
   return null;
 }
 
 function familyMatches(entry, family) {
-  const d = family.stem;
-  if (!d.includes(dense(entry.family))) return false;
-  return !(entry.not || []).some((x) => d.includes(dense(x)));
+  const want = dense(entry.family);
+  const ok = entry.exact ? family.stem === want : family.stem.includes(want);
+  return ok && !(entry.not || []).some((x) => family.stem.includes(dense(x)));
 }
 
-// Добавляет подтверждённое соответствие (точное нормализованное название).
-function remember(invoiceName, family) {
+function save(entry) {
   const data = read();
-  const pattern = `^${norm(invoiceName).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`;
-  if (data.entries.some((e) => e.pattern === pattern)) return false;
-  data.entries.push({ pattern, family: family.stem, weightG: family.weightG ?? null, added: new Date().toISOString() });
-  write(data);
-  return true;
+  const rest = data.entries.filter((e) => e.pattern !== entry.pattern);
+  rest.push({ ...entry, added: new Date().toISOString() });
+  write({ entries: rest });
 }
 
-module.exports = { lookup, familyMatches, remember, SEED };
+const exactPattern = (name) => `^${norm(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`;
+
+function remember(invoiceName, family) {
+  save({ pattern: exactPattern(invoiceName), family: family.base, exact: true, weightG: family.weightG ?? null });
+}
+
+// «Нет в Озоне»: familyCount — сколько семей было в каталоге; если их
+// станет больше, строку можно переспросить.
+function rememberNone(invoiceName, familyCount) {
+  save({ pattern: exactPattern(invoiceName), none: true, recheck: true, familyCount });
+}
+
+module.exports = { lookup, familyMatches, remember, rememberNone, SEED };

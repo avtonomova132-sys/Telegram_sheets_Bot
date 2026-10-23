@@ -161,6 +161,7 @@ async function finishCollecting(chatId, s) {
     s.lines = raw.map((r, i) => ({ ...prepareLine(r), n: i + 1 }));
     const totals = s.sheets.map((sh) => sh.data.printed_total).filter((v) => v !== null && v !== undefined && Number.isFinite(Number(v)));
     s.printedTotal = totals.length ? Number(totals[totals.length - 1]) : null;
+    for (const l of s.lines) if (l.flags.length) console.log(`[prihod] стр. ${l.n} «${l.name}»: ${l.flags.join('; ')}`);
     const cat = await getCatalog();
     const { families } = buildFamilies(cat.products);
     s.families = families;
@@ -179,14 +180,14 @@ async function finishCollecting(chatId, s) {
   }
 }
 
-const famLabel = (f) => `${f.title}${f.weightG ? ` (${f.weightG} г)` : ''} · ${f.members.map((m) => m.pieces).join('/')} шт`;
+const famLabel = (f) => `${f.base} — ${f.title}`;
 
 async function askNextAmbiguous(chatId, s) {
   const line = s.lines.find((l) => !l.decision);
   if (!line) return showReview(chatId, s);
   const opts = (line.match.options || []).slice(0, 5);
   line.opts = opts;
-  const rows = opts.map((f, i) => [{ text: famLabel(f).slice(0, 60), callback_data: `${CB}pick:${line.n}:${i}` }]);
+  const rows = opts.map((f, i) => [{ text: famLabel(f).slice(0, 64), callback_data: `${CB}pick:${line.n}:${i}` }]);
   rows.push([{ text: '🚫 Нет в Озоне', callback_data: `${CB}pick:${line.n}:x` }]);
   await send(chatId, `❓ Строка ${line.n}: «${line.name}» (${line.qty} шт${line.unitWeightG ? `, ${line.unitWeightG} г` : ''}) — неоднозначно. Какой товар?`, kb(rows));
 }
@@ -196,39 +197,24 @@ function buildReport(s) {
   const plan = computePlan(s.lines, s.printedTotal);
   s.plan = plan;
   const L = [];
-  L.push('📋 Проверь разнос по накладной');
-  L.push('');
-  L.push('Строки → семейство:');
-  for (const l of s.lines) {
-    const d = l.decision;
-    if (d.status === 'removed') { L.push(`${l.n}. ${l.name} — убрана`); continue; }
-    const target = d.status === 'none' ? '🚫 нет в Озоне' : `→ ${famLabel(d.family)}`;
-    const pack = l.packMult > 1 ? ` (${l.printedQty}×${l.packMult})` : '';
-    L.push(`${l.n}. ${l.name} — ${fmt(l.qty)} шт${pack}, сумма ${fmt(l.sum)} ${target}`);
-    for (const f of l.flags) L.push(`   ⚠️ ${f}`);
-  }
-  L.push('');
-  L.push('Количество по членам семьи:');
+  L.push('📋 Проверь: что попадёт в файл');
   for (const g of plan.groups) {
-    L.push(`${g.family.title}${g.family.weightG ? ` (${g.family.weightG} г)` : ''}: всего ${fmt(g.total)} шт (строки ${g.lines.join(', ')})`);
-    L.push(`   ${g.members.map((m) => `${m.pieces}шт=${m.qty}`).join(', ')}`);
+    L.push('');
+    L.push(`📦 ${g.names.join(' + ')} — всего ${fmt(g.total)} шт`);
+    for (const m of g.members) if (m.qty > 0) L.push(`${m.article} — ${m.qty}`);
   }
   if (plan.notInOzon.length) {
     L.push('');
-    L.push('🚫 Нет в Озоне (нужна новая карточка):');
+    L.push('🚫 Нет в Озоне:');
     for (const l of plan.notInOzon) L.push(`• ${l.name} — ${fmt(l.qty)} шт`);
   }
   if (plan.remainders.length) {
     L.push('');
-    L.push('Остатки от деления (не попадут в файл):');
-    for (const r of plan.remainders) L.push(`• ${r.family}, набор ${r.pieces} шт: остаток ${r.remainder} шт`);
-  }
-  if (plan.zeroSets.length) {
-    L.push('');
-    L.push(`Наборов 0 (строка в файл не пишется): ${plan.zeroSets.map((z) => `${z.article}`).join(', ')}`);
+    L.push('Остаток от деления:');
+    for (const r of plan.remainders) L.push(`• ${r.article} — ${r.remainder} шт`);
   }
   L.push('');
-  L.push(`${plan.check.ok ? '✅' : '❌'} Сверка: ${plan.check.reason}`);
+  L.push(plan.check.ok ? `${plan.check.reason} ✅` : `⚠️ ${plan.check.reason}`);
   return { text: L.join('\n'), plan };
 }
 
@@ -240,7 +226,7 @@ async function showReview(chatId, s) {
   rows.push([{ text: '✏️ Исправить', callback_data: `${CB}fixmenu` }]);
   rows.push(cancelRow);
   let msg = text;
-  if (!plan.check.ok) msg += '\n\nФайл не собираю, пока сумма не сойдётся. Нажми «Исправить» (строку или «Итого») или пришли недостающий лист.';
+  if (!plan.check.ok) msg += '\nФайл не собираю, пока не сойдётся. Нажми «Исправить» или пришли недостающий лист.';
   await send(chatId, msg, kb(rows));
 }
 
@@ -264,10 +250,8 @@ async function build(chatId, s) {
     await bot.sendDocument(chatId, out, { caption: `Строк в файле: ${plan.items.length}. Загрузи в Озон сама — бот туда ничего не пишет.` },
       { filename: fileName, contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const S = [`✅ Файл проверен (шапка цела). ${plan.check.reason}.`];
-    if (plan.remainders.length) S.push(`Остатки от деления: ${plan.remainders.map((r) => `${r.family} ${r.pieces}шт — ${r.remainder} шт`).join('; ')}.`);
+    if (plan.remainders.length) S.push(`Остаток от деления: ${plan.remainders.map((r) => `${r.article} — ${r.remainder} шт`).join('; ')}.`);
     if (plan.notInOzon.length) S.push(`Нет в Озоне: ${plan.notInOzon.map((l) => `${l.name} (${fmt(l.qty)} шт)`).join('; ')}.`);
-    const disputed = s.lines.filter((l) => l.flags.length && l.decision.status !== 'removed');
-    if (disputed.length) S.push(`Спорное: ${disputed.map((l) => `стр. ${l.n} — ${l.flags.join(', ')}`).join('; ')}.`);
     await send(chatId, S.join('\n'));
     sessions.delete(chatId);
   } catch (err) {
@@ -343,11 +327,14 @@ async function onCallback(query) {
     if (op === 'pick') {
       const l = s.lines.find((x) => x.n === n);
       if (!l) return undefined;
-      if (b === 'x') l.decision = { status: 'none', via: 'Елена: нет в Озоне' };
-      else {
+      if (b === 'x') {
+        l.decision = { status: 'none', via: 'Елена: нет в Озоне' };
+        try { nameMap.rememberNone(l.name, s.families.length); } catch (err) { console.error('[prihod] карта названий:', err.message); }
+      } else {
         const f = (l.opts || l.match.options || [])[Number(b)];
         if (!f) return undefined;
         l.decision = { status: 'matched', family: f, via: 'Елена' };
+        try { nameMap.remember(l.name, f); } catch (err) { console.error('[prihod] карта названий:', err.message); }
       }
       l.flags = l.flags || [];
       return s.lines.some((x) => !x.decision) ? await askNextAmbiguous(chatId, s) : await showReview(chatId, s);

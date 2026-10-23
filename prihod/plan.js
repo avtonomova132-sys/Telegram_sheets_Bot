@@ -14,9 +14,10 @@ function computePlan(lines, printedTotal) {
     if (l.decision.status === 'none') { notInOzon.push(l); continue; }
     const fam = l.decision.family;
     let g = groups.get(fam.id);
-    if (!g) { g = { family: fam, total: 0, lines: [] }; groups.set(fam.id, g); }
+    if (!g) { g = { family: fam, total: 0, lines: [], names: [] }; groups.set(fam.id, g); }
     g.total += l.qty || 0;
     g.lines.push(l.n);
+    if (!g.names.includes(l.name)) g.names.push(l.name);
   }
   const items = [];
   const remainders = [];
@@ -32,10 +33,10 @@ function computePlan(lines, printedTotal) {
   const missingSums = active.filter((l) => l.sum === null || l.sum === undefined);
   const sumLines = Math.round(active.reduce((s, l) => s + (l.sum || 0), 0) * 100) / 100;
   let check;
-  if (printedTotal === null || printedTotal === undefined) check = { ok: false, reason: 'не найдено печатное «Итого» (пришли лист с итогом)' };
+  if (printedTotal === null || printedTotal === undefined) check = { ok: false, reason: 'не нашла «Итого» накладной — пришли лист с итогом' };
   else if (missingSums.length) check = { ok: false, reason: `не прочитана сумма в строках: ${missingSums.map((l) => l.n).join(', ')}` };
-  else if (Math.abs(sumLines - printedTotal) > TOTAL_TOLERANCE) check = { ok: false, reason: `сумма строк ${sumLines.toFixed(2)} ≠ «Итого» ${Number(printedTotal).toFixed(2)} (разница ${(sumLines - printedTotal).toFixed(2)})` };
-  else check = { ok: true, reason: `сумма строк ${sumLines.toFixed(2)} = «Итого» ${Number(printedTotal).toFixed(2)}` };
+  else if (Math.abs(sumLines - printedTotal) > TOTAL_TOLERANCE) check = { ok: false, reason: `не сходится: у нас ${sumLines.toFixed(2)}, в накладной ${Number(printedTotal).toFixed(2)}` };
+  else check = { ok: true, reason: 'Сумма строк = Итого накладной' };
   return { groups: [...groups.values()], items, remainders, zeroSets, notInOzon, sumLines, check };
 }
 
