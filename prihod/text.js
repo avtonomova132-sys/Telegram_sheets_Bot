@@ -7,6 +7,8 @@ function norm(s) {
     .replace(/н\.\s?п\./g, 'новогодний подарок ')
     .replace(/[«»"'`’]/g, '')
     .replace(/[_.,;:()\[\]\/\\+*-]/g, ' ')
+    .replace(/(\d)([a-zа-я])/g, '$1 $2')
+    .replace(/([a-zа-я])(\d)/g, '$1 $2')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -19,7 +21,7 @@ function dense(s) {
 
 const STOP = new Set([
   'и', 'с', 'со', 'в', 'на', 'для', 'из', 'по', 'шт', 'г', 'гр', 'кг', 'мл', 'л', 'уп', 'пач',
-  'конф', 'кор', 'набор', 'товар', 'ооо', 'новогодний', 'подарок',
+  'конф', 'кор', 'фас', 'набор', 'товар', 'ооо', 'новогодний', 'подарок',
 ]);
 
 function tokens(s) {
@@ -42,4 +44,12 @@ function dice(a, b) {
   return (2 * inter) / (a.size + b.size);
 }
 
-module.exports = { norm, dense, tokens, trigrams, dice };
+// «200КОМамаПриехала» → «200 КО Мама Приехала» (разбор артикула на слова).
+function articleWords(article) {
+  return String(article || '')
+    .replace(/([а-яa-z])([А-ЯA-Z])/g, '$1 $2')
+    .replace(/([А-ЯA-Z])([А-ЯA-Z][а-яa-z])/g, '$1 $2')
+    .replace(/_/g, ' ');
+}
+
+module.exports = { articleWords, norm, dense, tokens, trigrams, dice };

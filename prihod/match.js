@@ -45,7 +45,7 @@ function candidatesFor(line, families) {
   const tri = trigrams(line.name);
   const scored = [];
   for (const f of families) {
-    const candText = norm(`${f.title} ${f.stem}`);
+    const candText = norm(`${f.title} ${f.stem} ${f.base}`);
     if (!RULES.every((r) => r(inv, candText))) continue;
     if (!weightOk(line.unitWeightG, f.weightG)) continue;
     const overlap = tok.length ? tok.filter((t) => f.tok.has(t) || [...f.tok].some((x) => x.startsWith(t.slice(0, 5)) && t.length >= 5)).length / tok.length : 0;
@@ -62,13 +62,14 @@ function describe(f) {
     название: f.title,
     вес_г: f.weightG,
     наборы_шт: f.members.map((m) => m.pieces),
-    артикул: f.members[0].article,
+    основа_артикула: f.base,
+    артикулы: f.members.map((m) => m.article),
   };
 }
 
 async function askModel(items) {
   if (!anthropic) throw new Error('ANTHROPIC_API_KEY не задан');
-  const system = `Ты сопоставляешь строки товарной накладной с карточками каталога Ozon. Совпадение ТОЛЬКО по названию, вкусу/виду и весу единицы; код поставщика не используй. Для каждой строки выбери ровно одного кандидата по его id, или "none" (нет такого вкуса/веса/товара среди кандидатов), или "ambiguous" (подходят 2 и больше — перечисли их id в options). Не подставляй похожий товар: другой вкус или другой вес = "none". «Н.П.» = Новогодний Подарок. Ответ — СТРОГО JSON-массив без markdown: [{"i":номер строки,"choice":"id|none|ambiguous","options":["id",...],"reason":"коротко"}].`;
+  const system = `Ты сопоставляешь строки товарной накладной с карточками каталога Ozon. Совпадение ТОЛЬКО по названию, вкусу/виду и весу единицы; код поставщика не используй. У кандидата есть основа_артикула вида {вес}{БРЕНД_название} (напр. 250КАРАМЕЛЬ_Лимончики) — по ней тоже сравнивай вкус и вес. Для каждой строки выбери ровно одного кандидата по его id, или "none" (нет такого вкуса/веса/товара среди кандидатов), или "ambiguous" (подходят 2 и больше — перечисли их id в options). Не подставляй похожий товар: другой вкус или другой вес = "none". «Н.П.» = Новогодний Подарок. Ответ — СТРОГО JSON-массив без markdown: [{"i":номер строки,"choice":"id|none|ambiguous","options":["id",...],"reason":"коротко"}].`;
   const user = JSON.stringify(
     items.map((it) => ({ i: it.i, накладная: it.name, вес_единицы_г: it.unitWeightG, кандидаты: it.cands.map(describe) })),
   );
@@ -91,10 +92,16 @@ async function matchLines(lines, families) {
   lines.forEach((line, i) => {
     // 1) подтверждённая карта названий
     const entry = nameMap.lookup(line.name);
+    if (entry && entry.none) {
+      // «Нет в Озоне» из памяти; в каталоге появились карточки — можно переспросить.
+      if (!(families.length > (entry.familyCount || 0))) { out[i] = { status: 'none', via: 'запомнено: нет в Озоне' }; return; }
+      const fresh = candidatesFor(line, families);
+      out[i] = fresh.length ? { status: 'ambiguous', options: fresh, via: 'в каталоге появились новые карточки' } : { status: 'none', via: 'запомнено: нет в Озоне' };
+      return;
+    }
     if (entry) {
       let fams = families.filter((f) => nameMap.familyMatches(entry, f) && weightOk(entry.weightG, f.weightG));
-      const byW = fams.filter((f) => line.unitWeightG && f.weightG && weightOk(line.unitWeightG, f.weightG));
-      if (line.unitWeightG && fams.some((f) => f.weightG)) fams = byW;
+      if (line.unitWeightG && fams.some((f) => f.weightG)) fams = fams.filter((f) => weightOk(line.unitWeightG, f.weightG));
       if (fams.length === 1) { out[i] = { status: 'matched', family: fams[0], via: 'карта' }; return; }
       if (fams.length > 1) { out[i] = { status: 'ambiguous', options: fams.slice(0, MAX_CANDIDATES), via: 'карта' }; return; }
       out[i] = { status: 'none', via: 'карта: такого веса/вкуса нет в каталоге' };

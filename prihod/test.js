@@ -9,15 +9,21 @@ const { computePlan } = require('./plan');
 const { fillTemplate, verifyFilled, validateTemplate, STORE_CELL } = require('./xlsxFill');
 const { candidatesFor } = require('./match');
 const { prepareLine } = require('./recognize');
+const { buildReport } = require('./flow');
+const nameMap = require('./nameMap');
 
 const catalog = [
-  { article: 'МамаПриехала200_1шт', name: 'Мама приехала конфеты 200 г 1 шт' },
-  { article: 'МамаПриехала200_2шт', name: 'Мама приехала конфеты 200 г 2 шт' },
-  { article: 'МамаПриехала200_5шт', name: 'Мама приехала конфеты 200 г 5 шт' },
-  { article: 'МамаПриехала200_10шт', name: 'Мама приехала конфеты 200 г 10 шт' },
-  { article: 'МамаПриехала1кг_1шт', name: 'Мама приехала конфеты 1 кг 1 шт' },
-  { article: 'УкралиСахар_1шт', name: 'Украли сахар 150 г 1 шт' },
-  { article: 'УкралиСахарЛайм_1шт', name: 'Украли сахар с лаймом 150 г 1 шт' },
+  { article: '200КОМамаПриехала1ШТ', name: 'Конфеты Мама приехала 200 г 1 шт' },
+  { article: '200КОМамаПриехала2ШТ', name: 'Конфеты Мама приехала 200 г 2 шт' },
+  { article: '200КОМамаПриехала5ШТ', name: 'Конфеты Мама приехала 200 г 5 шт' },
+  { article: '200КОМамаПриехала10ШТ', name: 'Конфеты Мама приехала 200 г 10 шт' },
+  { article: '1КгМамаПриехала1ШТ', name: 'Конфеты Мама приехала 1 кг' },
+  { article: '150УкралиСахар_1шт', name: 'Украли сахар 150 г 1 шт' },
+  { article: '150УкралиСахарЛайм_1шт', name: 'Украли сахар с лаймом 150 г 1 шт' },
+  { article: '250КАРАМЕЛЬ_Лимончики_1шт', name: 'Карамель Рот Фронт Лимончики 250 г' },
+  { article: '250КАРАМЕЛЬ_Лимончики_2шт', name: 'Карамель Рот Фронт Лимончики 250 г' },
+  { article: '250ЛимоннаяКарамель1ШТ', name: 'Лимонная карамель 250 г' },
+  { article: '250ЛимоннаяКарамель3ШТ', name: 'Лимонная карамель 250 г' },
 ];
 
 test('вес', () => {
@@ -29,6 +35,7 @@ test('Мама приехала 200 г, пришло 110 шт → 1шт=110, 2ш
   const { families } = buildFamilies(catalog);
   const fam = families.find((f) => f.weightG === 200);
   assert.strictEqual(fam.members.length, 4);
+  assert.strictEqual(fam.base, '200КОМамаПриехала');
   const d = distribute(fam, 110);
   assert.deepStrictEqual(d.map((x) => [x.pieces, x.qty, x.remainder]), [[1, 110, 0], [2, 55, 0], [5, 22, 0], [10, 11, 0]]);
   // 1 кг — другая семья, количество на неё не переносится
@@ -99,4 +106,56 @@ print([[c.value for c in r] for r in ws.iter_rows(min_row=1,max_row=6,max_col=4)
   require('child_process').execFileSync('soffice', ['--headless', '--convert-to', 'csv', '--outdir', dir, f], { stdio: 'ignore' });
   const csv = fs.readFileSync(path.join(dir, 'out.csv'), 'utf8');
   assert.ok(csv.includes('Арт_1шт') && csv.includes('110'));
+});
+
+test('экран проверки = строки xlsx, без шума', () => {
+  const { families } = buildFamilies(catalog);
+  const fam = families.find((f) => f.weightG === 200);
+  const lines = [
+    { n: 1, name: 'Мама приехала', qty: 112, sum: 1000, flags: ['кол-во×цена ≠ сумма'], decision: { status: 'matched', family: fam } },
+    { n: 2, name: 'Новинка', qty: 3, sum: 50, flags: ['вес ≠ нетто'], decision: { status: 'none' } },
+  ];
+  const { text, plan } = buildReport({ lines, printedTotal: 1050 });
+  assert.ok(!text.includes('⚠️ кол-во') && !text.includes('нетто') && !text.includes('склад'));
+  const shown = [...text.matchAll(/^(\S+) — (\d+)$/gm)].map((m) => [m[1], Number(m[2])]);
+  assert.deepStrictEqual(shown, plan.items.map((i) => [i.article, i.qty]));
+  assert.deepStrictEqual(shown, [['200КОМамаПриехала1ШТ', 112], ['200КОМамаПриехала2ШТ', 56], ['200КОМамаПриехала5ШТ', 22], ['200КОМамаПриехала10ШТ', 11]]);
+  assert.ok(text.includes('Сумма строк = Итого накладной ✅'));
+  assert.ok(text.includes('Остаток от деления:') && text.includes('200КОМамаПриехала5ШТ — 2 шт'));
+  assert.ok(buildReport({ lines, printedTotal: 999 }).text.includes('⚠️ не сходится: у нас 1050.00, в накладной 999.00'));
+});
+
+test('Лимончики и Лимонная: оба кандидата, вес 1/250 фильтрует, словарь учится', () => {
+  const { families } = buildFamilies(catalog);
+  const line = prepareLine({ n: 1, name: 'КАРАМЕЛЬ Лимонная фас_1/250', qty: 20, price: 10, sum: 200 });
+  assert.strictEqual(line.unitWeightG, 250);
+  const c = candidatesFor(line, families);
+  assert.ok(c.some((f) => f.base === '250ЛимоннаяКарамель'));
+  const lim = candidatesFor({ name: 'КАРАМЕЛЬ Лимончики фас_1/250', unitWeightG: 250 }, families);
+  assert.ok(lim.every((f) => !f.stem.includes('лимоннаякарамель')) && lim.some((f) => f.base === '250КАРАМЕЛЬ_Лимончики'));
+  assert.strictEqual(candidatesFor({ name: 'КАРАМЕЛЬ Лимонная', unitWeightG: 500 }, families).length, 0);
+});
+
+test('словарь: сохраняет выбор Елены и «Нет в Озоне»', async () => {
+  const { matchLines } = require('./match');
+  const { families } = buildFamilies(catalog);
+  const f = families.find((x) => x.base === '250ЛимоннаяКарамель');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'map-'));
+  process.env.PRIHOD_NAME_MAP_PATH = path.join(dir, 'm.json');
+  delete require.cache[require.resolve('./nameMap')];
+  delete require.cache[require.resolve('./match')];
+  const nm = require('./nameMap');
+  nm.remember('КАРАМЕЛЬ Лимонная фас_1/250', f);
+  nm.rememberNone('Эвкалипт-ментол леденцы', families.length);
+  const { matchLines: ml } = require('./match');
+  const r = await ml([
+    { name: 'КАРАМЕЛЬ Лимонная фас_1/250', unitWeightG: 250 },
+    { name: 'Эвкалипт-ментол леденцы', unitWeightG: 100 },
+    { name: 'Карамель Лимончики 1/250', unitWeightG: 250 },
+  ], families);
+  assert.strictEqual(r[0].status, 'matched');
+  assert.strictEqual(r[0].family.base, '250ЛимоннаяКарамель');
+  assert.strictEqual(r[1].status, 'none');
+  assert.strictEqual(r[2].status, 'matched');
+  assert.strictEqual(r[2].family.base, '250КАРАМЕЛЬ_Лимончики');
 });
