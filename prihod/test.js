@@ -210,3 +210,59 @@ test('латиница Neo-botanica находит «Необотаника» в
   const c = candidatesFor({ name: 'МАРМЕЛАД Neo-botanica NATURA с чёрной смородиной и семенами чиа (1/200)', unitWeightG: 200 }, families);
   assert.strictEqual(c.length, 1);
 });
+
+// ---- реальные артикулы Елены: число штук — просто цифра в конце, без «ШТ»
+const realCatalog = [
+  ...[1, 2, 4, 8].map((n) => ({ article: `200КарамельЭквалиптМентол${n}`, name: `Карамель Эвкалипт-ментол 200 г ${n} шт` })),
+  ...[1, 10].map((n) => ({ article: `350ГрЛюбимыеКонфета${n}`, name: `Н.П. Любимые с детства конфета 350 г ${n} шт` })),
+  ...[1, 2, 4].map((n) => ({ article: `Маска300СВафлями${n}`, name: `Маска для лица с вафлями ${n} шт` })), // размеры Маски — условные
+];
+
+test('число штук в конце артикула без «ШТ»: семьи собираются целиком', () => {
+  const { families } = buildFamilies(realCatalog);
+  const by = (b) => families.find((f) => f.base === b);
+  assert.deepStrictEqual(by('200КарамельЭквалиптМентол').members.map((m) => m.pieces), [1, 2, 4, 8]);
+  assert.deepStrictEqual(by('350ГрЛюбимыеКонфета').members.map((m) => m.pieces), [1, 10]);
+  assert.deepStrictEqual(by('Маска300СВафлями').members.map((m) => m.pieces), [1, 2, 4]);
+  assert.strictEqual(by('Маска300СВафлями').weightG, 300);
+  assert.strictEqual(by('350ГрЛюбимыеКонфета').weightG, 350);
+});
+
+test('разнос: Эвкалипт 80, Любимые 40, Маска 16', () => {
+  const { families } = buildFamilies(realCatalog);
+  const by = (b) => families.find((f) => f.base === b);
+  const mk = (n, name, qty, b) => ({ n, name, qty, sum: 100, decision: { status: 'matched', family: by(b) } });
+  const plan = computePlan([
+    mk(1, 'Эвкалипт-ментол', 80, '200КарамельЭквалиптМентол'),
+    mk(2, 'Любимые с детства', 40, '350ГрЛюбимыеКонфета'),
+    mk(3, 'Маска с вафлями', 16, 'Маска300СВафлями'),
+  ], 300);
+  assert.ok(plan.check.ok);
+  assert.deepStrictEqual(plan.items.map((i) => [i.article, i.qty]), [
+    ['200КарамельЭквалиптМентол1', 80], ['200КарамельЭквалиптМентол2', 40], ['200КарамельЭквалиптМентол4', 20], ['200КарамельЭквалиптМентол8', 10],
+    ['350ГрЛюбимыеКонфета1', 40], ['350ГрЛюбимыеКонфета10', 4],
+    ['Маска300СВафлями1', 16], ['Маска300СВафлями2', 8], ['Маска300СВафлями4', 4],
+  ]);
+});
+
+test('словарь: старая запись с одним артикулом мигрирует к основе, семья берётся из каталога', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mig-'));
+  const file = path.join(dir, 'map.json');
+  fs.writeFileSync(file, JSON.stringify({ entries: [
+    { pattern: '^карамель эвкалипт ментол$', family: '200КарамельЭквалиптМентол1', exact: true, article: '200КарамельЭквалиптМентол1' },
+    { pattern: '^карамель эвкалипт ментол$', family: '200КарамельЭквалиптМентол1', exact: true },
+    { pattern: '^любимые с детства$', family: '350ГрЛюбимыеКонфета10', exact: true, weightG: 350 },
+  ] }));
+  process.env.PRIHOD_NAME_MAP_PATH = file;
+  for (const m of ['./nameMap', './match']) delete require.cache[require.resolve(m)];
+  const { matchLines } = require('./match');
+  const { families } = buildFamilies(realCatalog);
+  const r = await matchLines([{ name: 'Карамель Эвкалипт-ментол', unitWeightG: 200 }, { name: 'Любимые с детства', unitWeightG: 350 }], families);
+  assert.deepStrictEqual(r[0].family.members.map((m) => m.pieces), [1, 2, 4, 8]);
+  assert.deepStrictEqual(r[1].family.members.map((m) => m.pieces), [1, 10]);
+  const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.strictEqual(saved.version, 2);
+  assert.strictEqual(saved.entries.length, 2);
+  assert.deepStrictEqual(saved.entries.map((e) => e.family), ['200КарамельЭквалиптМентол', '350ГрЛюбимыеКонфета']);
+  assert.ok(saved.entries.every((e) => !('article' in e)));
+});
