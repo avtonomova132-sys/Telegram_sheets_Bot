@@ -21,9 +21,10 @@ function parseRange(text) {
   return { from, to, hint: (m[3] || '').trim() };
 }
 
-// Пусто — «не пересчитано»; 0 — настоящий ноль; мусор — «непонятное».
+// Пусто — 0 (решение Елены 23.10.2026: склад оставляет строку пустой, если
+// товара нет); число — число; текст/дата — «непонятное», нулём не считаем.
 function parseQty(raw) {
-  const s = String(raw ?? '').replace(/[\s ]/g, '').replace(',', '.');
+  const s = String(raw ?? '').replace(/[\s\u00a0]/g, '').replace(',', '.');
   if (s === '') return { state: 'empty' };
   if (!/^\d+(\.0+)?$/.test(s)) return { state: 'bad', raw: String(raw).trim() };
   return { state: 'ok', value: Math.round(Number(s)) };
@@ -34,71 +35,87 @@ function pieceSize(family, article) {
   return m ? m.pieces : null;
 }
 
-// Общее число штук семьи. Склад пишет остаток в строку «1 шт»; если число есть
-// и в других строках, оно должно с ней согласоваться. Нет строки «1 шт» с
-// числом — считаем от набора (qty × размер), несколько строк должны совпасть.
+// Всего штук семьи = число в строке «1 шт» (пустая = 0). Числа в других
+// строках, если они есть, должны согласоваться. Нет строки «1 шт» — считаем
+// от набора по строкам с числами; чисел нет совсем — 0.
 function familyTotal(entries, family) {
   const rows = entries.map((e) => ({ ...e, size: pieceSize(family, e.article) }));
+  const filled = rows.filter((r) => !r.empty);
   const one = rows.find((r) => r.size === 1);
   if (one) {
     const total = one.qty;
-    const bad = rows.filter((r) => r !== one && Math.floor(total / r.size) !== r.qty);
+    const bad = filled.filter((r) => r !== one && Math.floor(total / r.size) !== r.qty);
     if (bad.length) {
       const b = bad[0];
-      return { conflict: `в таблице набор 1 шт = ${total}, а набор ${b.size} шт = ${b.qty} (должно быть ${Math.floor(total / b.size)})` };
+      return { conflict: `П${one.row}: набор 1 шт = ${total}, а П${b.row}: набор ${b.size} шт = ${b.qty} (должно быть ${Math.floor(total / b.size)})` };
     }
     return { total };
   }
-  const totals = [...new Set(rows.map((r) => r.qty * r.size))];
+  if (!filled.length) return { total: 0 };
+  const totals = [...new Set(filled.map((r) => r.qty * r.size))];
   if (totals.length > 1) {
-    return { conflict: `числа в наборах не согласуются: ${rows.map((r) => `набор ${r.size} шт = ${r.qty}`).join(', ')}` };
+    return { conflict: `числа в наборах не согласуются: ${filled.map((r) => `П${r.row}: набор ${r.size} шт = ${r.qty}`).join(', ')}` };
   }
-  return { total: totals[0], derivedFrom: rows[0] };
+  return { total: totals[0], derivedFrom: filled[0] };
 }
 
 // rows: [{row, article, qtyRaw, subject, brand}]; products — каталог Озона;
-// families — buildFamilies(products).families. Номера строк наружу не идут.
+// families — buildFamilies(products).families.
 function buildPlan(rows, products, families) {
   const byArticle = new Map(products.map((p) => [dense(p.article), p]));
   const famOf = new Map();
   for (const f of families) for (const m of f.members) famOf.set(dense(m.article), f);
 
-  const out = { articles: 0, families: 0, notInOzon: [], unrecounted: [], bad: [], notSplit: [], conflicts: [], groups: [], items: [] };
-  const groups = new Map(); // fam.id → {family, entries, hasAny}
+  const out = { articles: 0, notInOzon: [], bad: [], notSplit: [], conflicts: [], groups: [], items: [], zeroFamilies: 0 };
+  const groups = new Map(); // fam.id → {family, entries, bad}
+  const rowOf = new Map();
   const seen = new Map();
   for (const r of rows) {
     const article = String(r.article || '').trim();
     if (!article) continue;
     out.articles += 1;
     const key = dense(article);
+    if (!rowOf.has(key)) rowOf.set(key, r.row);
     const q = parseQty(r.qtyRaw);
     const p = byArticle.get(key);
     const fam = famOf.get(key);
-    if (fam && !groups.has(fam.id)) groups.set(fam.id, { family: fam, entries: [] });
-    if (q.state === 'empty') continue; // судим по семье: в «1 шт» число есть — остальные пустые нормально
-    if (q.state === 'bad') { out.bad.push({ title: (fam && fam.title) || (p && p.name) || article, base: fam && fam.base, raw: q.raw }); continue; }
+    if (fam && !groups.has(fam.id)) groups.set(fam.id, { family: fam, entries: [], bad: false });
+    if (q.state === 'bad') {
+      out.bad.push({ row: r.row, article, raw: q.raw });
+      if (fam) groups.get(fam.id).bad = true;
+      continue;
+    }
+    const value = q.state === 'empty' ? 0 : q.value;
     if (seen.has(key)) {
-      if (seen.get(key) !== q.value) out.conflicts.push({ title: (fam && fam.base) || article, text: `артикул ${article} вписан дважды с разными числами (${seen.get(key)} и ${q.value})` });
+      const prev = seen.get(key);
+      if (q.state !== 'empty' && prev.filled && prev.value !== value) {
+        out.conflicts.push({ text: `артикул ${article} вписан дважды с разными числами (П${prev.row}: ${prev.value}, П${r.row}: ${value})` });
+      }
       continue;
     }
-    seen.set(key, q.value);
-    if (!p) { out.notInOzon.push({ article, qty: q.value }); continue; }
-    if (!fam) { out.notSplit.push({ article, qty: q.value, reason: p.archived ? 'в архиве' : `размер набора не из списка ${SET_SIZES.join('/')}` }); continue; }
-    groups.get(fam.id).entries.push({ row: r.row, article, qty: q.value });
+    seen.set(key, { row: r.row, value, filled: q.state !== 'empty' });
+    if (!p) { out.notInOzon.push({ row: r.row, article }); continue; }
+    if (!fam) { out.notSplit.push({ row: r.row, article, reason: p.archived ? 'в архиве' : `размер набора не из списка ${SET_SIZES.join('/')}` }); continue; }
+    groups.get(fam.id).entries.push({ row: r.row, article, qty: value, empty: q.state === 'empty' });
   }
+  const built = [];
   for (const g of groups.values()) {
-    if (!g.entries.length) {
-      if (!out.bad.some((b) => b.base === g.family.base)) out.unrecounted.push(g.family.base);
-      continue;
-    }
+    if (g.bad || !g.entries.length) continue; // непонятное значение — сначала уточняем у Елены
     const t = familyTotal(g.entries, g.family);
-    if (t.conflict) { out.conflicts.push({ title: g.family.base, text: t.conflict }); continue; }
-    const members = g.family.members.map((m) => ({ article: m.article, pieces: m.pieces, qty: Math.floor(t.total / m.pieces) }));
-    out.groups.push({ family: g.family, total: t.total, members, derivedFrom: t.derivedFrom || null });
-    for (const m of members) out.items.push({ article: m.article, qty: m.qty });
+    if (t.conflict) { out.conflicts.push({ text: t.conflict }); continue; }
+    const members = g.family.members
+      .map((m) => ({ article: m.article, pieces: m.pieces, qty: Math.floor(t.total / m.pieces), row: rowOf.get(dense(m.article)) }))
+      .sort((x, y) => (x.row ?? Infinity) - (y.row ?? Infinity) || x.pieces - y.pieces);
+    built.push({ family: g.family, total: t.total, members, derivedFrom: t.derivedFrom || null, firstRow: members[0].row ?? Infinity });
   }
-  out.unrecounted = [...new Set(out.unrecounted)];
-  out.families = groups.size;
+  built.sort((x, y) => x.firstRow - y.firstRow);
+  for (const g of built) {
+    out.groups.push(g);
+    if (g.total === 0) out.zeroFamilies += 1;
+    for (const m of g.members) out.items.push({ article: m.article, qty: m.qty });
+  }
+  out.withStock = out.items.filter((i) => i.qty > 0).length;
+  out.toZero = out.items.filter((i) => i.qty === 0).length;
   return out;
 }
 
@@ -117,29 +134,21 @@ function hintMatch(hint, rows, products) {
   return hit / filled.length >= 0.5;
 }
 
-const nameOfRow = (r, products) => {
-  if (!r) return '—';
-  const p = products.find((x) => dense(x.article) === dense(r.article));
-  return (p && p.name) || [r.subject, r.brand].filter(Boolean).join(' ') || r.article;
-};
-
-// Экран проверки: первая строка, затем ТОЛЬКО «Артикул — количество» по
-// семьям (между семьями пустая строка), в конце «Не пересчитано». Редкие
-// проблемы, из-за которых семья не попадёт в файл, дописываются в конце.
+// Экран проверки /остатки: без названий; строки «П<номер строки> артикул — количество»,
+// семьи через пустую строку, по номерам строк. Нули — в общем списке (идут в файл).
 function buildText({ from, to, hint, rows, products, plan }) {
-  const L = [`Строки ${from}–${to}: найдено ${plan.articles} артикулов в ${plan.families} семьях`];
+  const L = [];
+  if (plan.groups.length && plan.zeroFamilies * 2 > plan.groups.length) L.push('⚠️ В диапазоне много пустых: проверь номера строк');
+  L.push(`☑️ Проверка склада: строки ${from}–${to}, ${plan.articles} артикулов (с остатком: ${plan.withStock}, обнулить: ${plan.toZero})`);
   for (const g of plan.groups) {
     L.push('');
-    for (const m of g.members) L.push(`${m.article} — ${m.qty}`);
+    for (const m of g.members) L.push(`${m.row ? `П${m.row}` : 'П—'} ${m.article} — ${m.qty}`);
   }
   const tail = [];
-  if (plan.unrecounted.length) {
-    tail.push(`Не пересчитано: ${plan.unrecounted.length}${plan.unrecounted.length <= 10 ? `\n${plan.unrecounted.join('\n')}` : ''}`);
-  }
-  if (plan.notInOzon.length) tail.push(`Нет в Озоне:\n${plan.notInOzon.map((r) => `${r.article} — ${r.qty}`).join('\n')}`);
-  if (plan.notSplit.length) tail.push(`Не разнесла по семье (в файл не попадут):\n${plan.notSplit.map((r) => `${r.article} — ${r.qty}, ${r.reason}`).join('\n')}`);
-  if (plan.bad.length) tail.push(`Непонятное количество (в файл не попадут):\n${plan.bad.map((r) => `${r.base || r.title}: «${r.raw}»`).join('\n')}`);
-  if (plan.conflicts.length) tail.push(`Конфликт в таблице (в файл не попадут):\n${plan.conflicts.map((c) => `${c.base || c.title}: ${c.text}.`).join('\n')}`);
+  if (plan.bad.length) tail.push(`❓ Непонятное значение в таблице (нужно уточнить):\n${plan.bad.map((r) => `П${r.row} ${r.article}: «${r.raw}»`).join('\n')}`);
+  if (plan.notInOzon.length) tail.push(`Нет в Озоне:\n${plan.notInOzon.map((r) => `П${r.row} ${r.article}`).join('\n')}`);
+  if (plan.notSplit.length) tail.push(`Не разнесла по семье (в файл не попадут):\n${plan.notSplit.map((r) => `П${r.row} ${r.article}, ${r.reason}`).join('\n')}`);
+  if (plan.conflicts.length) tail.push(`Конфликт в таблице (в файл не попадут):\n${plan.conflicts.map((c) => `${c.text}.`).join('\n')}`);
   if (hint && !hintMatch(hint, rows, products)) tail.push(`⚠️ названия не похожи на «${hint}», проверь диапазон`);
   for (const t of tail) L.push('', t);
   return L.join('\n');
