@@ -512,6 +512,8 @@ async function runCheck({ save = true } = {}) {
 }
 
 module.exports = {
+  loadServiceAccount,
+  getAccessToken,
   runCheck,
   parseNomenclature,
   diffSnapshots,

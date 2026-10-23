@@ -296,3 +296,63 @@ test('Маска: словарь потерян/устарел — семья в
   const r2 = await matchLines([{ name: 'КОНФ КОР Маска с хрустящими вафлями и 1/300 НД и КП', unitWeightG: 300 }], families);
   assert.strictEqual(r2[0].status, 'matched');
 });
+
+// ---- /остатки
+const ost = require('./ostatki');
+const ostCatalog = [
+  ...[1, 2, 10].map((n) => ({ article: `Бирка50Петелька${n}ШТ`, name: 'Бирки с петелькой' })),
+  ...[1, 5].map((n) => ({ article: `Бирка100Петелька${n}ШТ`, name: 'Бирки с петелькой большие' })),
+  { article: '200КарамельЭквалиптМентол1', name: 'Карамель Эвкалипт-ментол 200 г' },
+];
+
+test('/остатки: диапазон и количество', () => {
+  assert.deepStrictEqual(ost.parseRange('200-260 бирки петельки'), { from: 200, to: 260, hint: 'бирки петельки' });
+  assert.deepStrictEqual(ost.parseRange('200–260'), { from: 200, to: 260, hint: '' });
+  assert.strictEqual(ost.parseRange('260-200'), null);
+  assert.strictEqual(ost.parseRange('abc'), null);
+  assert.strictEqual(ost.parseQty('').state, 'empty');
+  assert.strictEqual(ost.parseQty('  ').state, 'empty');
+  assert.deepStrictEqual(ost.parseQty('0'), { state: 'ok', value: 0 });
+  assert.deepStrictEqual(ost.parseQty('1 200'), { state: 'ok', value: 1200 });
+  assert.strictEqual(ost.parseQty('нет').state, 'bad');
+});
+
+test('/остатки: установка по семье, ноль нужен, пустые и чужие артикулы отдельно', () => {
+  const { families } = buildFamilies(ostCatalog);
+  const rows = [
+    { row: 200, article: 'Бирка50Петелька1ШТ', qtyRaw: '40', subject: 'Бирки', brand: 'X' },
+    { row: 201, article: 'Бирка50Петелька10ШТ', qtyRaw: '4' },
+    { row: 202, article: 'Бирка100Петелька1ШТ', qtyRaw: '0' },
+    { row: 203, article: 'Бирка100Петелька5ШТ', qtyRaw: '' },
+    { row: 204, article: 'НетТакого1ШТ', qtyRaw: '7' },
+    { row: 205, article: '200КарамельЭквалиптМентол1', qtyRaw: 'нет' },
+  ];
+  const plan = ost.buildPlan(rows, ostCatalog, families);
+  assert.strictEqual(plan.articles, 6);
+  assert.deepStrictEqual(plan.items.map((i) => [i.article, i.qty]), [
+    ['Бирка50Петелька1ШТ', 40], ['Бирка50Петелька2ШТ', 20], ['Бирка50Петелька10ШТ', 4],
+    ['Бирка100Петелька1ШТ', 0], ['Бирка100Петелька5ШТ', 0], // нулевая семья обнуляется целиком
+  ]);
+  assert.strictEqual(plan.notInOzon.length, 1);
+  assert.strictEqual(plan.empty.length, 1);
+  assert.strictEqual(plan.bad.length, 1);
+  const text = ost.buildText({ from: 200, to: 205, hint: 'бирки петельки', rows, products: ostCatalog, plan });
+  assert.ok(text.includes('названия совпадают ✅') && text.includes('Строки 200–205, найдено 6 артикулов'));
+  assert.ok(ost.buildText({ from: 200, to: 205, hint: 'мармелад', rows, products: ostCatalog, plan }).includes('⚠️ названия не похожи на «мармелад»'));
+});
+
+test('/остатки: конфликт и расчёт от набора', () => {
+  const { families } = buildFamilies(ostCatalog);
+  const conflict = ost.buildPlan([
+    { row: 1 + 2, article: 'Бирка50Петелька1ШТ', qtyRaw: '40' },
+    { row: 4, article: 'Бирка50Петелька10ШТ', qtyRaw: '5' },
+  ], ostCatalog, families);
+  assert.strictEqual(conflict.conflicts.length, 1);
+  assert.strictEqual(conflict.items.length, 0);
+  const derived = ost.buildPlan([{ row: 3, article: 'Бирка50Петелька10ШТ', qtyRaw: '4' }], ostCatalog, families);
+  assert.deepStrictEqual(derived.items.map((i) => i.qty), [40, 20, 4]);
+  const dup = ost.buildPlan([
+    { row: 3, article: 'Бирка50Петелька1ШТ', qtyRaw: '40' }, { row: 9, article: 'Бирка50Петелька1ШТ', qtyRaw: '41' },
+  ], ostCatalog, families);
+  assert.strictEqual(dup.conflicts.length, 1);
+});
