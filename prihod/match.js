@@ -93,19 +93,21 @@ async function matchLines(lines, families) {
     // 1) подтверждённая карта названий
     const entry = nameMap.lookup(line.name);
     if (entry && entry.none) {
-      // «Нет в Озоне» из памяти; в каталоге появились карточки — можно переспросить.
-      if (!(families.length > (entry.familyCount || 0))) { out[i] = { status: 'none', via: 'запомнено: нет в Озоне' }; return; }
-      const fresh = candidatesFor(line, families);
-      out[i] = fresh.length ? { status: 'ambiguous', options: fresh, via: 'в каталоге появились новые карточки' } : { status: 'none', via: 'запомнено: нет в Озоне' };
+      // «Нет в Озоне» из памяти; переспрашиваем, только если среди подходящих
+      // появились артикулы, которых Елена ещё не видела.
+      const seen = new Set(entry.seen || []);
+      const cands = candidatesFor(line, families);
+      const fresh = cands.filter((f) => f.members.some((m) => !seen.has(m.article)));
+      out[i] = fresh.length ? { status: 'ambiguous', options: cands, via: 'в каталоге появились новые карточки' } : { status: 'none', via: 'запомнено: нет в Озоне' };
       return;
     }
     if (entry) {
-      let fams = families.filter((f) => nameMap.familyMatches(entry, f) && weightOk(entry.weightG, f.weightG));
+      // Семья всегда собирается из каталога по основе; словарь даёт только основу.
+      let fams = families.filter((f) => nameMap.familyMatches(entry, f));
       if (line.unitWeightG && fams.some((f) => f.weightG)) fams = fams.filter((f) => weightOk(line.unitWeightG, f.weightG));
       if (fams.length === 1) { out[i] = { status: 'matched', family: fams[0], via: 'карта' }; return; }
       if (fams.length > 1) { out[i] = { status: 'ambiguous', options: fams.slice(0, MAX_CANDIDATES), via: 'карта' }; return; }
-      out[i] = { status: 'none', via: 'карта: такого веса/вкуса нет в каталоге' };
-      return;
+      console.log(`[prihod] запись словаря «${entry.family}» не нашла семью в каталоге для «${line.name}» — ищу заново по названию`);
     }
     // 2) кандидаты + модель
     const cands = candidatesFor(line, families);

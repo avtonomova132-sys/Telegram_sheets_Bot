@@ -121,7 +121,8 @@ test('экран проверки = строки xlsx, без шума', () => {
   assert.deepStrictEqual(shown, plan.items.map((i) => [i.article, i.qty]));
   assert.deepStrictEqual(shown, [['200КОМамаПриехала1ШТ', 112], ['200КОМамаПриехала2ШТ', 56], ['200КОМамаПриехала5ШТ', 22], ['200КОМамаПриехала10ШТ', 11]]);
   assert.ok(text.includes('Сумма строк = Итого накладной ✅'));
-  assert.ok(text.includes('Остаток от деления:') && text.includes('200КОМамаПриехала5ШТ — 2 шт'));
+  assert.ok(!text.includes('Остаток'));
+  assert.ok(plan.remainders.some((r) => r.article === '200КОМамаПриехала5ШТ' && r.remainder === 2));
   assert.ok(buildReport({ lines, printedTotal: 999 }).text.includes('⚠️ не сходится: у нас 1050.00, в накладной 999.00'));
 });
 
@@ -146,7 +147,7 @@ test('словарь: сохраняет выбор Елены и «Нет в О
   delete require.cache[require.resolve('./match')];
   const nm = require('./nameMap');
   nm.remember('КАРАМЕЛЬ Лимонная фас_1/250', f);
-  nm.rememberNone('Эвкалипт-ментол леденцы', families.length);
+  nm.rememberNone('Эвкалипт-ментол леденцы', []);
   const { matchLines: ml } = require('./match');
   const r = await ml([
     { name: 'КАРАМЕЛЬ Лимонная фас_1/250', unitWeightG: 250 },
@@ -265,4 +266,33 @@ test('словарь: старая запись с одним артикулом
   assert.strictEqual(saved.entries.length, 2);
   assert.deepStrictEqual(saved.entries.map((e) => e.family), ['200КарамельЭквалиптМентол', '350ГрЛюбимыеКонфета']);
   assert.ok(saved.entries.every((e) => !('article' in e)));
+});
+
+test('Маска: словарь потерян/устарел — семья всё равно находится из каталога', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mask-'));
+  const file = path.join(dir, 'map.json');
+  // старые записи: «Нет в Озоне» из эпохи сломанного разбора и запись с мусорной основой
+  fs.writeFileSync(file, JSON.stringify({ entries: [
+    { pattern: '^конф кор маска с хрустящими вафлям и 1 300 нд и кп$', none: true, recheck: true, familyCount: 999 },
+    { pattern: '^какой то товар$', family: 'НетТакойОсновы', exact: true },
+  ] }));
+  process.env.PRIHOD_NAME_MAP_PATH = file;
+  for (const m of ['./nameMap', './match']) delete require.cache[require.resolve(m)];
+  const { matchLines } = require('./match');
+  const { families } = buildFamilies(realCatalog);
+  const lines = [
+    { name: 'КОНФ КОР Маска с хрустящими вафлям и 1/300 НД и КП', unitWeightG: 300 },
+    { name: 'КОНФ.КОР Маска с хрустящими вафлями 1/300', unitWeightG: 300 }, // другое чтение того же названия
+    { name: 'Какой-то товар', unitWeightG: null },
+  ];
+  const r = await matchLines(lines, families);
+  assert.strictEqual(r[0].status, 'ambiguous'); // старое «Нет» переспрашивается кнопкой
+  assert.strictEqual(r[0].options[0].base, 'Маска300СВафлями');
+  assert.strictEqual(r[1].status, 'matched'); // начальная запись словаря
+  assert.deepStrictEqual(r[1].family.members.map((m) => m.pieces), [1, 2, 4]);
+  assert.notStrictEqual(r[2].status, 'matched');
+  const nm = require('./nameMap');
+  nm.remember('КОНФ КОР Маска с хрустящими вафлям и 1/300 НД и КП', r[1].family);
+  const r2 = await matchLines([{ name: 'КОНФ КОР Маска с хрустящими вафлями и 1/300 НД и КП', unitWeightG: 300 }], families);
+  assert.strictEqual(r2[0].status, 'matched');
 });
