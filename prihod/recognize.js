@@ -1,5 +1,9 @@
 // Распознавание фото накладной моделью с vision. Каждое фото — один вызов.
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { execFileSync } = require('child_process');
 const Anthropic = require('@anthropic-ai/sdk');
 const { modelName } = require('./match');
 
@@ -10,13 +14,16 @@ const SYSTEM = `Ты читаешь фото одного листа товар�
  "legible": true|false,            // можно ли уверенно прочитать строки
  "problem": "rotated|blurry|cropped|other|", // если legible=false — что не так
  "doc": {"number":"","date":""},
- "printed_total": число|null,      // печатное «Итого» (сумма с НДС по документу), только если оно есть на этом листе
+ "printed_total": число|null,      // печатное «Итого»/«Всего к оплате» (С НДС), только если оно есть на этом листе
+ "printed_total_no_vat": число|null, // «Итого» без НДС, если в документе есть отдельная колонка/итог без налога
  "lines": [{
    "n": номер строки,
    "name": "название как напечатано",
    "qty": число,                    // количество. Если две колонки количества — бери «Всего шт.»
    "price": число|null,
-   "sum": число|null,               // сумма по строке
+   "y": число,                      // вертикальное положение строки на фото, доля высоты 0..1 (0 — верх)
+   "sum": число|null,               // сумма по строке С НДС (последняя колонка стоимости)
+   "sum_no_vat": число|null,        // сумма по строке без НДС, если есть такая колонка
    "netto_kg": число|null,          // масса нетто по строке, если есть колонка
    "unit_weight_g": число|null,     // вес единицы: из названия (200 г, 1/180, 1/250, 1/1000 = граммы), иначе netto_kg*1000/qty
    "sterilization_pack": true|false // пакеты для стерилизации Альянс Хим, где «1» = пачка 100 листов
@@ -24,29 +31,78 @@ const SYSTEM = `Ты читаешь фото одного листа товар�
 }
 Не выдумывай: нечитаемое число = null, а если нечитаемо много — legible=false. Числа — десятичные с точкой.`;
 
-async function readInvoicePhoto(buffer, mediaType = 'image/jpeg') {
-  if (!anthropic) throw new Error('ANTHROPIC_API_KEY не задан');
-  const res = await anthropic.messages.create({
-    model: modelName(),
-    max_tokens: 6000,
-    system: SYSTEM,
-    messages: [{
-      role: 'user',
-      content: [
-        { type: 'image', source: { type: 'base64', media_type: mediaType, data: buffer.toString('base64') } },
-        { type: 'text', text: 'Распознай лист накладной.' },
-      ],
-    }],
-  });
+// temperature 0 — чтение должно быть повторяемым; если модель параметр не
+// принимает, повторяем без него.
+async function ask(system, content, maxTokens) {
+  const base = { model: modelName(), max_tokens: maxTokens, system, messages: [{ role: 'user', content }] };
+  let res;
+  try {
+    res = await anthropic.messages.create({ ...base, temperature: 0 });
+  } catch (err) {
+    if (!/temperature/i.test(String(err.message))) throw err;
+    res = await anthropic.messages.create(base);
+  }
   const text = res.content.find((b) => b.type === 'text')?.text || '';
   const m = /\{[\s\S]*\}/.exec(text);
   if (!m) throw new Error('модель вернула не JSON');
-  const data = JSON.parse(m[0]);
+  return JSON.parse(m[0]);
+}
+
+const imageBlock = (buffer, mediaType) => ({ type: 'image', source: { type: 'base64', media_type: mediaType, data: buffer.toString('base64') } });
+
+async function readInvoicePhoto(buffer, mediaType = 'image/jpeg', { careful = false } = {}) {
+  if (!anthropic) throw new Error('ANTHROPIC_API_KEY не задан');
+  const note = careful
+    ? 'Перечитай лист ОЧЕНЬ внимательно, строка за строкой: название, количество, цена и сумма должны относиться к ОДНОЙ строке таблицы (не смешивай соседние строки).'
+    : 'Распознай лист накладной.';
+  const data = await ask(SYSTEM, [imageBlock(buffer, mediaType), { type: 'text', text: note }], 6000);
   if (!Array.isArray(data.lines)) data.lines = [];
   return data;
 }
 
+const REREAD_SYSTEM = `Тебе дан увеличенный фрагмент товарной накладной с одной строкой таблицы (рядом могут быть соседние). Прочитай ТОЛЬКО строку, название которой указано в запросе, и верни СТРОГО JSON без markdown:
+{"name":"название как напечатано","qty":число|null,"price":число|null,"sum":число|null,"sum_no_vat":число|null}
+qty — количество (если две колонки, «Всего шт.»), sum — сумма с НДС. Не угадывай: нечитаемое = null.`;
+
+// Вырезает полосу вокруг строки и увеличивает (Pillow); без неё — весь лист.
+function cropBand(buffer, y) {
+  if (!Number.isFinite(y)) return null;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'prh-crop-'));
+  try {
+    const inp = path.join(dir, 'in.jpg');
+    const out = path.join(dir, 'out.jpg');
+    fs.writeFileSync(inp, buffer);
+    execFileSync('python3', [path.join(__dirname, 'crop.py'), inp, out, String(y - 0.06), String(y + 0.06)], { timeout: 20000 });
+    return fs.readFileSync(out);
+  } catch (err) {
+    console.error('[prihod] обрезка фото не удалась, читаю целиком:', err.message);
+    return null;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function rereadLine(buffer, mediaType, line) {
+  if (!anthropic) throw new Error('ANTHROPIC_API_KEY не задан');
+  const crop = cropBand(buffer, line.y);
+  const img = crop ? imageBlock(crop, 'image/jpeg') : imageBlock(buffer, mediaType);
+  return ask(REREAD_SYSTEM, [img, { type: 'text', text: `Строка: «${line.name}»` }], 600);
+}
+
 const num = (v) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+
+// Количество × цена должно совпасть с суммой строки: цена в накладной бывает
+// без НДС, поэтому допускаем отношения 1 / 1,05 / 1,07 / 1,1 / 1,2 / 1,22 или
+// сверку с колонкой «без НДС».
+const VAT_RATIOS = [1, 1.05, 1.07, 1.1, 1.2, 1.22];
+function arithmeticOk(qty, price, sum, sumNoVat) {
+  if (qty === null || price === null || (sum === null && sumNoVat === null)) return false;
+  const calc = qty * price;
+  const near = (a, b) => Math.abs(a - b) <= Math.max(1, b * 0.01);
+  if (sumNoVat !== null && near(calc, sumNoVat)) return true;
+  if (sum === null) return false;
+  return VAT_RATIOS.some((r) => near(calc * r, sum));
+}
 
 // Нормализация и проверки строки накладной (код, не модель).
 function prepareLine(raw) {
@@ -55,13 +111,12 @@ function prepareLine(raw) {
   const qty = printedQty === null ? null : printedQty * mult;
   const price = num(raw.price);
   const sum = num(raw.sum);
+  const sumNoVat = num(raw.sum_no_vat);
   const nettoKg = num(raw.netto_kg);
   const flags = [];
   if (printedQty === null) flags.push('не прочитано количество');
-  if (price !== null && sum !== null && printedQty !== null) {
-    const calc = printedQty * price;
-    if (Math.abs(calc - sum) > Math.max(1, sum * 0.02)) flags.push(`кол-во×цена=${calc.toFixed(2)} ≠ сумма ${sum}`);
-  }
+  const arithmetic = arithmeticOk(printedQty, price, sum, sumNoVat);
+  if (price !== null && printedQty !== null && !arithmetic) flags.push('кол-во×цена не сходится с суммой');
   let unitWeightG = num(raw.unit_weight_g);
   if (nettoKg !== null && qty && !raw.sterilization_pack) {
     const byNetto = (nettoKg * 1000) / qty;
@@ -75,9 +130,9 @@ function prepareLine(raw) {
     if (fr) unitWeightG = Number(fr[1]);
   }
   return {
-    n: raw.n, name: String(raw.name || '').trim(), qty, printedQty, packMult: mult,
-    price, sum, nettoKg, unitWeightG: raw.sterilization_pack ? null : unitWeightG, flags,
+    n: raw.n, name: String(raw.name || '').trim(), qty, printedQty, packMult: mult, sterilization: Boolean(raw.sterilization_pack),
+    price, sum, sumNoVat, nettoKg, y: num(raw.y), arithmetic, unitWeightG: raw.sterilization_pack ? null : unitWeightG, flags,
   };
 }
 
-module.exports = { readInvoicePhoto, prepareLine };
+module.exports = { readInvoicePhoto, rereadLine, prepareLine, arithmeticOk };

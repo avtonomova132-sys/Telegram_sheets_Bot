@@ -39,21 +39,21 @@ function weightOk(lineG, famG) {
   return Math.abs(lineG - famG) / famG <= WEIGHT_TOL;
 }
 
-function candidatesFor(line, families) {
+function candidatesFor(line, families, { minScore = MIN_SCORE, max = MAX_CANDIDATES } = {}) {
   const inv = norm(line.name);
   const tok = tokens(line.name);
   const tri = trigrams(line.name);
   const scored = [];
   for (const f of families) {
-    const candText = norm(`${f.title} ${f.stem} ${f.base}`);
+    const candText = norm(`${f.title} ${f.stems.join(' ')} ${f.base}`);
     if (!RULES.every((r) => r(inv, candText))) continue;
     if (!weightOk(line.unitWeightG, f.weightG)) continue;
     const overlap = tok.length ? tok.filter((t) => f.tok.has(t) || [...f.tok].some((x) => x.startsWith(t.slice(0, 5)) && t.length >= 5)).length / tok.length : 0;
     const score = 0.6 * dice(tri, f.tri) + 0.4 * overlap;
-    if (score >= MIN_SCORE) scored.push({ f, score });
+    if (score >= minScore) scored.push({ f, score });
   }
   scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, MAX_CANDIDATES).map((s) => s.f);
+  return scored.slice(0, max).map((s) => s.f);
 }
 
 function describe(f) {
@@ -134,4 +134,11 @@ async function matchLines(lines, families) {
   return out;
 }
 
-module.exports = { matchLines, candidatesFor, modelName, weightOk };
+// Повторная проверка «Нет в Озоне» после обновления каталога: без модели,
+// мягче порог; найденное по названию/артикулу НЕ подставляется само —
+// возвращаются кандидаты для кнопок.
+function suggestForNone(line, families) {
+  return candidatesFor(line, families, { minScore: 0.2, max: 4 });
+}
+
+module.exports = { suggestForNone, matchLines, candidatesFor, modelName, weightOk };

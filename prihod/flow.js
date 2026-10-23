@@ -4,11 +4,11 @@
 
 const fs = require('fs');
 const path = require('path');
-const { readInvoicePhoto, prepareLine } = require('./recognize');
-const { getCatalog } = require('./catalog');
-const { buildFamilies } = require('./family');
-const { matchLines, candidatesFor } = require('./match');
-const { computePlan } = require('./plan');
+const { readInvoicePhoto, rereadLine, prepareLine, arithmeticOk } = require('./recognize');
+const { getCatalog, searchProducts } = require('./catalog');
+const { buildFamilies, findFamilyByArticle } = require('./family');
+const { matchLines, candidatesFor, suggestForNone } = require('./match');
+const { computePlan, checkTotals } = require('./plan');
 const nameMap = require('./nameMap');
 const xlsx = require('./xlsxFill');
 const fbo = require('../fbo');
@@ -17,6 +17,7 @@ const CB = 'prh:';
 const TEMPLATE_PATH = process.env.PRIHOD_TEMPLATE_PATH || '/data/prihod_template.xlsx';
 const REPO_TEMPLATE_PATH = path.join(__dirname, 'template', 'ostatki_template.xlsx');
 const SESSION_TTL_MS = 3 * 60 * 60 * 1000;
+const MAX_REREADS = 12;
 
 let bot;
 let isTrusted = () => false;
@@ -102,7 +103,7 @@ async function processImage(chatId, s, fileId, mediaType) {
       await bot.sendMessage(chatId, `Фото (${why}) — переснимите этот лист ровно, чётко и целиком, и пришлите заново.`);
       return;
     }
-    s.sheets.push({ order: idx, data: r });
+    s.sheets.push({ order: idx, data: r, buf, mediaType });
     const total = r.printed_total !== null && r.printed_total !== undefined ? `, «Итого» ${fmt(r.printed_total)}` : '';
     await bot.sendMessage(chatId, `Лист принят: строк ${r.lines.length}${total}. Ещё лист или «Готово».`,
       kb([[{ text: '✅ Готово', callback_data: `${CB}done` }], cancelRow]));
@@ -150,6 +151,97 @@ async function handleDocument(msg) {
 }
 
 // ---------- сопоставление ----------
+const numOrNull = (v) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+
+function assemble(s, versions) {
+  // versions[si] — массив подготовленных строк листа si
+  s.lines = [];
+  versions.forEach((lines, si) => lines.forEach((l) => s.lines.push({ ...l, sheet: si })));
+  s.lines.forEach((l, i) => { l.n = i + 1; });
+}
+
+// Проверка чтения: количество × цена ≈ сумма по каждой строке; не сошлось —
+// перечитываем строку по увеличенному фрагменту. Не сошёлся итог — второе,
+// внимательное чтение листов и выбор варианта, который сходится с «Итого».
+async function verifyReadings(s) {
+  let rereads = 0;
+  for (const l of s.lines) {
+    if (l.arithmetic) continue;
+    if (rereads >= MAX_REREADS) break;
+    rereads += 1;
+    const sh = s.sheets[l.sheet];
+    try {
+      const r = await rereadLine(sh.buf, sh.mediaType, l);
+      const qty = numOrNull(r.qty); const price = numOrNull(r.price);
+      const sum = numOrNull(r.sum); const sumNoVat = numOrNull(r.sum_no_vat);
+      if (arithmeticOk(qty, price, sum, sumNoVat)) {
+        console.log(`[prihod] стр. ${l.n} «${l.name}» перечитана: ${l.printedQty}×${l.price}=${l.sum} → ${qty}×${price}=${sum}`);
+        Object.assign(l, { printedQty: qty, qty: qty * l.packMult, price, sum: sum ?? l.sum, sumNoVat, arithmetic: true, flags: [] });
+      }
+    } catch (err) {
+      console.error(`[prihod] перечитать строку ${l.n}:`, err.message);
+    }
+  }
+  const total = () => checkTotals(s.lines, s.printedTotal, s.printedNoVat);
+  if ((s.printedTotal === null && s.printedNoVat === null) || total().ok) return;
+
+  const alts = [];
+  for (const sh of s.sheets) {
+    try {
+      const r = await readInvoicePhoto(sh.buf, sh.mediaType, { careful: true });
+      alts.push(r.legible && r.lines.length ? r.lines.map(prepareLine) : null);
+    } catch (err) {
+      console.error('[prihod] второе чтение листа:', err.message);
+      alts.push(null);
+    }
+  }
+  const orig = s.sheets.map((_, si) => s.lines.filter((l) => l.sheet === si));
+  const idxs = alts.map((a, si) => (a ? si : -1)).filter((x) => x >= 0);
+  let best = null;
+  for (let mask = 1; mask < (1 << idxs.length); mask += 1) {
+    const versions = orig.map((o, si) => {
+      const k = idxs.indexOf(si);
+      return k >= 0 && (mask & (1 << k)) ? alts[si] : o;
+    });
+    const flat = versions.flat();
+    if (checkTotals(flat, s.printedTotal, s.printedNoVat).ok) {
+      const swaps = idxs.filter((_, k) => mask & (1 << k)).length;
+      if (!best || swaps < best.swaps) best = { versions, swaps };
+    }
+  }
+  if (best) {
+    console.log('[prihod] итог сошёлся после второго чтения листов');
+    assemble(s, best.versions);
+  }
+}
+
+function applyResults(lines, results) {
+  lines.forEach((l, i) => {
+    const r = results[i];
+    l.match = r;
+    l.decision = r.status === 'matched' ? { status: 'matched', family: r.family, via: r.via }
+      : r.status === 'none' ? { status: 'none', via: r.via } : null;
+  });
+}
+
+// «Нет в Озоне» (не из памяти Елены): обновляем каталог, если он был из кэша,
+// и предлагаем кнопки с кандидатами, найденными по названию ИЛИ артикулу.
+async function refineNone(s, cached) {
+  const auto = () => s.lines.filter((l) => l.decision && l.decision.status === 'none' && !String(l.match.via).startsWith('запомнено'));
+  if (!auto().length) return;
+  if (cached) {
+    const fresh = await getCatalog({ force: true });
+    s.products = fresh.products;
+    s.families = buildFamilies(fresh.products).families;
+    const lines = auto();
+    applyResults(lines, await matchLines(lines, s.families));
+  }
+  for (const l of auto()) {
+    const sug = suggestForNone(l, s.families);
+    if (sug.length) { l.match = { status: 'ambiguous', options: sug, via: 'по артикулу' }; l.decision = null; }
+  }
+}
+
 async function finishCollecting(chatId, s) {
   await s.queue;
   if (!s.sheets.length) return bot.sendMessage(chatId, 'Пока нет ни одного принятого листа. Пришли фото накладной.');
@@ -157,21 +249,20 @@ async function finishCollecting(chatId, s) {
   await bot.sendMessage(chatId, 'Сверяю с каталогом Озона… 🔎');
   try {
     s.sheets.sort((a, b) => a.order - b.order);
-    const raw = s.sheets.flatMap((sh) => sh.data.lines);
-    s.lines = raw.map((r, i) => ({ ...prepareLine(r), n: i + 1 }));
-    const totals = s.sheets.map((sh) => sh.data.printed_total).filter((v) => v !== null && v !== undefined && Number.isFinite(Number(v)));
-    s.printedTotal = totals.length ? Number(totals[totals.length - 1]) : null;
+    assemble(s, s.sheets.map((sh) => sh.data.lines.map(prepareLine)));
+    const last = (key) => {
+      const v = s.sheets.map((sh) => numOrNull(sh.data[key])).filter((x) => x !== null);
+      return v.length ? v[v.length - 1] : null;
+    };
+    s.printedTotal = last('printed_total');
+    s.printedNoVat = last('printed_total_no_vat');
+    await verifyReadings(s);
     for (const l of s.lines) if (l.flags.length) console.log(`[prihod] стр. ${l.n} «${l.name}»: ${l.flags.join('; ')}`);
     const cat = await getCatalog();
-    const { families } = buildFamilies(cat.products);
-    s.families = families;
-    const results = await matchLines(s.lines, families);
-    s.lines.forEach((l, i) => {
-      const r = results[i];
-      l.match = r;
-      l.decision = r.status === 'matched' ? { status: 'matched', family: r.family, via: r.via }
-        : r.status === 'none' ? { status: 'none', via: r.via } : null;
-    });
+    s.products = cat.products;
+    s.families = buildFamilies(cat.products).families;
+    applyResults(s.lines, await matchLines(s.lines, s.families));
+    await refineNone(s, cat.cached);
     s.state = 'resolving';
     await askNextAmbiguous(chatId, s);
   } catch (err) {
@@ -194,7 +285,7 @@ async function askNextAmbiguous(chatId, s) {
 
 // ---------- отчёт ----------
 function buildReport(s) {
-  const plan = computePlan(s.lines, s.printedTotal);
+  const plan = computePlan(s.lines, s.printedTotal, s.printedNoVat);
   s.plan = plan;
   const L = [];
   L.push('📋 Проверь: что попадёт в файл');
@@ -224,9 +315,14 @@ async function showReview(chatId, s) {
   const rows = [];
   if (plan.check.ok) rows.push([{ text: '✅ Всё верно', callback_data: `${CB}ok` }]);
   rows.push([{ text: '✏️ Исправить', callback_data: `${CB}fixmenu` }]);
+  if (plan.notInOzon.length) rows.push([{ text: '✍️ Указать артикул для «Нет в Озоне»', callback_data: `${CB}artmenu` }]);
   rows.push(cancelRow);
   let msg = text;
-  if (!plan.check.ok) msg += '\nФайл не собираю, пока не сойдётся. Нажми «Исправить» или пришли недостающий лист.';
+  if (!plan.check.ok) {
+    const doubtful = s.lines.filter((l) => !l.arithmetic && l.decision && l.decision.status !== 'removed');
+    if (doubtful.length) msg += `\nНе уверена в строках: ${doubtful.map((l) => `${l.n} «${l.name}» (${fmt(l.qty)} шт, ${fmt(l.sum)})`).join('; ')}`;
+    msg += '\nФайл не собираю, пока не сойдётся. Нажми «Исправить» или пришли недостающий лист.';
+  }
   await send(chatId, msg, kb(rows));
 }
 
@@ -273,6 +369,7 @@ async function fixLine(chatId, s, n) {
   await bot.sendMessage(chatId, `Строка ${n}: «${l.name}», ${fmt(l.qty)} шт, сумма ${fmt(l.sum)}`, kb([
     [{ text: 'Кол-во', callback_data: `${CB}fq:${n}` }, { text: 'Сумма', callback_data: `${CB}fs:${n}` }],
     [{ text: 'Другой товар', callback_data: `${CB}fp:${n}` }, { text: '🚫 Нет в Озоне', callback_data: `${CB}pick:${n}:x` }],
+    [{ text: '✍️ Указать артикул', callback_data: `${CB}art:${n}` }],
     [{ text: '🗑 Убрать строку', callback_data: `${CB}del:${n}` }],
     [{ text: '⬅️ Назад', callback_data: `${CB}fixmenu` }],
   ]));
@@ -296,6 +393,25 @@ async function handleText(msg) {
     l.match = { status: 'ambiguous', options: cands };
     l.decision = null;
     await askNextAmbiguous(chatId, s);
+    return true;
+  }
+  if (kind === 'article') {
+    const fam = findFamilyByArticle(s.families, msg.text);
+    if (!fam) {
+      const raw = s.products.find((p) => p.article.toLowerCase() === msg.text.trim().toLowerCase());
+      if (raw) {
+        await bot.sendMessage(chatId, `Артикул ${raw.article} есть в Озоне, но не попал в семьи (${raw.archived ? 'в архиве' : 'размер набора не из списка 1/2/3/4/5/6/8/10/12/20'}). Укажи другой или оставь «Нет в Озоне».`);
+      } else {
+        const near = searchProducts(s.products, msg.text, 5).map((p) => p.article);
+        await bot.sendMessage(chatId, `Артикула «${msg.text.trim()}» нет в каталоге Озона.${near.length ? `\nПохожие: ${near.join(', ')}` : ''}\nНапиши ещё раз или нажми «Назад».`);
+      }
+      return true;
+    }
+    s.input = null;
+    l.decision = { status: 'matched', family: fam, via: 'артикул от Елены' };
+    try { nameMap.remember(l.name, fam); } catch (err) { console.error('[prihod] карта названий:', err.message); }
+    await bot.sendMessage(chatId, `Принято: «${l.name}» → ${fam.base} (наборы ${fam.members.map((m) => m.pieces).join('/')} шт). Запомнила.`);
+    await showReview(chatId, s);
     return true;
   }
   const v = parseNum(msg.text);
@@ -343,6 +459,13 @@ async function onCallback(query) {
       if (s.state !== 'review') return undefined;
       return await build(chatId, s);
     }
+    if (cmd === 'artmenu') {
+      const none = s.lines.filter((l) => l.decision && l.decision.status === 'none');
+      const rows = none.map((l) => [{ text: `${l.n}. ${l.name}`.slice(0, 60), callback_data: `${CB}art:${l.n}` }]);
+      rows.push([{ text: '⬅️ Назад к таблице', callback_data: `${CB}back` }]);
+      return await bot.sendMessage(chatId, 'Для какой строки указать артикул?', kb(rows));
+    }
+    if (op === 'art') { s.input = { kind: 'article', n }; return await bot.sendMessage(chatId, `Строка ${n}: напиши артикул из Озона текстом (можно без числа штук — возьму всё семейство).`); }
     if (cmd === 'fixmenu') return await fixMenu(chatId, s);
     if (cmd === 'back') return await showReview(chatId, s);
     if (op === 'fix') return await fixLine(chatId, s, n);
@@ -357,6 +480,30 @@ async function onCallback(query) {
   return undefined;
 }
 
+// /приход_каталог [текст]: сколько товаров загружено и что каталог знает про запрос.
+async function catalogDebug(chatId, query) {
+  if (!isTrusted(chatId)) return;
+  if (!fbo.isConfigured()) return bot.sendMessage(chatId, 'Не заданы OZON_API_KEY / OZON_CLIENT_ID.');
+  const cat = await getCatalog({ force: true });
+  const { families, skipped } = buildFamilies(cat.products);
+  const st = cat.stats || {};
+  const L = [
+    `Каталог загружен заново: товаров ${cat.products.length}${st.apiTotal !== null && st.apiTotal !== undefined ? ` (Озон сообщает total ${st.apiTotal})` : ''}, страниц списка ${st.pages ?? '—'}, архивных ${st.archived ?? '—'}.`,
+    `Семей: ${families.length}. Не вошло в семьи: ${skipped.length}${skipped.length ? ` (${[...new Set(skipped.map((x) => x.reason))].slice(0, 3).join('; ')})` : ''}.`,
+  ];
+  if (query) {
+    const found = searchProducts(cat.products, query, 12);
+    L.push('', `По запросу «${query}» (название и артикул): ${found.length ? '' : 'ничего'}`);
+    for (const p of found) {
+      const sk = skipped.find((x) => x.article === p.article);
+      const fam = families.find((f) => f.members.some((m) => m.article === p.article));
+      L.push(`• ${p.article} | ${p.name || 'без названия'} | ${p.status || '—'}${p.archived ? ' | архив' : ''}`);
+      L.push(`   ${sk ? `пропущен: ${sk.reason}` : fam ? `семья ${fam.base}, вес ${fam.weightG ?? '?'} г, наборы ${fam.members.map((m) => m.pieces).join('/')}` : '—'}`);
+    }
+  }
+  await send(chatId, L.join('\n'));
+}
+
 function init(botInstance, { isTrustedUser }) {
   bot = botInstance;
   isTrusted = isTrustedUser;
@@ -365,6 +512,9 @@ function init(botInstance, { isTrustedUser }) {
     if (!isTrusted(msg.chat.id)) return;
     awaitingTemplate.add(msg.chat.id);
     bot.sendMessage(msg.chat.id, 'Пришли пустой «Шаблон для обновления остатков на всех складах» (xlsx) — он заменит сохранённый.');
+  });
+  bot.onText(/^\/приход_каталог(?:@\S+)?(?:\s+([\s\S]+))?$/, (msg, m) => {
+    catalogDebug(msg.chat.id, m[1] ? m[1].trim() : '').catch((e) => fail(msg.chat.id, 'проверить каталог', e));
   });
   bot.on('callback_query', (q) => { onCallback(q).catch((e) => console.error('[prihod] callback:', e.message)); });
   return { handlePhoto, handleDocument, handleText };
