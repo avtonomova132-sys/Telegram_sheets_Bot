@@ -10,6 +10,8 @@ const { buildFamilies, findFamilyByArticle } = require('./family');
 const { matchLines, candidatesFor, suggestForNone } = require('./match');
 const { computePlan, checkTotals } = require('./plan');
 const nameMap = require('./nameMap');
+const ostatki = require('./ostatki');
+const sheet = require('./sheet');
 const xlsx = require('./xlsxFill');
 const fbo = require('../fbo');
 
@@ -380,6 +382,13 @@ async function handleText(msg) {
   const chatId = msg.chat.id;
   const s = session(chatId);
   if (!s || !s.input || !msg.text || msg.text.startsWith('/')) return false;
+  if (s.input.kind === 'ostatki_range') {
+    const r = ostatki.parseRange(msg.text);
+    if (!r) { await bot.sendMessage(chatId, 'Напиши диапазон строк, например 200-260 (можно с подсказкой: 200-260 бирки петельки).'); return true; }
+    s.input = null;
+    await runOstatki(chatId, r);
+    return true;
+  }
   const { kind, n } = s.input;
   const l = s.lines && s.lines.find((x) => x.n === n);
   if (kind === 'search') {
@@ -433,6 +442,7 @@ async function onCallback(query) {
   if (!s) return bot.sendMessage(chatId, 'Сессия закончилась. /приход — начать заново.');
   try {
     if (cmd === 'done' && s.state === 'collect') return await finishCollecting(chatId, s);
+    if (cmd === 'ost_ok') return s.kind === 'ostatki' && s.state === 'review' ? await buildOstatki(chatId, s) : undefined;
     if (!s.lines) return undefined;
     const [op, a, b] = cmd.split(':');
     const n = Number(a);
@@ -476,6 +486,69 @@ async function onCallback(query) {
   return undefined;
 }
 
+// ---------- /остатки N-M ----------
+async function startOstatki(chatId, arg) {
+  if (!isTrusted(chatId)) return;
+  if (!fbo.isConfigured()) return bot.sendMessage(chatId, 'Не заданы OZON_API_KEY / OZON_CLIENT_ID — каталог Озона недоступен 😔');
+  if (!getTemplate()) {
+    awaitingTemplate.add(chatId);
+    return bot.sendMessage(chatId, 'Сначала пришли пустой «Шаблон для обновления остатков на всех складах» (xlsx из Озона) — я сохраню его, и потом /остатки заработает.');
+  }
+  const r = arg ? ostatki.parseRange(arg) : null;
+  if (r) return runOstatki(chatId, r);
+  sessions.set(chatId, { kind: 'ostatki', state: 'range', input: { kind: 'ostatki_range' }, touched: Date.now() });
+  return bot.sendMessage(chatId, arg
+    ? 'Не поняла диапазон. Напиши номера строк, например 200-260 (можно с подсказкой: 200-260 бирки петельки).'
+    : 'Какие строки пересчитал склад? Напиши диапазон, например 200-260 (можно с подсказкой: 200-260 бирки петельки).');
+}
+
+async function runOstatki(chatId, r) {
+  await bot.sendMessage(chatId, `Читаю строки ${r.from}–${r.to} таблицы «Склад Заказы»… 📊`);
+  try {
+    const [{ rows }, cat] = await Promise.all([sheet.fetchRange(r.from, r.to), getCatalog()]);
+    const { families } = buildFamilies(cat.products);
+    const plan = ostatki.buildPlan(rows, cat.products, families);
+    if (!plan.articles) {
+      return bot.sendMessage(chatId, `В строках ${r.from}–${r.to} нет артикулов. Проверь диапазон.`);
+    }
+    sessions.set(chatId, { kind: 'ostatki', state: 'review', plan, range: r, touched: Date.now() });
+    const text = ostatki.buildText({ ...r, rows, products: cat.products, plan });
+    const buttons = [];
+    if (plan.items.length) buttons.push([{ text: '✅ Всё верно', callback_data: `${CB}ost_ok` }]);
+    buttons.push(cancelRow);
+    await send(chatId, plan.items.length ? text : `${text}\n\nВ файл нечего писать.`, kb(buttons));
+  } catch (err) {
+    sessions.delete(chatId);
+    if (err instanceof sheet.SheetAccessError) await bot.sendMessage(chatId, `Не могу прочитать таблицу: ${err.message}`);
+    else await fail(chatId, 'прочитать остатки', err);
+  }
+}
+
+async function buildOstatki(chatId, s) {
+  const items = s.plan.items;
+  try {
+    const tpl = getTemplate();
+    const out = xlsx.fillTemplate(tpl, items);
+    xlsx.verifyFilled(tpl, out, items);
+    const d = new Date(Date.now() + 8 * 3600 * 1000);
+    const dd = (n) => String(n).padStart(2, '0');
+    const fileName = `Шаблон_остатки_${dd(d.getUTCDate())}_${dd(d.getUTCMonth() + 1)}_${d.getUTCFullYear()}.xlsx`;
+    await bot.sendDocument(chatId, out, { caption: `Строки ${s.range.from}–${s.range.to}: ${items.length} артикулов. Это установка остатка (не прибавка). Загрузи в Озон сама — бот туда ничего не пишет.` },
+      { filename: fileName, contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    sessions.delete(chatId);
+  } catch (err) {
+    await fail(chatId, 'собрать файл (файл не отправлен)', err);
+  }
+}
+
+async function refreshCatalog(chatId) {
+  if (!isTrusted(chatId)) return;
+  if (!fbo.isConfigured()) return bot.sendMessage(chatId, 'Не заданы OZON_API_KEY / OZON_CLIENT_ID.');
+  const cat = await getCatalog({ force: true });
+  const { families } = buildFamilies(cat.products);
+  return bot.sendMessage(chatId, `✅ Каталог Озона обновлён: товаров ${cat.products.length}, семей ${families.length}.`);
+}
+
 // /приход_каталог [текст]: сколько товаров загружено и что каталог знает про запрос.
 async function catalogDebug(chatId, query) {
   if (!isTrusted(chatId)) return;
@@ -508,6 +581,12 @@ function init(botInstance, { isTrustedUser }) {
     if (!isTrusted(msg.chat.id)) return;
     awaitingTemplate.add(msg.chat.id);
     bot.sendMessage(msg.chat.id, 'Пришли пустой «Шаблон для обновления остатков на всех складах» (xlsx) — он заменит сохранённый.');
+  });
+  bot.onText(/^\/остатки(?:@\S+)?(?:\s+([\s\S]+))?$/, (msg, m) => {
+    startOstatki(msg.chat.id, m[1] ? m[1].trim() : '').catch((e) => fail(msg.chat.id, 'запустить /остатки', e));
+  });
+  bot.onText(/^\/каталог_обновить(?:@\S+)?$/, (msg) => {
+    refreshCatalog(msg.chat.id).catch((e) => fail(msg.chat.id, 'обновить каталог', e));
   });
   bot.onText(/^\/приход_каталог(?:@\S+)?(?:\s+([\s\S]+))?$/, (msg, m) => {
     catalogDebug(msg.chat.id, m[1] ? m[1].trim() : '').catch((e) => fail(msg.chat.id, 'проверить каталог', e));
