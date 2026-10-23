@@ -6,7 +6,28 @@ const { distribute } = require('./family');
 const TOTAL_TOLERANCE = 1; // руб., на округления
 
 // line: {n, name, qty, sum, flags, decision: {status:'matched'|'none'|'removed', family}}
-function computePlan(lines, printedTotal) {
+const near = (a, b) => Math.abs(a - b) <= TOTAL_TOLERANCE;
+
+// Итоги сравниваем в той же базе, что и печатное «Итого»: с НДС (колонка
+// суммы) или без НДС, если в накладной есть отдельный итог без налога.
+function checkTotals(active, printedTotal, printedNoVat = null) {
+  const round2 = (v) => Math.round(v * 100) / 100;
+  const sumLines = round2(active.reduce((x, l) => x + (l.sum || 0), 0));
+  const noVatKnown = active.length > 0 && active.every((l) => l.sumNoVat !== null && l.sumNoVat !== undefined);
+  const sumNoVat = noVatKnown ? round2(active.reduce((x, l) => x + l.sumNoVat, 0)) : null;
+  const hasTotal = (printedTotal !== null && printedTotal !== undefined) || (printedNoVat !== null && printedNoVat !== undefined);
+  if (!hasTotal) return { ok: false, sumLines, reason: 'не нашла «Итого» накладной — пришли лист с итогом' };
+  const missing = active.filter((l) => (l.sum === null || l.sum === undefined) && (l.sumNoVat === null || l.sumNoVat === undefined));
+  const withVatOk = printedTotal !== null && printedTotal !== undefined && !active.some((l) => l.sum === null || l.sum === undefined) && near(sumLines, printedTotal);
+  const noVatOk = sumNoVat !== null && printedNoVat !== null && printedNoVat !== undefined && near(sumNoVat, printedNoVat);
+  if (withVatOk || noVatOk) return { ok: true, sumLines, reason: 'Сумма строк = Итого накладной' };
+  if (missing.length) return { ok: false, sumLines, reason: `не прочитана сумма в строках: ${missing.map((l) => l.n).join(', ')}` };
+  const want = printedTotal !== null && printedTotal !== undefined ? printedTotal : printedNoVat;
+  const have = printedTotal !== null && printedTotal !== undefined ? sumLines : sumNoVat ?? sumLines;
+  return { ok: false, sumLines, reason: `не сходится: у нас ${have.toFixed(2)}, в накладной ${Number(want).toFixed(2)}` };
+}
+
+function computePlan(lines, printedTotal, printedNoVat = null) {
   const active = lines.filter((l) => l.decision && l.decision.status !== 'removed');
   const groups = new Map(); // family.id → {family, total, lines:[n]}
   const notInOzon = [];
@@ -30,14 +51,14 @@ function computePlan(lines, printedTotal) {
       if (m.remainder > 0) remainders.push({ article: m.article, pieces: m.pieces, remainder: m.remainder, family: g.family.title });
     }
   }
-  const missingSums = active.filter((l) => l.sum === null || l.sum === undefined);
-  const sumLines = Math.round(active.reduce((s, l) => s + (l.sum || 0), 0) * 100) / 100;
-  let check;
-  if (printedTotal === null || printedTotal === undefined) check = { ok: false, reason: 'не нашла «Итого» накладной — пришли лист с итогом' };
-  else if (missingSums.length) check = { ok: false, reason: `не прочитана сумма в строках: ${missingSums.map((l) => l.n).join(', ')}` };
-  else if (Math.abs(sumLines - printedTotal) > TOTAL_TOLERANCE) check = { ok: false, reason: `не сходится: у нас ${sumLines.toFixed(2)}, в накладной ${Number(printedTotal).toFixed(2)}` };
-  else check = { ok: true, reason: 'Сумма строк = Итого накладной' };
+  // Сверяем сумму ВСЕХ прочитанных строк (и найденных, и «Нет в Озоне»).
+  const check = checkTotals(active, printedTotal, printedNoVat);
+  const sumLines = check.sumLines;
+  if (!check.ok && notInOzon.length && check.reason.startsWith('не сходится')) {
+    const missing = Math.round(notInOzon.reduce((x, l) => x + (l.sum || 0), 0) * 100) / 100;
+    check.reason += ` (в сумме есть «Нет в Озоне»: ${missing.toFixed(2)})`;
+  }
   return { groups: [...groups.values()], items, remainders, zeroSets, notInOzon, sumLines, check };
 }
 
-module.exports = { computePlan };
+module.exports = { computePlan, checkTotals };

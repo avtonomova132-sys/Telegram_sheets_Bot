@@ -53,8 +53,8 @@ function lookup(invoiceName) {
 
 function familyMatches(entry, family) {
   const want = dense(entry.family);
-  const ok = entry.exact ? family.stem === want : family.stem.includes(want);
-  return ok && !(entry.not || []).some((x) => family.stem.includes(dense(x)));
+  const ok = entry.exact ? family.stems.includes(want) : family.stems.some((s) => s.includes(want));
+  return ok && !(entry.not || []).some((x) => family.stems.some((s) => s.includes(dense(x))));
 }
 
 function save(entry) {
@@ -67,7 +67,7 @@ function save(entry) {
 const exactPattern = (name) => `^${norm(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`;
 
 function remember(invoiceName, family) {
-  save({ pattern: exactPattern(invoiceName), family: family.base, exact: true, weightG: family.weightG ?? null });
+  save({ pattern: exactPattern(invoiceName), family: family.base, exact: true, weightG: family.weightG ?? null, article: family.members[0].article });
 }
 
 // «Нет в Озоне»: familyCount — сколько семей было в каталоге; если их

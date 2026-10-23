@@ -4,11 +4,11 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { buildFamilies, distribute, parseWeightG } = require('./family');
-const { computePlan } = require('./plan');
+const { buildFamilies, distribute, parseWeightG, findFamilyByArticle } = require('./family');
+const { computePlan, checkTotals } = require('./plan');
 const { fillTemplate, verifyFilled, validateTemplate, STORE_CELL } = require('./xlsxFill');
 const { candidatesFor } = require('./match');
-const { prepareLine } = require('./recognize');
+const { prepareLine, arithmeticOk } = require('./recognize');
 const { buildReport } = require('./flow');
 const nameMap = require('./nameMap');
 
@@ -39,7 +39,7 @@ test('Мама приехала 200 г, пришло 110 шт → 1шт=110, 2ш
   const d = distribute(fam, 110);
   assert.deepStrictEqual(d.map((x) => [x.pieces, x.qty, x.remainder]), [[1, 110, 0], [2, 55, 0], [5, 22, 0], [10, 11, 0]]);
   // 1 кг — другая семья, количество на неё не переносится
-  assert.strictEqual(families.filter((f) => f.stem.includes('мамаприехала')).length, 2);
+  assert.strictEqual(families.filter((f) => f.stems.join(' ').includes('мамаприехала')).length, 2);
   const plan = computePlan([{ n: 1, name: 'Мама приехала', qty: 110, sum: 1100, decision: { status: 'matched', family: fam } }], 1100);
   assert.deepStrictEqual(plan.items.map((i) => i.qty), [110, 55, 22, 11]);
   assert.ok(plan.check.ok);
@@ -63,9 +63,9 @@ test('сверка с Итого блокирует', () => {
 test('кандидаты: «Украли сахар» ≠ «с лаймом», вес 1 кг не подходит к 200 г', () => {
   const { families } = buildFamilies(catalog);
   const a = candidatesFor({ name: 'Украли сахар', unitWeightG: 150 }, families);
-  assert.ok(a.length && a.every((f) => !f.stem.includes('лайм')));
+  assert.ok(a.length && a.every((f) => !f.stems.join(' ').includes('лайм')));
   const b = candidatesFor({ name: 'Украли сахар с лаймом', unitWeightG: 150 }, families);
-  assert.ok(b.length && b.every((f) => f.stem.includes('лайм')));
+  assert.ok(b.length && b.every((f) => f.stems.join(' ').includes('лайм')));
   const c = candidatesFor({ name: 'Мама приехала', unitWeightG: 250 }, families);
   assert.strictEqual(c.length, 0);
 });
@@ -132,7 +132,7 @@ test('Лимончики и Лимонная: оба кандидата, вес 
   const c = candidatesFor(line, families);
   assert.ok(c.some((f) => f.base === '250ЛимоннаяКарамель'));
   const lim = candidatesFor({ name: 'КАРАМЕЛЬ Лимончики фас_1/250', unitWeightG: 250 }, families);
-  assert.ok(lim.every((f) => !f.stem.includes('лимоннаякарамель')) && lim.some((f) => f.base === '250КАРАМЕЛЬ_Лимончики'));
+  assert.ok(lim.every((f) => !f.stems.join(' ').includes('лимоннаякарамель')) && lim.some((f) => f.base === '250КАРАМЕЛЬ_Лимончики'));
   assert.strictEqual(candidatesFor({ name: 'КАРАМЕЛЬ Лимонная', unitWeightG: 500 }, families).length, 0);
 });
 
@@ -158,4 +158,55 @@ test('словарь: сохраняет выбор Елены и «Нет в О
   assert.strictEqual(r[1].status, 'none');
   assert.strictEqual(r[2].status, 'matched');
   assert.strictEqual(r[2].family.base, '250КАРАМЕЛЬ_Лимончики');
+});
+
+test('сверка: «Нет в Озоне» входит в сумму, файл по найденным не блокируется', () => {
+  const { families } = buildFamilies(catalog);
+  const fam = families.find((f) => f.weightG === 200);
+  const lines = [
+    { n: 1, name: 'Мама', qty: 10, sum: 700, decision: { status: 'matched', family: fam } },
+    { n: 2, name: 'Нет такого', qty: 5, sum: 300, decision: { status: 'none' } },
+  ];
+  const plan = computePlan(lines, 1000);
+  assert.ok(plan.check.ok);
+  assert.strictEqual(plan.items.length, 4);
+  assert.strictEqual(plan.notInOzon.length, 1);
+  const bad = computePlan(lines, 700);
+  assert.ok(!bad.check.ok && bad.check.reason.includes('Нет в Озоне'));
+});
+
+test('сверка в базе без НДС и арифметика строки с НДС', () => {
+  const lines = [{ n: 1, sum: 120, sumNoVat: 100 }, { n: 2, sum: 60, sumNoVat: 50 }];
+  assert.ok(checkTotals(lines, 999, 150).ok);
+  assert.ok(checkTotals(lines, 180, null).ok);
+  assert.ok(!checkTotals(lines, 170, null).ok);
+  assert.ok(arithmeticOk(60, 10, 720, null)); // 600 × 1,2
+  assert.ok(!arithmeticOk(70, 10, 720, null)); // 700 ≠ 600/720
+  assert.ok(arithmeticOk(60, 10, null, 600));
+});
+
+test('семья целиком даже если вес в артикуле записан не у всех', () => {
+  const cat = [
+    { article: '200КарамельЭвкалиптМентол1ШТ', name: 'Карамель Эвкалипт-ментол 200 г' },
+    { article: 'КарамельЭвкалиптМентол2ШТ', name: 'Карамель Эвкалипт-ментол 200 г 2 шт' },
+    { article: '200КарамельЭвкалиптМентол4ШТ', name: 'Карамель Эвкалипт-ментол 200 г 4 шт' },
+    { article: '200КарамельЭвкалиптМентол8ШТ', name: 'Карамель Эвкалипт-ментол 200 г 8 шт' },
+    { article: '500КарамельЭвкалиптМентол1ШТ', name: 'Карамель Эвкалипт-ментол 500 г' },
+  ];
+  const { families } = buildFamilies(cat);
+  const f200 = families.find((f) => f.weightG === 200);
+  assert.deepStrictEqual(f200.members.map((m) => m.pieces), [1, 2, 4, 8]);
+  assert.strictEqual(families.find((f) => f.weightG === 500).members.length, 1);
+  assert.strictEqual(findFamilyByArticle(families, '200карамельэвкалиптментол4шт'), f200);
+  assert.strictEqual(findFamilyByArticle(families, 'нет такого'), null);
+});
+
+test('латиница Neo-botanica находит «Необотаника» в каталоге', () => {
+  const cat = [
+    { article: '200Необотаника_Натура_ЧёрнаяСмородина1ШТ', name: 'Мармелад Необотаника NATURA с чёрной смородиной и семенами чиа 200 г' },
+    { article: '200Необотаника_Натура_ЧёрнаяСмородина2ШТ', name: 'Мармелад Необотаника NATURA с чёрной смородиной и семенами чиа 200 г' },
+  ];
+  const { families } = buildFamilies(cat);
+  const c = candidatesFor({ name: 'МАРМЕЛАД Neo-botanica NATURA с чёрной смородиной и семенами чиа (1/200)', unitWeightG: 200 }, families);
+  assert.strictEqual(c.length, 1);
 });
