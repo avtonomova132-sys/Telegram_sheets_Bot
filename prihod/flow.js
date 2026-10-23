@@ -14,6 +14,7 @@ const ostatki = require('./ostatki');
 const sheet = require('./sheet');
 const xlsx = require('./xlsxFill');
 const fbo = require('../fbo');
+const { chunkMessage } = require('../report');
 
 const CB = 'prh:';
 const TEMPLATE_PATH = process.env.PRIHOD_TEMPLATE_PATH || '/data/prihod_template.xlsx';
@@ -516,7 +517,11 @@ async function runOstatki(chatId, r) {
     const buttons = [];
     if (plan.items.length) buttons.push([{ text: '✅ Всё верно', callback_data: `${CB}ost_ok` }]);
     buttons.push(cancelRow);
-    await send(chatId, plan.items.length ? text : `${text}\n\nВ файл нечего писать.`, kb(buttons));
+    const body = plan.items.length ? text : `${text}\n\nВ файл нечего писать.`;
+    const parts = chunkMessage(body, 3800); // по пустым строкам = границам семей
+    for (let i = 0; i < parts.length; i += 1) {
+      await bot.sendMessage(chatId, parts[i], i === parts.length - 1 ? kb(buttons) : undefined);
+    }
   } catch (err) {
     sessions.delete(chatId);
     if (err instanceof sheet.SheetAccessError) await bot.sendMessage(chatId, `Не могу прочитать таблицу: ${err.message}`);

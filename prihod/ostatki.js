@@ -63,7 +63,7 @@ function buildPlan(rows, products, families) {
   const famOf = new Map();
   for (const f of families) for (const m of f.members) famOf.set(dense(m.article), f);
 
-  const out = { articles: 0, notInOzon: [], unrecounted: [], bad: [], notSplit: [], conflicts: [], groups: [], items: [] };
+  const out = { articles: 0, families: 0, notInOzon: [], unrecounted: [], bad: [], notSplit: [], conflicts: [], groups: [], items: [] };
   const groups = new Map(); // fam.id → {family, entries, hasAny}
   const seen = new Map();
   for (const r of rows) {
@@ -76,9 +76,9 @@ function buildPlan(rows, products, families) {
     const fam = famOf.get(key);
     if (fam && !groups.has(fam.id)) groups.set(fam.id, { family: fam, entries: [] });
     if (q.state === 'empty') continue; // судим по семье: в «1 шт» число есть — остальные пустые нормально
-    if (q.state === 'bad') { out.bad.push({ title: (fam && fam.title) || (p && p.name) || article, raw: q.raw }); continue; }
+    if (q.state === 'bad') { out.bad.push({ title: (fam && fam.title) || (p && p.name) || article, base: fam && fam.base, raw: q.raw }); continue; }
     if (seen.has(key)) {
-      if (seen.get(key) !== q.value) out.conflicts.push({ title: (fam && fam.title) || article, text: `артикул ${article} вписан дважды с разными числами (${seen.get(key)} и ${q.value})` });
+      if (seen.get(key) !== q.value) out.conflicts.push({ title: (fam && fam.base) || article, text: `артикул ${article} вписан дважды с разными числами (${seen.get(key)} и ${q.value})` });
       continue;
     }
     seen.set(key, q.value);
@@ -88,16 +88,17 @@ function buildPlan(rows, products, families) {
   }
   for (const g of groups.values()) {
     if (!g.entries.length) {
-      if (!out.bad.some((b) => b.title === g.family.title)) out.unrecounted.push(g.family.title);
+      if (!out.bad.some((b) => b.base === g.family.base)) out.unrecounted.push(g.family.base);
       continue;
     }
     const t = familyTotal(g.entries, g.family);
-    if (t.conflict) { out.conflicts.push({ title: g.family.title, text: t.conflict }); continue; }
+    if (t.conflict) { out.conflicts.push({ title: g.family.base, text: t.conflict }); continue; }
     const members = g.family.members.map((m) => ({ article: m.article, pieces: m.pieces, qty: Math.floor(t.total / m.pieces) }));
     out.groups.push({ family: g.family, total: t.total, members, derivedFrom: t.derivedFrom || null });
     for (const m of members) out.items.push({ article: m.article, qty: m.qty });
   }
   out.unrecounted = [...new Set(out.unrecounted)];
+  out.families = groups.size;
   return out;
 }
 
@@ -122,39 +123,25 @@ const nameOfRow = (r, products) => {
   return (p && p.name) || [r.subject, r.brand].filter(Boolean).join(' ') || r.article;
 };
 
+// Экран проверки: первая строка, затем ТОЛЬКО «Артикул — количество» по
+// семьям (между семьями пустая строка), в конце «Не пересчитано». Редкие
+// проблемы, из-за которых семья не попадёт в файл, дописываются в конце.
 function buildText({ from, to, hint, rows, products, plan }) {
-  const filled = rows.filter((r) => String(r.article || '').trim());
-  const L = [`📋 Строки ${from}–${to}, найдено ${plan.articles} артикулов`];
-  L.push(`Диапазон: «${nameOfRow(filled[0], products)}» … «${nameOfRow(filled[filled.length - 1], products)}»`);
-  if (hint) {
-    const ok = hintMatch(hint, rows, products);
-    L.push(ok ? `Подсказка «${hint}»: названия совпадают ✅` : `⚠️ названия не похожи на «${hint}», проверь диапазон`);
-  }
+  const L = [`Строки ${from}–${to}: найдено ${plan.articles} артикулов в ${plan.families} семьях`];
   for (const g of plan.groups) {
     L.push('');
-    L.push(`📦 ${g.family.title}${g.derivedFrom ? ` (посчитано от набора ${pieceSize(g.family, g.derivedFrom.article)} шт: всего ${g.total} шт)` : ''}`);
     for (const m of g.members) L.push(`${m.article} — ${m.qty}`);
   }
+  const tail = [];
   if (plan.unrecounted.length) {
-    L.push('', `⏳ Не пересчитано: ${plan.unrecounted.length} ${plan.unrecounted.length === 1 ? 'товар' : 'товаров'}${plan.unrecounted.length <= 10 ? '' : ' (в файл не попадут)'}`);
-    if (plan.unrecounted.length <= 10) for (const t of plan.unrecounted) L.push(`• ${t}`);
+    tail.push(`Не пересчитано: ${plan.unrecounted.length}${plan.unrecounted.length <= 10 ? `\n${plan.unrecounted.join('\n')}` : ''}`);
   }
-  if (plan.notInOzon.length) {
-    L.push('', '🚫 Нет в Озоне:');
-    for (const r of plan.notInOzon) L.push(`• ${r.article} — ${r.qty}`);
-  }
-  if (plan.notSplit.length) {
-    L.push('', '⚠️ Есть в Озоне, но не разнесла по семье (в файл не попадут):');
-    for (const r of plan.notSplit) L.push(`• ${r.article} — ${r.qty}, ${r.reason}`);
-  }
-  if (plan.bad.length) {
-    L.push('', '⚠️ Непонятное количество (в файл не попадут):');
-    for (const r of plan.bad) L.push(`• ${r.title}: «${r.raw}»`);
-  }
-  if (plan.conflicts.length) {
-    L.push('', '❌ Конфликт в таблице (в файл не попадут, поправь в таблице и повтори):');
-    for (const c of plan.conflicts) L.push(`• ${c.title}: ${c.text}.`);
-  }
+  if (plan.notInOzon.length) tail.push(`Нет в Озоне:\n${plan.notInOzon.map((r) => `${r.article} — ${r.qty}`).join('\n')}`);
+  if (plan.notSplit.length) tail.push(`Не разнесла по семье (в файл не попадут):\n${plan.notSplit.map((r) => `${r.article} — ${r.qty}, ${r.reason}`).join('\n')}`);
+  if (plan.bad.length) tail.push(`Непонятное количество (в файл не попадут):\n${plan.bad.map((r) => `${r.base || r.title}: «${r.raw}»`).join('\n')}`);
+  if (plan.conflicts.length) tail.push(`Конфликт в таблице (в файл не попадут):\n${plan.conflicts.map((c) => `${c.base || c.title}: ${c.text}.`).join('\n')}`);
+  if (hint && !hintMatch(hint, rows, products)) tail.push(`⚠️ названия не похожи на «${hint}», проверь диапазон`);
+  for (const t of tail) L.push('', t);
   return L.join('\n');
 }
 
