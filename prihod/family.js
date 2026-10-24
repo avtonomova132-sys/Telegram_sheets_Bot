@@ -23,7 +23,8 @@ function parseWeightG(text) {
   const lead = /^\s*(\d+(?:[.,]\d+)?)\s*(кг|kg)?/i.exec(s);
   if (lead && /[a-zа-я]/i.test(s.slice(lead[0].length, lead[0].length + 1))) {
     const v = Number(lead[1].replace(',', '.'));
-    return lead[2] ? Math.round(v * 1000) : Math.round(v);
+    const g = lead[2] ? Math.round(v * 1000) : Math.round(v);
+    return g <= 5000 ? g : null; // «18162БЕЛЫЙ1000» — размер бирки, не вес
   }
   return null;
 }
@@ -44,11 +45,20 @@ function parsePieces(article, name) {
   return 1;
 }
 
-function parseArticleWeight(article) {
-  const m = /^\s*(\d+(?:[.,]\d+)?)\s*(кг|kg)?(?=[a-zа-я_])/i.exec(String(article || ''));
+const LEAD_WEIGHT_RE = /^\s*(\d+(?:[.,]\d+)?)\s*(кг|kg)?(?=[a-zа-я_])/i;
+const MAX_WEIGHT_G = 5000; // «18162БЕЛЫЙ1000» — размер бирки 18×162, а не вес
+
+function leadWeight(article) {
+  const m = LEAD_WEIGHT_RE.exec(String(article || ''));
   if (!m) return null;
   const v = Number(m[1].replace(',', '.'));
-  return m[2] ? Math.round(v * 1000) : Math.round(v);
+  const g = m[2] ? Math.round(v * 1000) : Math.round(v);
+  return g > 0 && g <= MAX_WEIGHT_G ? { g, match: m[0] } : null;
+}
+
+function parseArticleWeight(article) {
+  const w = leadWeight(article);
+  return w ? w.g : null;
 }
 
 // Основа семьи = артикул без хвоста «N шт» (200КОМамаПриехала).
@@ -74,7 +84,8 @@ function embeddedWeight(article) {
 // Основа без ведущего веса: 200КОМамаПриехала → КОМамаПриехала. Так члены
 // семьи, у которых вес в артикуле записан не везде, не расходятся по разным семьям.
 function baseNoWeight(base) {
-  return base.replace(/^\s*\d+(?:[.,]\d+)?\s*(?:кг|kg)?(?=[a-zа-я_])/i, '');
+  const w = leadWeight(base);
+  return w ? base.slice(w.match.length) : base;
 }
 
 // products: [{article, name, barcode, status, archived}]

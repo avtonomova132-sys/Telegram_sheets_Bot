@@ -403,3 +403,39 @@ test('/остатки 1204-1268: 65 артикулов, 50 с остатком, 
   assert.ok(!text.includes('много пустых'));
   assert.ok(text.includes('П1213 800ГрЗвездочетик1 — 0') && text.includes('П1204 1КгПраздничный1 — 100\nП1205 1КгПраздничный2 — 50\nП1206 1КгПраздничный4 — 25'));
 });
+
+// ---- бирки: размер в начале артикула
+const tagCatalog = [
+  { article: '18162БЕЛЫЙ1000', name: 'Бирка садовая 18х162 мм белая 1000 шт' },
+  { article: '18162БЕЛЫЙ2000', name: 'Бирка садовая 18х162 мм белая 2000 шт' },
+  { article: '18162ЗЕЛЁНЫЙ1000', name: 'Бирка садовая 18х162 мм зелёная 1000 шт' },
+  { article: '20162БЕЛЫЙ1000', name: 'Бирка садовая 20х162 мм белая 1000 шт' },
+  { article: '13162БЕЛЫЙ1000', name: 'Бирка садовая 13х162 мм белая 1000 шт' },
+];
+
+test('бирки: размер ШxД → код, семьи разных размеров не склеиваются', () => {
+  const { sizeCode, sizeCandidates } = require('./match');
+  assert.strictEqual(sizeCode('Бирка садовая 18x162, белая'), '18162');
+  assert.strictEqual(sizeCode('Бирка 20x162(70) белая'), '20162');
+  assert.strictEqual(sizeCode('Бирка 13х162'), '13162'); // кириллическая «х»
+  assert.strictEqual(sizeCode('Бирка 20x200'), '20200');
+  assert.strictEqual(sizeCode('Набор 1x5'), null);
+  const { families } = buildFamilies(tagCatalog);
+  assert.strictEqual(families.length, 5);
+  assert.ok(families.every((f) => f.weightG === null)); // 18162 — не вес
+  const one = sizeCandidates({ name: 'Бирка садовая 18x162, белая, 1000 шт, вт. 40' }, families);
+  assert.deepStrictEqual(one.list.map((f) => f.base), ['18162БЕЛЫЙ1000']);
+  const two = sizeCandidates({ name: 'Бирка садовая 18x162' }, families);
+  assert.strictEqual(two.list.length, 3); // цвет и упаковка не названы — решает Елена
+});
+
+test('бирки: единственный подходящий подставляется без вопроса', async () => {
+  process.env.PRIHOD_NAME_MAP_PATH = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tag-')), 'm.json');
+  for (const m of ['./nameMap', './match']) delete require.cache[require.resolve(m)];
+  const { matchLines } = require('./match');
+  const { families } = buildFamilies(tagCatalog);
+  const r = await matchLines([{ name: 'Бирка садовая 18x162, белая, 1000 шт, вт. 40', unitWeightG: null }, { name: 'Бирка садовая 20x162(70) белая 1000 шт', unitWeightG: null }], families);
+  assert.strictEqual(r[0].status, 'matched');
+  assert.strictEqual(r[0].family.base, '18162БЕЛЫЙ1000');
+  assert.strictEqual(r[1].family.base, '20162БЕЛЫЙ1000');
+});
