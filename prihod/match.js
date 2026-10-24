@@ -2,7 +2,7 @@
 // выбор среди кандидатов — моделью, жёсткие правила различения — в коде.
 
 const Anthropic = require('@anthropic-ai/sdk');
-const { norm, tokens, trigrams, dice } = require('./text');
+const { norm, dense, tokens, trigrams, dice } = require('./text');
 const nameMap = require('./nameMap');
 
 const MAX_CANDIDATES = 5;
@@ -109,8 +109,11 @@ async function matchLines(lines, families) {
       if (fams.length > 1) { out[i] = { status: 'ambiguous', options: fams.slice(0, MAX_CANDIDATES), via: 'карта' }; return; }
       console.log(`[prihod] запись словаря «${entry.family}» не нашла семью в каталоге для «${line.name}» — ищу заново по названию`);
     }
-    // 2) кандидаты + модель
-    const cands = candidatesFor(line, families);
+    // 2) размер бирки (18x162 → 18162…) идёт первым; один подходящий — берём сами
+    const sz = sizeCandidates(line, families);
+    if (sz.list.length === 1) { out[i] = { status: 'matched', family: sz.list[0], via: `размер ${sz.code}` }; return; }
+    // 3) кандидаты + модель
+    const cands = [...sz.list, ...candidatesFor(line, families).filter((f) => !sz.list.includes(f))].slice(0, Math.max(MAX_CANDIDATES, sz.list.length));
     if (!cands.length) { out[i] = { status: 'none', via: 'нет кандидатов' }; return; }
     pending.push({ i, name: line.name, unitWeightG: line.unitWeightG, cands });
   });
@@ -136,6 +139,37 @@ async function matchLines(lines, families) {
   return out;
 }
 
+// Размер «ШxД» в накладной (18x162, 20x162(70), 20х200) → код 18162: артикулы
+// бирок начинаются с этих цифр. Самый сильный сигнал; дальше сужаем по числу
+// штук в упаковке (1000 шт) и цвету. Один остаток — подставляем сами.
+const SIZE_RE = /(\d{1,3})\s*[xхX×*]\s*(\d{1,3})(?:\s*\(\d+\))?/;
+
+function sizeCode(name) {
+  const m = SIZE_RE.exec(String(name || ''));
+  if (!m) return null;
+  const code = `${m[1]}${m[2]}`;
+  return code.length >= 4 ? code : null;
+}
+
+function sizeCandidates(line, families) {
+  const code = sizeCode(line.name);
+  if (!code) return { code: null, list: [] };
+  const startsWith = (f) => f.members.some((m) => String(m.article).replace(/\s/g, '').toLowerCase().startsWith(code));
+  let list = families.filter(startsWith);
+  if (list.length <= 1) return { code, list };
+  const hay = (f) => dense(`${f.base} ${f.members.map((m) => m.article).join(' ')}`);
+  const pack = /(\d{3,5})\s*шт/i.exec(line.name);
+  if (pack) {
+    const byPack = list.filter((f) => hay(f).includes(pack[1]));
+    if (byPack.length) list = byPack;
+  }
+  const words = (norm(line.name).match(/[а-я]{3,}/g) || []).filter((w) => !['шт', 'бирка', 'бирки', 'садовая', 'садовые'].includes(w));
+  const hits = (f) => words.filter((w) => hay(f).includes(w.slice(0, Math.max(3, w.length - 2)))).length;
+  const best = Math.max(...list.map(hits));
+  if (best > 0) list = list.filter((f) => hits(f) === best);
+  return { code, list };
+}
+
 // Повторная проверка «Нет в Озоне» после обновления каталога: без модели,
 // мягче порог; найденное по названию/артикулу НЕ подставляется само —
 // возвращаются кандидаты для кнопок.
@@ -143,4 +177,4 @@ function suggestForNone(line, families) {
   return candidatesFor(line, families, { minScore: 0.2, max: 4 });
 }
 
-module.exports = { suggestForNone, matchLines, candidatesFor, modelName, weightOk };
+module.exports = { sizeCode, sizeCandidates, suggestForNone, matchLines, candidatesFor, modelName, weightOk };

@@ -10,6 +10,7 @@ const { buildFamilies, findFamilyByArticle } = require('./family');
 const { matchLines, candidatesFor, suggestForNone } = require('./match');
 const { computePlan, checkTotals } = require('./plan');
 const nameMap = require('./nameMap');
+const { dense } = require('./text');
 const ostatki = require('./ostatki');
 const sheet = require('./sheet');
 const xlsx = require('./xlsxFill');
@@ -276,13 +277,25 @@ async function finishCollecting(chatId, s) {
 
 const famLabel = (f) => `${f.base} — ${f.title}`;
 
+// Артикулы, начинающиеся так же, как введённый (без регистра); не нашлось —
+// укорачиваем начало до 3 символов.
+function similarByStart(products, text, limit = 8) {
+  const typed = dense(text);
+  for (let n = typed.length; n >= Math.min(3, typed.length) && n > 0; n -= 1) {
+    const pre = typed.slice(0, n);
+    const found = products.filter((p) => !p.archived && dense(p.article).startsWith(pre)).slice(0, limit).map((p) => p.article);
+    if (found.length) return found;
+  }
+  return [];
+}
+
 async function askNextAmbiguous(chatId, s) {
   const line = s.lines.find((l) => !l.decision);
   if (!line) return showReview(chatId, s);
   const opts = (line.match.options || []).slice(0, 5);
   line.opts = opts;
   const rows = opts.map((f, i) => [{ text: famLabel(f).slice(0, 64), callback_data: `${CB}pick:${line.n}:${i}` }]);
-  rows.push([{ text: '🚫 Нет в Озоне', callback_data: `${CB}pick:${line.n}:x` }]);
+  rows.push([{ text: '✏️ Ввести артикул', callback_data: `${CB}art:${line.n}` }, { text: '🚫 Нет в Озоне', callback_data: `${CB}pick:${line.n}:x` }]);
   await send(chatId, `❓ Строка ${line.n}: «${line.name}» (${line.qty} шт${line.unitWeightG ? `, ${line.unitWeightG} г` : ''}) — неоднозначно. Какой товар?`, kb(rows));
 }
 
@@ -416,8 +429,8 @@ async function handleText(msg) {
       if (raw) {
         await bot.sendMessage(chatId, `Артикул ${raw.article} есть в Озоне, но не попал в семьи (${raw.archived ? 'в архиве' : 'размер набора не из списка 1/2/3/4/5/6/8/10/12/20'}). Укажи другой или оставь «Нет в Озоне».`);
       } else {
-        const near = searchProducts(s.products, msg.text, 5).map((p) => p.article);
-        await bot.sendMessage(chatId, `Артикула «${msg.text.trim()}» нет в каталоге Озона.${near.length ? `\nПохожие: ${near.join(', ')}` : ''}\nНапиши ещё раз или нажми «Назад».`);
+        const near = similarByStart(s.products, msg.text);
+        await bot.sendMessage(chatId, `Артикула «${msg.text.trim()}» нет в каталоге Озона.${near.length ? `\nПохожие по началу: ${near.join(', ')}` : ''}\nПришли артикул ещё раз.`);
       }
       return true;
     }
@@ -425,7 +438,8 @@ async function handleText(msg) {
     l.decision = { status: 'matched', family: fam, via: 'артикул от Елены' };
     try { nameMap.remember(l.name, fam); } catch (err) { console.error('[prihod] карта названий:', err.message); }
     await bot.sendMessage(chatId, `Принято: «${l.name}» → ${fam.base} (наборы ${fam.members.map((m) => m.pieces).join('/')} шт). Запомнила.`);
-    await showReview(chatId, s);
+    if (s.lines.some((x) => !x.decision)) await askNextAmbiguous(chatId, s);
+    else await showReview(chatId, s);
     return true;
   }
   const v = parseNum(msg.text);
