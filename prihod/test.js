@@ -439,3 +439,66 @@ test('бирки: единственный подходящий подставл
   assert.strictEqual(r[0].family.base, '18162БЕЛЫЙ1000');
   assert.strictEqual(r[1].family.base, '20162БЕЛЫЙ1000');
 });
+
+// ---- счёт № 56: «никогда не в Нет в Озоне сам», пометки, контроль полноты
+const stakeCatalog = [
+  { article: '9518КолышекЛента2000', name: 'Колышек в ленте 95х18 мм, рулон 2000 шт' },
+  { article: '9518КолышекЛента1000', name: 'Колышек в ленте 95х18 мм, рулон 1000 шт' },
+  { article: '12040ПлёнкаРулон', name: 'Плёнка рулон' },
+];
+
+test('строка без уверенного совпадения становится вопросом с кандидатами, а не «Нет в Озоне»', async () => {
+  const { looseCandidates } = require('./match');
+  const { applyResults, buildReport } = require('./flow');
+  const { families } = buildFamilies(stakeCatalog);
+  const line = { n: 1, name: 'Колышек в ленте, 95х18, 2000 шт. рул, вт.40', qty: 5, unitWeightG: null };
+  const c = looseCandidates(line, families, 4);
+  assert.ok(c.length >= 1 && c[0].base.startsWith('9518'));
+  const lines = [{ ...line }, { n: 2, name: 'Совсем неизвестная вещь', qty: 1, unitWeightG: null }];
+  applyResults(lines, [{ status: 'none', via: 'модель: нет' }, { status: 'none', via: 'нет кандидатов' }], families);
+  assert.strictEqual(lines[0].decision, null);
+  assert.strictEqual(lines[0].match.status, 'ambiguous');
+  assert.ok(lines[0].match.fromNone && lines[0].match.options.length >= 1);
+  assert.strictEqual(lines[1].decision, null); // даже без кандидатов — вопрос с кнопками «Ввести артикул» / «Нет в Озоне»
+  // память Елены («Нет в Озоне» по кнопке) уважается
+  const mem = [{ n: 3, name: 'x', qty: 1 }];
+  applyResults(mem, [{ status: 'none', via: 'запомнено: нет в Озоне' }], families);
+  assert.strictEqual(mem[0].decision.status, 'none');
+});
+
+test('пометки: «нет» и другое число; сверка по напечатанному; контроль полноты', () => {
+  const { buildReport } = require('./flow');
+  const { families } = buildFamilies(realCatalog);
+  const fam = families.find((f) => f.base === '350ГрЛюбимыеКонфета');
+  const lines = [
+    { n: 1, name: 'Любимые', qty: 93, origQty: 100, sum: 1000, decision: { status: 'matched', family: fam }, arithmetic: true },
+    { n: 2, name: 'Колышек', qty: 5, sum: 500, decision: { status: 'not_arrived' }, arithmetic: true },
+    { n: 3, name: 'Нет в каталоге', qty: 2, sum: 100, decision: { status: 'none' }, arithmetic: true },
+  ];
+  const { text, plan } = buildReport({ lines, printedTotal: 1600 });
+  assert.ok(plan.check.ok); // по напечатанным суммам
+  assert.ok(text.includes('Не пришло по пометке:\n• Колышек — 5 шт'));
+  assert.ok(text.includes('• Любимые: было 100 → стало 93 (по пометке)'));
+  assert.ok(text.includes('Расхождение из-за пометок: 12 шт')); // 7 + 5
+  assert.ok(!text.includes('✅'));
+  assert.ok(!text.includes('Не обработано строк'));
+  assert.deepStrictEqual(plan.items.slice(0, 1).map((i) => i.qty), [93]);
+  // потерянная строка (нет решения) → предупреждение
+  const lost = buildReport({ lines: [...lines, { n: 4, name: 'Потерянная', qty: 1, sum: 0, decision: null }], printedTotal: 1600 }).text;
+  assert.ok(lost.startsWith('⚠️ Не обработано строк: 1\n• 4. Потерянная'));
+  // без пометок — обычный ✅
+  const plain = buildReport({ lines: [lines[2], { ...lines[0], origQty: undefined, qty: 100 }], printedTotal: 1100 }).text;
+  assert.ok(plain.includes('Сумма строк = Итого накладной ✅'));
+});
+
+test('распознавание пометок: уверенное «нет», число, неуверенное → вопрос', () => {
+  const a = prepareLine({ n: 1, name: 'А', qty: 100, price: 10, sum: 1000, handwritten: { kind: 'not_arrived', text: 'нет', confident: true } });
+  assert.deepStrictEqual([a.mark.kind, a.mark.pending, a.qty], ['not_arrived', false, 100]);
+  const b = prepareLine({ n: 2, name: 'Б', qty: 100, price: 10, sum: 1000, handwritten: { kind: 'qty_changed', qty: 93, text: '93 шт', confident: true } });
+  assert.deepStrictEqual([b.mark.kind, b.mark.qty, b.mark.pending], ['qty_changed', 93, false]);
+  const c = prepareLine({ n: 3, name: 'В', qty: 100, price: 10, sum: 1000, handwritten: { kind: 'qty_changed', qty: 93, confident: false } });
+  assert.strictEqual(c.mark.pending, true);
+  const d = prepareLine({ n: 4, name: 'Г', qty: 100, price: 10, sum: 1000, handwritten: { kind: 'qty_changed', qty: null } });
+  assert.deepStrictEqual([d.mark.kind, d.mark.pending], ['unclear', true]);
+  assert.strictEqual(prepareLine({ n: 5, name: 'Д', qty: 1, price: 1, sum: 1 }).mark, null);
+});

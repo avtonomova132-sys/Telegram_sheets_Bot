@@ -31,7 +31,9 @@ function computePlan(lines, printedTotal, printedNoVat = null) {
   const active = lines.filter((l) => l.decision && l.decision.status !== 'removed');
   const groups = new Map(); // family.id → {family, total, lines:[n]}
   const notInOzon = [];
+  const notArrived = [];
   for (const l of active) {
+    if (l.decision.status === 'not_arrived') { notArrived.push(l); continue; } // сумма в сверке остаётся
     if (l.decision.status === 'none') { notInOzon.push(l); continue; }
     const fam = l.decision.family;
     let g = groups.get(fam.id);
@@ -58,7 +60,10 @@ function computePlan(lines, printedTotal, printedNoVat = null) {
     const missing = Math.round(notInOzon.reduce((x, l) => x + (l.sum || 0), 0) * 100) / 100;
     check.reason += ` (в сумме есть «Нет в Озоне»: ${missing.toFixed(2)})`;
   }
-  return { groups: [...groups.values()], items, remainders, zeroSets, notInOzon, sumLines, check };
+  // Правки по пометкам: считаем расхождение с напечатанным количеством.
+  const edited = active.filter((l) => l.origQty !== undefined && l.decision.status !== 'not_arrived' && l.origQty !== l.qty);
+  const markDiff = edited.reduce((x, l) => x + (l.origQty - l.qty), 0) + notArrived.reduce((x, l) => x + (l.qty || 0), 0);
+  return { groups: [...groups.values()], items, remainders, zeroSets, notInOzon, notArrived, edited, markDiff, sumLines, check };
 }
 
 module.exports = { computePlan, checkTotals };
