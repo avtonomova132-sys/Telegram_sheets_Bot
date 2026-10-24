@@ -7,7 +7,7 @@ const path = require('path');
 const { readInvoicePhoto, rereadLine, prepareLine, arithmeticOk } = require('./recognize');
 const { getCatalog, searchProducts } = require('./catalog');
 const { buildFamilies, findFamilyByArticle } = require('./family');
-const { matchLines, candidatesFor, suggestForNone } = require('./match');
+const { matchLines, candidatesFor, looseCandidates } = require('./match');
 const { computePlan, checkTotals } = require('./plan');
 const nameMap = require('./nameMap');
 const { dense } = require('./text');
@@ -155,6 +155,12 @@ async function handleDocument(msg) {
 }
 
 // ---------- сопоставление ----------
+// Рукописное число вместо печатного: в файл идёт оно, исходное запоминаем.
+function applyQtyMark(l) {
+  l.origQty = l.qty;
+  l.qty = l.mark.qty * (l.packMult || 1);
+}
+
 const numOrNull = (v) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
 
 function assemble(s, versions) {
@@ -219,31 +225,30 @@ async function verifyReadings(s) {
   }
 }
 
-function applyResults(lines, results) {
+// Бот НИКОГДА не относит строку в «Нет в Озоне» сам: нет уверенного совпадения —
+// вопрос «Какой товар?» с лучшими кандидатами. «Нет» только по кнопке Елены
+// (или из её прежнего решения в словаре).
+function applyResults(lines, results, families) {
   lines.forEach((l, i) => {
-    const r = results[i];
+    let r = results[i];
+    if (r.status === 'none' && !String(r.via).startsWith('запомнено')) {
+      r = { status: 'ambiguous', options: looseCandidates(l, families, 4), via: r.via, fromNone: true };
+    }
     l.match = r;
     l.decision = r.status === 'matched' ? { status: 'matched', family: r.family, via: r.via }
       : r.status === 'none' ? { status: 'none', via: r.via } : null;
   });
 }
 
-// «Нет в Озоне» (не из памяти Елены): обновляем каталог, если он был из кэша,
-// и предлагаем кнопки с кандидатами, найденными по названию ИЛИ артикулу.
+// Вопросы без кандидатов при кэшированном каталоге: обновляем каталог один раз и ищем заново.
 async function refineNone(s, cached) {
-  const auto = () => s.lines.filter((l) => l.decision && l.decision.status === 'none' && !String(l.match.via).startsWith('запомнено'));
-  if (!auto().length) return;
-  if (cached) {
-    const fresh = await getCatalog({ force: true });
-    s.products = fresh.products;
-    s.families = buildFamilies(fresh.products).families;
-    const lines = auto();
-    applyResults(lines, await matchLines(lines, s.families));
-  }
-  for (const l of auto()) {
-    const sug = suggestForNone(l, s.families);
-    if (sug.length) { l.match = { status: 'ambiguous', options: sug, via: 'по артикулу' }; l.decision = null; }
-  }
+  const open = () => s.lines.filter((l) => l.match && l.match.fromNone && !l.decision);
+  if (!cached || !open().length) return;
+  const fresh = await getCatalog({ force: true });
+  s.products = fresh.products;
+  s.families = buildFamilies(fresh.products).families;
+  const lines = open();
+  applyResults(lines, await matchLines(lines, s.families), s.families);
 }
 
 async function finishCollecting(chatId, s) {
@@ -265,7 +270,13 @@ async function finishCollecting(chatId, s) {
     const cat = await getCatalog();
     s.products = cat.products;
     s.families = buildFamilies(cat.products).families;
-    applyResults(s.lines, await matchLines(s.lines, s.families));
+    // Уверенное «нет»/зачёркнуто: строка не пришла — в сопоставление не идёт.
+    for (const l of s.lines) {
+      if (l.mark && !l.mark.pending && l.mark.kind === 'not_arrived') l.decision = { status: 'not_arrived', via: 'пометка' };
+      else if (l.mark && !l.mark.pending && l.mark.kind === 'qty_changed') applyQtyMark(l);
+    }
+    const toMatch = s.lines.filter((l) => !l.decision || l.decision.status !== 'not_arrived');
+    applyResults(toMatch, await matchLines(toMatch, s.families), s.families);
     await refineNone(s, cat.cached);
     s.state = 'resolving';
     await askNextAmbiguous(chatId, s);
@@ -289,14 +300,26 @@ function similarByStart(products, text, limit = 8) {
   return [];
 }
 
+async function askNextMark(chatId, s, line) {
+  const m = line.mark;
+  const rows = [];
+  if (m.qty !== null) rows.push([{ text: `Пришло ${fmt(m.qty)} шт`, callback_data: `${CB}mk:${line.n}:qty` }]);
+  rows.push([{ text: 'Не пришло', callback_data: `${CB}mk:${line.n}:no` }]);
+  rows.push([{ text: `Как в накладной (${fmt(line.qty)} шт)`, callback_data: `${CB}mk:${line.n}:ign` }]);
+  await send(chatId, `✍️ Строка ${line.n}: «${line.name}», в накладной ${fmt(line.qty)} шт. Рядом рукописная пометка${m.text ? ` «${m.text}»` : ''}, прочитала неуверенно. Что это?`, kb(rows));
+}
+
 async function askNextAmbiguous(chatId, s) {
+  const marked = s.lines.find((l) => l.mark && l.mark.pending);
+  if (marked) return askNextMark(chatId, s, marked);
   const line = s.lines.find((l) => !l.decision);
   if (!line) return showReview(chatId, s);
   const opts = (line.match.options || []).slice(0, 5);
   line.opts = opts;
   const rows = opts.map((f, i) => [{ text: famLabel(f).slice(0, 64), callback_data: `${CB}pick:${line.n}:${i}` }]);
   rows.push([{ text: '✏️ Ввести артикул', callback_data: `${CB}art:${line.n}` }, { text: '🚫 Нет в Озоне', callback_data: `${CB}pick:${line.n}:x` }]);
-  await send(chatId, `❓ Строка ${line.n}: «${line.name}» (${line.qty} шт${line.unitWeightG ? `, ${line.unitWeightG} г` : ''}) — неоднозначно. Какой товар?`, kb(rows));
+  const why = line.match.fromNone ? (opts.length ? 'не нашла уверенного совпадения, вот лучшие варианты' : 'ничего похожего в каталоге не нашла') : 'неоднозначно';
+  await send(chatId, `❓ Строка ${line.n}: «${line.name}» (${fmt(line.qty)} шт${line.unitWeightG ? `, ${line.unitWeightG} г` : ''}) — ${why}. Какой товар?`, kb(rows));
 }
 
 // ---------- отчёт ----------
@@ -304,6 +327,17 @@ function buildReport(s) {
   const plan = computePlan(s.lines, s.printedTotal, s.printedNoVat);
   s.plan = plan;
   const L = [];
+  // Контроль полноты: строк в накладной = в файле + «Нет в Озоне» + по пометке «нет» (+ убранные Еленой).
+  const status = (l) => (l.decision ? l.decision.status : null);
+  const inFile = s.lines.filter((l) => status(l) === 'matched' && Number(l.qty) > 0).length;
+  const removed = s.lines.filter((l) => status(l) === 'removed').length;
+  const handled = inFile + plan.notInOzon.length + plan.notArrived.length + removed;
+  if (handled !== s.lines.length) {
+    const lost = s.lines.filter((l) => !['none', 'not_arrived', 'removed'].includes(status(l)) && !(status(l) === 'matched' && Number(l.qty) > 0));
+    L.push(`⚠️ Не обработано строк: ${s.lines.length - handled}`);
+    for (const l of lost) L.push(`• ${l.n}. ${l.name}${l.qty ? '' : ' (не прочитано количество)'}`);
+    L.push('');
+  }
   L.push('📋 Проверь: что попадёт в файл');
   for (const g of plan.groups) {
     L.push('');
@@ -315,8 +349,24 @@ function buildReport(s) {
     L.push('🚫 Нет в Озоне:');
     for (const l of plan.notInOzon) L.push(`• ${l.name} — ${fmt(l.qty)} шт`);
   }
+  if (plan.notArrived.length) {
+    L.push('');
+    L.push('Не пришло по пометке:');
+    for (const l of plan.notArrived) L.push(`• ${l.name} — ${fmt(l.qty)} шт`);
+  }
+  if (plan.edited.length) {
+    L.push('');
+    L.push('Правки по пометкам:');
+    for (const l of plan.edited) L.push(`• ${l.name}: было ${fmt(l.origQty)} → стало ${fmt(l.qty)} (по пометке)`);
+  }
   L.push('');
-  L.push(plan.check.ok ? `${plan.check.reason} ✅` : `⚠️ ${plan.check.reason}`);
+  if (plan.notArrived.length || plan.edited.length) {
+    // Сверка идёт по НАПЕЧАТАННЫМ количествам и суммам; пометки — отдельной строкой, без ложного ✅.
+    L.push(plan.check.ok ? 'Сверка по напечатанным количествам: сумма строк = Итого накладной' : `⚠️ ${plan.check.reason}`);
+    L.push(`Расхождение из-за пометок: ${fmt(plan.markDiff)} шт`);
+  } else {
+    L.push(plan.check.ok ? `${plan.check.reason} ✅` : `⚠️ ${plan.check.reason}`);
+  }
   return { text: L.join('\n'), plan };
 }
 
@@ -360,6 +410,8 @@ async function build(chatId, s) {
     if (plan.remainders.length) console.log(`[prihod] остатки от деления: ${plan.remainders.map((r) => `${r.article} — ${r.remainder} шт`).join('; ')}`);
     if (plan.zeroSets.length) console.log(`[prihod] наборы с нулём (в файл не пишутся): ${plan.zeroSets.map((z) => z.article).join(', ')}`);
     if (plan.notInOzon.length) S.push(`Нет в Озоне: ${plan.notInOzon.map((l) => `${l.name} (${fmt(l.qty)} шт)`).join('; ')}.`);
+    if (plan.notArrived.length) S.push(`Не пришло по пометке: ${plan.notArrived.map((l) => l.name).join('; ')}.`);
+    if (plan.edited.length) S.push(`Правки по пометкам: ${plan.edited.map((l) => `${l.name} ${fmt(l.origQty)}→${fmt(l.qty)}`).join('; ')}.`);
     await send(chatId, S.join('\n'));
     sessions.delete(chatId);
   } catch (err) {
@@ -445,7 +497,7 @@ async function handleText(msg) {
   const v = parseNum(msg.text);
   if (v === null) { await bot.sendMessage(chatId, 'Нужно число, например 55 или 120,5.'); return true; }
   s.input = null;
-  if (kind === 'qty') { l.qty = v; l.printedQty = v; l.packMult = 1; l.flags = []; }
+  if (kind === 'qty') { l.qty = v; l.printedQty = v; l.packMult = 1; l.flags = []; delete l.origQty; l.mark = null; }
   if (kind === 'sum') { l.sum = v; l.flags = l.flags.filter((f) => !f.startsWith('кол-во×цена')); }
   if (kind === 'total') s.printedTotal = v;
   await showReview(chatId, s);
@@ -488,6 +540,14 @@ async function onCallback(query) {
     if (cmd === 'ok') {
       if (s.state !== 'review') return undefined;
       return await build(chatId, s);
+    }
+    if (op === 'mk') {
+      const l = s.lines.find((x) => x.n === n);
+      if (!l || !l.mark) return undefined;
+      if (b === 'no') { l.mark = { ...l.mark, kind: 'not_arrived', pending: false }; l.decision = { status: 'not_arrived', via: 'пометка' }; }
+      else if (b === 'qty') { l.mark = { ...l.mark, kind: 'qty_changed', pending: false }; applyQtyMark(l); }
+      else { l.mark = null; }
+      return await askNextAmbiguous(chatId, s);
     }
     if (cmd === 'artmenu') {
       const none = s.lines.filter((l) => l.decision && l.decision.status === 'none');
@@ -641,4 +701,4 @@ function init(botInstance, { isTrustedUser }) {
   return { handlePhoto, handleDocument, handleText };
 }
 
-module.exports = { init, buildReport };
+module.exports = { init, buildReport, applyResults };

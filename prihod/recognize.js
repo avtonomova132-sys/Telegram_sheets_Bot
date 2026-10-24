@@ -26,10 +26,16 @@ const SYSTEM = `Ты читаешь фото одного листа товар�
    "sum_no_vat": число|null,        // сумма по строке без НДС, если есть такая колонка
    "netto_kg": число|null,          // масса нетто по строке, если есть колонка
    "unit_weight_g": число|null,     // вес единицы: из названия (200 г, 1/180, 1/250, 1/1000 = граммы), иначе netto_kg*1000/qty
-   "sterilization_pack": true|false // пакеты для стерилизации Альянс Хим, где «1» = пачка 100 листов
+   "sterilization_pack": true|false, // пакеты для стерилизации Альянс Хим, где «1» = пачка 100 листов
+   "handwritten": null | {          // РУКОПИСНАЯ пометка возле строки (ручкой/карандашом), не печатный текст
+     "kind": "not_arrived" | "qty_changed" | "unclear", // «нет», строка зачёркнута / вместо печатного количества написано другое число / непонятно
+     "qty": число|null,             // для qty_changed — число из пометки (в тех же единицах, что и qty)
+     "text": "как написано",
+     "confident": true|false        // false, если пометку не удалось прочитать уверенно
+   }
  }]
 }
-Не выдумывай: нечитаемое число = null, а если нечитаемо много — legible=false. Числа — десятичные с точкой.`;
+qty и sum — ПЕЧАТНЫЕ значения; рукописное число никогда не подставляй в qty, а верни его в handwritten. Не выдумывай: нечитаемое число = null, а если нечитаемо много — legible=false. Числа — десятичные с точкой.`;
 
 // temperature 0 — чтение должно быть повторяемым; если модель параметр не
 // принимает, повторяем без него.
@@ -129,8 +135,16 @@ function prepareLine(raw) {
     const fr = /(?:^|[^\d])1\s*\/\s*(\d{2,4})(?!\d)/.exec(String(raw.name || ''));
     if (fr) unitWeightG = Number(fr[1]);
   }
+  // Рукописная пометка: «нет»/зачёркнуто → не пришло; другое число → правка количества.
+  let mark = null;
+  const hw = raw.handwritten;
+  if (hw && typeof hw === 'object' && ['not_arrived', 'qty_changed', 'unclear'].includes(hw.kind)) {
+    const markQty = num(hw.qty);
+    const kind = hw.kind === 'qty_changed' && markQty === null ? 'unclear' : hw.kind;
+    mark = { kind, qty: markQty, text: String(hw.text || '').trim(), pending: kind === 'unclear' || hw.confident === false };
+  }
   return {
-    n: raw.n, name: String(raw.name || '').trim(), qty, printedQty, packMult: mult, sterilization: Boolean(raw.sterilization_pack),
+    mark, n: raw.n, name: String(raw.name || '').trim(), qty, printedQty, packMult: mult, sterilization: Boolean(raw.sterilization_pack),
     price, sum, sumNoVat, nettoKg, y: num(raw.y), arithmetic, unitWeightG: raw.sterilization_pack ? null : unitWeightG, flags,
   };
 }

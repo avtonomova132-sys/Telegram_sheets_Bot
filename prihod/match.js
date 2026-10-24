@@ -2,7 +2,7 @@
 // выбор среди кандидатов — моделью, жёсткие правила различения — в коде.
 
 const Anthropic = require('@anthropic-ai/sdk');
-const { norm, dense, tokens, trigrams, dice } = require('./text');
+const { norm, dense, translit, tokens, trigrams, dice } = require('./text');
 const nameMap = require('./nameMap');
 
 const MAX_CANDIDATES = 5;
@@ -142,7 +142,7 @@ async function matchLines(lines, families) {
 // Размер «ШxД» в накладной (18x162, 20x162(70), 20х200) → код 18162: артикулы
 // бирок начинаются с этих цифр. Самый сильный сигнал; дальше сужаем по числу
 // штук в упаковке (1000 шт) и цвету. Один остаток — подставляем сами.
-const SIZE_RE = /(\d{1,3})\s*[xхX×*]\s*(\d{1,3})(?:\s*\(\d+\))?/;
+const SIZE_RE = /(\d{1,3})\s*[xхXХ×*]\s*(\d{1,3})(?:\s*\(\d+\))?/;
 
 function sizeCode(name) {
   const m = SIZE_RE.exec(String(name || ''));
@@ -170,6 +170,38 @@ function sizeCandidates(line, families) {
   return { code, list };
 }
 
+// Строка без уверенного совпадения НЕ уходит в «Нет в Озоне» сама: Елена
+// получает вопрос с лучшими кандидатами (до 4). Ищем по размеру (оба порядка:
+// 95х18 и 18х95), по нечёткому сходству и по ключевым словам/числам названия.
+function looseCandidates(line, families, max = 4) {
+  const out = [];
+  const add = (f) => { if (f && !out.includes(f)) out.push(f); };
+  sizeCandidates(line, families).list.forEach(add);
+  const m = SIZE_RE.exec(String(line.name || ''));
+  if (m && `${m[2]}${m[1]}`.length >= 4) {
+    const rev = `${m[2]}${m[1]}`;
+    families.filter((f) => f.members.some((x) => String(x.article).replace(/\s/g, '').toLowerCase().startsWith(rev))).forEach(add);
+  }
+  candidatesFor(line, families, { minScore: 0.1, max: 8 }).forEach(add);
+
+  const inv = norm(line.name);
+  const words = (inv.match(/[a-zа-я]{3,}/g) || []).filter((w) => !['шт', 'рул', 'для', 'вт'].includes(w)).map((w) => translit(w)).map((w) => (w.length > 5 ? w.slice(0, 5) : w));
+  const nums = inv.match(/\d{2,}/g) || [];
+  const scored = [];
+  for (const f of families) {
+    if (out.includes(f)) continue;
+    const candText = norm(`${f.title} ${f.stems.join(' ')} ${f.base}`);
+    if (!RULES.every((r) => r(inv, candText))) continue;
+    if (!weightOk(line.unitWeightG, f.weightG)) continue;
+    const hay = translit(dense(`${f.title} ${f.base} ${f.members.map((x) => x.article).join(' ')}`));
+    const wordHits = words.filter((w) => hay.includes(w)).length;
+    const numHits = nums.filter((n) => hay.includes(n)).length;
+    if (wordHits >= 1 || numHits >= 2) scored.push({ f, score: wordHits * 2 + numHits });
+  }
+  scored.sort((a, b) => b.score - a.score).forEach((x) => add(x.f));
+  return out.slice(0, max);
+}
+
 // Повторная проверка «Нет в Озоне» после обновления каталога: без модели,
 // мягче порог; найденное по названию/артикулу НЕ подставляется само —
 // возвращаются кандидаты для кнопок.
@@ -177,4 +209,4 @@ function suggestForNone(line, families) {
   return candidatesFor(line, families, { minScore: 0.2, max: 4 });
 }
 
-module.exports = { sizeCode, sizeCandidates, suggestForNone, matchLines, candidatesFor, modelName, weightOk };
+module.exports = { looseCandidates, sizeCode, sizeCandidates, suggestForNone, matchLines, candidatesFor, modelName, weightOk };
