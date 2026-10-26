@@ -1267,41 +1267,6 @@ function notifyElena(text) {
   bot.sendMessage(myChatId, text).catch((err) => console.error('[weekly-announce] не удалось написать Елене:', err.message));
 }
 
-// ВРЕМЕННО (разово), правка Елены 26.10: @mih22 — обычный активный хост (без «на
-// уточнении»); @Darya_Marchenko9 — убрана из хостов, но на карточках сегодняшнего
-// эфира (AZ 26.10 18:45) её ❌ показан и посчитан (числитель и знаменатель), без
-// @ и без тега; новое превью напоминания заменяет висящее. В группу ничего не
-// уходит без «да» Елены. Маркер пишется ДО работы. Удалить после выполнения.
-(async () => {
-  const fs = require('fs');
-  const markerPath = process.env.ROSTER2_ONESHOT_MARKER_PATH || '/data/roster2_2026_10_26.json';
-  if (!myChatId || fs.existsSync(markerPath)) return;
-  try {
-    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
-  } catch (err) {
-    console.error('[roster2-oneshot] не удалось записать маркер, не запускаю:', err.message);
-    return;
-  }
-  try {
-    const realHosts = require('./hostsStore').hosts;
-    realHosts.setStatus('mih22', 'active');
-    const gone = realHosts.remove('Darya_Marchenko9'); // she stays out of the hosts
-    const marked = await cardButtons.addCountedExtraForEvent({ dateIso: '2026-10-26T00:00:00.000Z', azStartMin: 1125 }, 'Darya_Marchenko9');
-    console.log(`[roster2-oneshot] mih22 активен; Darya убрана: ${gone.ok}; карточек с разовым исключением: ${marked}; активных хостов: ${realHosts.tags().length}`);
-    const fromElena = { from: { id: Number(myChatId) }, chat: { type: 'private' } };
-    await hostAdmin.handleCommand(bot, fromElena, 'hosts', '');
-    await cardButtons.refreshCardsAfterHostListChange(bot);
-    const r = await cardButtons.rebuildReminderPreview(bot);
-    console.log(`[roster2-oneshot] превью напоминания: ${JSON.stringify({ ...r, tagged: (r.tagged || []).length })}`);
-    if (r.none) await bot.sendMessage(myChatId, 'Не нашла живой Анонс на эту неделю — превью напоминания не пересобрано.');
-    else if (r.skipped) await bot.sendMessage(myChatId, `Напоминание не нужно (${r.skipped}) — свободных эфиров на этой неделе не осталось.`);
-    else await bot.sendMessage(myChatId, `В новом превью затегано: ${(r.tagged || []).length} — ${(r.tagged || []).join(' ')}. @Darya_Marchenko9 в тегах нет (убрана из хостов), её ❌ показан и учтён только на карточке эфира 26.10; @anzhelikakarmolog — хост, пауза с 1.11 по 8.11.`);
-  } catch (err) {
-    console.error('[roster2-oneshot] ошибка:', err.message);
-    reportProblem(bot, 'roster2-oneshot', `Не получилось применить правку состава хостов: ${err.message}`, 0).catch(() => {});
-  }
-})();
-
 // Прямая воскресная авторассылка В ГРУППУ УДАЛЕНА (Елена, 2026-10-21): в группу
 // без её подтверждения ничего не уходит. Вместо неё — расписание с превью
 // «Елене в личку → кнопка/да/нет → группа»: cardButtons.js, weekSchedulerTick
