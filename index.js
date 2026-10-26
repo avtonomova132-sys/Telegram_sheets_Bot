@@ -1947,6 +1947,9 @@ setTimeout(() => {
   weekSchedulerTick(bot).catch((err) => console.error('[week-schedule] ошибка тика при старте:', err.message));
 }, 45 * 1000);
 
+// Еженедельное напоминание об обучении «Хочу быть хостом» (trainingReminder.js).
+require('./trainingReminder').init(bot, { cron, ownerId: myChatId });
+
 // /yes, /no — ответ на превью (то же, что кнопки «Отправить» / «Не отправлять»);
 // /announce [next|this|ГГГГ-ММ-ДД] — подготовить превью Анонса вручную (по
 // умолчанию на следующую неделю). Только Елене в личке.
