@@ -16,7 +16,6 @@ const TEST_GROUP_ID = Number(process.env.TEST_GROUP_CHAT_ID) || -5172293748;
 const BALI_MS = 8 * 3600 * 1000;
 const CATCHUP_MS = 3 * 3600 * 1000;
 const DAY_MS = 24 * 3600 * 1000;
-const NO_LINK = '⚠️ ссылка не задана';
 
 const elenaChatId = () => (process.env.MY_CHAT_ID ? Number(process.env.MY_CHAT_ID) : null);
 
@@ -66,19 +65,19 @@ const dueAtOf = (mondayKey) => Date.parse(`${mondayKey}T06:00:00Z`);
 const isBaliMonday = (now) => new Date(now + BALI_MS).getUTCDay() === 1;
 
 // ---- text ----
-const MESSAGE = `🎓 Tomorrow we have our training meeting "I want to be a host"!
-We'll go step by step through everything you need to host a broadcast. Come if you'd like to try, or just to refresh your knowledge.
-🕐 Tue 07:00 Moscow · Tue 12:00 Bali · Mon 21:00 Arizona
-🔗 Zoom: {LINK}
-Welcome! 🙏
+const MESSAGE = `🎓 Завтра состоится наша встреча-обучение «Хочу быть хостом»!
 
-🎓 Завтра состоится наша встреча-обучение «Хочу быть хостом»!
 Шаг за шагом разберём, что нужно, чтобы провести эфир в роли хоста. Приходите, если хотите попробовать свои силы или освежить знания.
-🕐 Вт 07:00 по Москве · Вт 12:00 по Бали · Пн 21:00 по Аризоне
-🔗 Zoom: {LINK}
+
+🕐 Вт 07:00 по Москве
+Вт 12:00 по Бали · Пн 21:00 по Аризоне
+
+{LINK_LINE}
+
 Ждём вас! 🙏`;
 
-const messageText = (link) => MESSAGE.split('{LINK}').join(link || NO_LINK);
+// No link yet → this line stands in; the warning "link not set" is only for Elena above the preview.
+const messageText = (link) => MESSAGE.replace('{LINK_LINE}', link ? `🔗 Zoom: ${link}` : '🔗 Ссылка на Zoom появится здесь завтра за 10 минут до начала, в 06:50 по Москве.');
 
 function statusLine(s) {
   return [
@@ -118,13 +117,12 @@ async function createPreview(bot, { now = Date.now(), weekKey = baliMondayKey(no
   const id = `t${weekKey.replace(/-/g, '')}n${seq}`;
   const lines = [];
   if (note) lines.push(note, '');
-  if (!link) lines.push('⚠️ Ссылка на Zoom не задана — задайте командой /training_link ссылка. Кнопка «Отправить» появится в новом превью, которое я пришлю сразу после этого.', '');
+  if (!link) lines.push('⚠️ Ссылка на Zoom не задана — в тексте для группы стоит строка «ссылка появится завтра в 06:50 по Москве». Задать ссылку: /training_link ссылка (пришлю новое превью).', '');
   if (!isBaliMonday(now)) lines.push('ℹ️ Сегодня не понедельник — в тексте написано «завтра».', '');
-  lines.push(link ? '👆 Превью напоминания об обучении «Хочу быть хостом» — вот что уйдёт в группу WorldView Productions (тема General), без кнопок и тегов:' : 'Так выглядит напоминание об обучении (в группу не уйдёт, пока нет ссылки):', '', '───────────', messageText(link), '───────────');
-  if (link) lines.push('', HOW_TO_ANSWER);
-  const sent = await tellElena(bot, lines.join('\n'), link ? { reply_markup: { inline_keyboard: keyboard(id) } } : {});
+  lines.push('👆 Превью напоминания об обучении «Хочу быть хостом» — вот что уйдёт в группу WorldView Productions (тема General), без кнопок и тегов:', '', '───────────', messageText(link), '───────────', '', HOW_TO_ANSWER);
+  const sent = await tellElena(bot, lines.join('\n'), { reply_markup: { inline_keyboard: keyboard(id) } });
   update((st) => {
-    st.pending = { id, weekKey, status: link ? 'pending' : 'nolink', link: link || null, controlMessageId: sent.message_id, createdAt: now };
+    st.pending = { id, weekKey, status: 'pending', link: link || null, controlMessageId: sent.message_id, createdAt: now };
   });
   return { id, link: Boolean(link) };
 }
@@ -147,13 +145,7 @@ async function confirm(bot, id, approve) {
     });
     return tellElena(bot, 'Хорошо, напоминание об обучении в группу не отправляю.');
   }
-  if (!s.link) {
-    update((st) => {
-      st.pending.status = 'nolink';
-    });
-    return tellElena(bot, '⚠️ Ссылка на Zoom не задана — не отправляю. Задайте /training_link ссылка, пришлю новое превью.');
-  }
-  if (p.link !== s.link) {
+  if ((p.link || null) !== (s.link || null)) {
     // the link changed after the preview was made → show the actual text again
     await createPreview(bot, { weekKey: p.weekKey, note: '🔄 Ссылка изменилась с момента превью — вот обновлённый текст.' });
     return;
@@ -193,7 +185,7 @@ async function tick(bot, now = Date.now()) {
     if (due >= activatedAt) await tellElena(bot, '⚠️ Превью напоминания об обучении не удалось подготовить вовремя (бот был недоступен больше 3 часов). Прислать сейчас: /training_now');
     return;
   }
-  if (start.auto && start.link) {
+  if (start.auto) {
     update((st) => {
       st.done[weekKey] = { at: now, outcome: 'auto-sent' };
     });
@@ -202,9 +194,9 @@ async function tick(bot, now = Date.now()) {
     return;
   }
   update((st) => {
-    st.done[weekKey] = { at: now, outcome: start.link ? 'preview' : 'preview-nolink' };
+    st.done[weekKey] = { at: now, outcome: 'preview' };
   });
-  await createPreview(bot, { now, weekKey, note: start.auto ? '⚠️ Автомат включён, но ссылки на Zoom нет — отправить сам не могу.' : null });
+  await createPreview(bot, { now, weekKey });
 }
 
 // ---- Elena's commands (private chat, her only) ----
@@ -286,16 +278,14 @@ function handleYesNo(bot, msg, command, otherNewestAt = 0) {
   return true;
 }
 
-// One-off (26.10.2026): the weekly slot of this week is already past → preview now and a test into «Дебаты».
+// One-off (26.10.2026): the weekly slot of this week is already past → a new preview now (new text).
 async function runOneShot(bot, now = Date.now()) {
   const weekKey = baliMondayKey(now);
   update((st) => {
     st.done[weekKey] = { at: now, outcome: 'one-shot' }; // the regular tick must not repeat it this week
     if (!st.activatedAt) st.activatedAt = now;
   });
-  const s = readState();
-  await postToGroup(bot, TEST_GROUP_ID, s.link, '🧪 [Дебаты, тест]\n\n');
-  await serial(() => createPreview(bot, { now, weekKey, note: '🎓 Разовое превью на завтрашнюю встречу (вт 27.10). Тест такого же текста я отправила в «Дебаты».' }));
+  await serial(() => createPreview(bot, { now, weekKey, note: '🔄 Новое превью на завтрашнюю встречу (вт 27.10) с исправленным текстом — предыдущее заменено.' }));
 }
 
 module.exports = { tick, handleCommand, handleCallback, handleTextReply, handleYesNo, runOneShot, createPreview, messageText, baliMondayKey, dueAtOf, STATE_PATH };
