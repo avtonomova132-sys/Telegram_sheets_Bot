@@ -1267,6 +1267,45 @@ function notifyElena(text) {
   bot.sendMessage(myChatId, text).catch((err) => console.error('[weekly-announce] не удалось написать Елене:', err.message));
 }
 
+// ВРЕМЕННО (разово), по просьбе Елены 26.10: новый состав хостов (10), @mih22 и
+// @Darya_Marchenko9 — «на уточнении» (вопрос кнопками), пауза @anzhelikakarmolog с
+// 1.11 до 8.11, пересборка сегодняшнего превью напоминания (старое отменяется).
+// Всё — Елене в личку; в группу ничего не уходит без её «да». Маркер пишется ДО работы.
+// Удалить после выполнения.
+(async () => {
+  const fs = require('fs');
+  const markerPath = process.env.ROSTER_ONESHOT_MARKER_PATH || '/data/roster_2026_10_26.json';
+  if (!myChatId || fs.existsSync(markerPath)) return;
+  try {
+    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
+  } catch (err) {
+    console.error('[roster-oneshot] не удалось записать маркер, не запускаю:', err.message);
+    return;
+  }
+  try {
+    const realHosts = require('./hostsStore').hosts;
+    const at = (d) => Date.parse(`${d}T01:00:00Z`); // 09:00 по Бали
+    const report = realHosts.applyRoster({
+      active: ['khomenko_anastasia', 'MyLan0608', 'OLESYA_POZOVA', 'acketwell', 'KENTARO_MITSUHASHI', 'lp129eric1', 'anzhelikakarmolog', 'evgenygladkikh', 'lethanhan', 'SmitAnin'],
+      hold: ['mih22', 'Darya_Marchenko9'],
+      pauses: [{ user: 'anzhelikakarmolog', from: at('2026-11-01'), until: at('2026-11-08') }],
+    });
+    console.log(`[roster-oneshot] состав применён: ${JSON.stringify(report)}; активных: ${realHosts.tags().length}`);
+    const fromElena = { from: { id: Number(myChatId) }, chat: { type: 'private' } };
+    await hostAdmin.handleCommand(bot, fromElena, 'hosts', '');
+    await hostAdmin.askHoldQuestions(bot, hostAdmin.CONTEXTS.p, ['mih22', 'Darya_Marchenko9']);
+    await cardButtons.refreshCardsAfterHostListChange(bot);
+    const r = await cardButtons.rebuildReminderPreview(bot);
+    console.log(`[roster-oneshot] превью напоминания: ${JSON.stringify({ ...r, tagged: (r.tagged || []).length })}`);
+    if (r.none) await bot.sendMessage(myChatId, 'Не нашла живой Анонс на эту неделю — превью напоминания не пересобрано.');
+    else if (r.skipped) await bot.sendMessage(myChatId, `Напоминание не нужно (${r.skipped}) — свободных эфиров на этой неделе не осталось.`);
+    else await bot.sendMessage(myChatId, `В обновлённом превью будет затегано: ${(r.tagged || []).length} — ${(r.tagged || []).join(' ')}. На уточнении (@mih22, @Darya_Marchenko9) и на паузе с 1.11 (@anzhelikakarmolog) не тегаются.`);
+  } catch (err) {
+    console.error('[roster-oneshot] ошибка:', err.message);
+    reportProblem(bot, 'roster-oneshot', `Не получилось применить новый состав хостов: ${err.message}`, 0).catch(() => {});
+  }
+})();
+
 // Прямая воскресная авторассылка В ГРУППУ УДАЛЕНА (Елена, 2026-10-21): в группу
 // без её подтверждения ничего не уходит. Вместо неё — расписание с превью
 // «Елене в личку → кнопка/да/нет → группа»: cardButtons.js, weekSchedulerTick
@@ -1955,6 +1994,9 @@ setTimeout(() => {
 bot.onText(/^\/hosts(?:@\S+)?(?:\s+(\S+))?\s*$/i, (msg, match) => hostAdmin.handleCommand(bot, msg, 'hosts', match && match[1]));
 bot.onText(/^\/host_add(?:@\S+)?(?:\s+(.+?))?\s*$/i, (msg, match) => hostAdmin.handleCommand(bot, msg, 'host_add', match && match[1]));
 bot.onText(/^\/host_remove(?:@\S+)?(?:\s+(.+?))?\s*$/i, (msg, match) => hostAdmin.handleCommand(bot, msg, 'host_remove', match && match[1]));
+// Пауза хоста «до даты» (не тегается, не считается в «из N», не в сводках) и возврат.
+bot.onText(/^\/host_pause(?:@\S+)?(?:\s+(.+?))?\s*$/i, (msg, match) => hostAdmin.handleCommand(bot, msg, 'host_pause', match && match[1]));
+bot.onText(/^\/host_resume(?:@\S+)?(?:\s+(.+?))?\s*$/i, (msg, match) => hostAdmin.handleCommand(bot, msg, 'host_resume', match && match[1]));
 // Вступление/выход участников группы → вопрос Елене (ничего не меняется без её ответа).
 bot.on('chat_member', (update) => hostAdmin.onChatMember(bot, update).catch((err) => console.error('[hosts] chat_member:', err.message)));
 bot.on('new_chat_members', (msg) => hostAdmin.onNewMembers(bot, msg).catch((err) => console.error('[hosts] new_chat_members:', err.message)));

@@ -137,7 +137,15 @@ function tagMatchesUser(tag, user) {
 }
 
 function isHost(user, candidateTags) {
-  return Boolean(user) && candidateTags.some((t) => tagMatchesUser(t, user));
+  if (!user) return false;
+  // candidateTags = the ACTIVE hosts; a host who is on hold or paused still counts as a host when pressing
+  return candidateTags.some((t) => tagMatchesUser(t, user)) || Boolean(hostsStore.hosts.findByUser(user));
+}
+
+// Name without "@" — in the card's status block nobody is tagged (a mention would
+// notify people who already answered).
+function plainName(user) {
+  return user.username || [user.first_name, user.last_name].filter(Boolean).join(' ') || 'участник';
 }
 
 function displayName(user) {
@@ -159,10 +167,10 @@ function refusalCounterBlock(refusers, candidateTags) {
   const rest = candidateTags.filter((t) => !hostRefusers.some((r) => tagMatchesUser(t, r)));
   const m = candidateTags.length;
   const lines = [
-    `❌ <b>Can't do it / Не могут (${hostRefusers.length} of ${m} / из ${m}):</b> ${hostRefusers.map((r) => displayName(r)).join(', ')}`,
+    `❌ <b>Can't do it / Не могут (${hostRefusers.length} of ${m} / из ${m}):</b> ${hostRefusers.map((r) => escapeHtml(plainName(r))).join(', ')}`,
   ];
   if (rest.length > 0) {
-    lines.push(`<b>Haven't responded yet / Ещё не отметились:</b> ${rest.map((t) => escapeHtml(formatCommunityTag(t))).join(', ')}`);
+    lines.push(`<b>Haven't responded yet / Ещё не отметились:</b> ${rest.map((t) => escapeHtml(String(t).replace(/^@/, ''))).join(', ')}`);
   }
   return lines.join('\n');
 }
@@ -172,7 +180,7 @@ function cardText(record) {
   if (record.hosted) {
     lines.push(`👤 <b>Host / Хост:</b> ${escapeHtml(record.hosted.name)}`);
   } else if (record.reservedBy) {
-    lines.push(`⏳ <b>Reserved by / Зарезервировал(а):</b> ${escapeHtml(displayName(record.reservedBy))}`);
+    lines.push(`⏳ <b>Reserved by / Зарезервировал(а):</b> ${escapeHtml(plainName(record.reservedBy))}`);
   } else {
     const counter = refusalCounterBlock(record.refusers, record.candidateTags);
     // Blank line + a small bold header separates the volunteer-response
@@ -1645,7 +1653,7 @@ async function createAnnouncePreview(bot, { monday, now = Date.now(), prevItems 
 // ---- B) Reminder preview ----
 const reminderSignature = (store, batch, plan) => JSON.stringify([plan.free.map((f) => f.key).sort(), unrespondedHosts(store, batch).map(normUser).sort()]);
 
-async function createReminderPreview(bot, batchKey, { now = Date.now(), prevItems = null } = {}) {
+async function createReminderPreview(bot, batchKey, { now = Date.now(), prevItems = null, note = null } = {}) {
   const elena = elenaChatId();
   if (!elena) throw new Error('MY_CHAT_ID не задан — некому слать превью');
   const store = readJson({ messages: {}, batches: [] });
@@ -1676,6 +1684,7 @@ async function createReminderPreview(bot, batchKey, { now = Date.now(), prevItem
   const id = `r${Math.abs(batch.chatId)}_${batch.headerMessageId}`;
   const range = weekRangeOfBatch(store, batch);
   const text = [
+    note,
     prevItems ? diffNote(prevItems, items) : null,
     `👆 <b>Превью напоминания</b> — свободных эфиров: ${plan.free.length}, не отметились ни разу: ${plan.tagged}. В группе оно уйдёт ответом на шапку Анонса, под карточками будут рабочие кнопки. Отправить?`,
     HOW_TO_ANSWER,
@@ -1704,7 +1713,34 @@ async function createReminderPreview(bot, batchKey, { now = Date.now(), prevItem
       b.outcome = 'preview';
     }
   });
-  return { preview: true, id, free: plan.free.length };
+  return { preview: true, id, free: plan.free.length, tagged: unrespondedHosts(store, batch) };
+}
+
+// Cancel the reminder preview that is waiting for Elena (if any) and build a new
+// one from the current host list — used after the roster changed.
+async function rebuildReminderPreview(bot, now = Date.now()) {
+  return runSerialStrict(async () => {
+    const store = readJson({ messages: {}, batches: [] });
+    const monday = isoOf(baliMonday(now));
+    const batches = (store.batches || [])
+      .filter((b) => b.chatId === WVP_GROUP_ID && b.kind !== 'urgent' && isLiveBatch(b, now))
+      .filter((b) => {
+        const r = weekRangeOfBatch(store, b);
+        return r && isoOf(r.start) === monday;
+      })
+      .sort((a, b) => b.sentAt - a.sentAt);
+    if (batches.length === 0) return { none: true };
+    const batch = batches[0];
+    const key = batchId(batch);
+    for (const p of pendingList().filter((x) => x.kind === 'reminder' && x.batchKey === key)) {
+      updateScheduler((s) => {
+        s.pending[p.id].status = 'cancelled';
+      });
+      await removeButtons(bot, p);
+    }
+    const res = await createReminderPreview(bot, key, { now, note: '🔄 <b>Обновлённое превью</b> — список хостов изменился; предыдущее превью отменено.' });
+    return { ...res, batchKey: key };
+  });
 }
 
 // ---- The answer: button, "да"/"нет" reply, /yes, /no ----
@@ -2258,6 +2294,7 @@ module.exports = {
   batchSummaries,
   weekSchedulerTick,
   runTuesdayPreview,
+  rebuildReminderPreview,
   urgentStep,
   runUrgentTest,
   noteHostSeen,

@@ -90,8 +90,21 @@ function createHostsStore({ filePath, seedFrom = null, initial = null } = {}) {
     return result;
   }
 
+  // A host is ACTIVE (tagged, counted in "N of M") unless "on hold" (waiting for
+  // Elena's answer whether to keep them) or inside a pause window. Presses and
+  // answers of non-active hosts are still recognised as a host's — they are just
+  // never tagged or counted in the denominator.
+  function isActive(h, now = Date.now()) {
+    if (h.status === 'hold') return false;
+    const p = h.pause;
+    if (p && now >= p.from && now < p.until) return false;
+    return true;
+  }
+  const statusOf = (h, now = Date.now()) => (h.status === 'hold' ? 'hold' : isActive(h, now) ? 'active' : 'paused');
+
   const entries = () => read().hosts.map((h) => ({ ...h }));
-  const tags = () => read().hosts.map((h) => h.tag);
+  const tags = (now = Date.now()) => read().hosts.filter((h) => isActive(h, now)).map((h) => h.tag); // ACTIVE hosts only
+  const allTags = () => read().hosts.map((h) => h.tag);
   const removedTags = () => read().removed.slice();
   const entryForTag = (tag) => read().hosts.find((h) => normUser(h.tag) === normUser(tag)) || null;
 
@@ -155,7 +168,65 @@ function createHostsStore({ filePath, seedFrom = null, initial = null } = {}) {
     });
   }
 
-  return { FILE, read, write, update, entries, tags, removedTags, entryForTag, matches, findByUser, learn, add, remove, normUser };
+  const findIdx = (state, identifier) => {
+    const key = String(identifier || '').trim();
+    return state.hosts.findIndex((h) => normUser(h.username) === normUser(key) || (/^\d+$/.test(key) && h.id && Number(h.id) === Number(key)));
+  };
+
+  // status: 'hold' | 'active'
+  function setStatus(identifier, status) {
+    return update((state) => {
+      const i = findIdx(state, identifier);
+      if (i < 0) return { ok: false, reason: 'not-found' };
+      if (status === 'hold') state.hosts[i].status = 'hold';
+      else delete state.hosts[i].status;
+      return { ok: true, entry: { ...state.hosts[i] } };
+    });
+  }
+
+  // Pause window [from, until) in ms; clearPause removes it.
+  function setPause(identifier, fromMs, untilMs) {
+    return update((state) => {
+      const i = findIdx(state, identifier);
+      if (i < 0) return { ok: false, reason: 'not-found' };
+      state.hosts[i].pause = { from: fromMs, until: untilMs };
+      return { ok: true, entry: { ...state.hosts[i] } };
+    });
+  }
+  function clearPause(identifier) {
+    return update((state) => {
+      const i = findIdx(state, identifier);
+      if (i < 0) return { ok: false, reason: 'not-found' };
+      delete state.hosts[i].pause;
+      return { ok: true, entry: { ...state.hosts[i] } };
+    });
+  }
+
+  // Bring the list to a named roster in one go (idempotent): `active` get added if
+  // missing (a previously removed tag stops being "removed"); `hold` are marked
+  // "on hold" (NOT removed); `pauses` set pause windows. Hosts not named anywhere
+  // are left alone. Returns what changed.
+  function applyRoster({ active = [], hold = [], pauses = [] }) {
+    const report = { added: [], held: [], paused: [], missing: [] };
+    for (const u of active) {
+      const res = add(u, { source: 'roster' });
+      if (res.ok) report.added.push(res.entry.tag);
+      else if (res.reason === 'exists') setStatus(u, 'active');
+    }
+    for (const u of hold) {
+      const res = setStatus(u, 'hold');
+      if (res.ok) report.held.push(res.entry.tag);
+      else report.missing.push(u);
+    }
+    for (const p of pauses) {
+      const res = setPause(p.user, p.from, p.until);
+      if (res.ok) report.paused.push(res.entry.tag);
+      else report.missing.push(p.user);
+    }
+    return report;
+  }
+
+  return { FILE, read, write, update, entries, tags, allTags, isActive, statusOf, removedTags, entryForTag, matches, findByUser, learn, add, remove, setStatus, setPause, clearPause, applyRoster, normUser };
 }
 
 // The real list (the bot's one source of truth) and a throw-away copy used to

@@ -69,19 +69,30 @@ async function tell(bot, text, options = {}) {
 const personLabel = (p) => (p.username ? `@${p.username}` : p.name || nameOf(p) || `id ${p.id}`);
 
 // ---- list and edits ----
+const dayLabel = (ms) => new Date(ms + 8 * 3600 * 1000).toISOString().slice(0, 10);
+
+function statusLabel(ctx, h, now = Date.now()) {
+  const st = ctx.store.statusOf(h, now);
+  if (st === 'hold') return 'на уточнении (не тегается, не считается в «из N»)';
+  if (st === 'paused') return `пауза до ${dayLabel(h.pause.until)} (не тегается, не считается в «из N»)`;
+  if (h.pause && now < h.pause.from) return `активен; пауза с ${dayLabel(h.pause.from)} до ${dayLabel(h.pause.until)}`;
+  return 'активен';
+}
+
 function hostsListText(ctx) {
   const list = ctx.store.entries();
-  const lines = [`${ctx.label}👥 <b>Хосты (${list.length}):</b>`];
+  const active = ctx.store.tags().length;
+  const lines = [`${ctx.label}👥 <b>Хосты: активных ${active}, всего ${list.length}</b>`];
   list.forEach((h, i) =>
-    lines.push(`${i + 1}. ${esc(h.tag)}${h.name ? ` — ${esc(h.name)}` : ''} · ID: ${h.id ? 'известен' : 'не известен'} · Start у бота: ${h.started ? 'да' : 'не замечено'}`)
+    lines.push(`${i + 1}. ${esc(h.tag)}${h.name ? ` — ${esc(h.name)}` : ''} · ${statusLabel(ctx, h)} · ID: ${h.id ? 'известен' : 'не известен'} · Start у бота: ${h.started ? 'да' : 'не замечено'}`)
   );
-  lines.push('', 'Изменить: /host_add @имя · /host_remove @имя' + (ctx.real ? ' (с словом test в конце — на тестовой копии)' : ''));
+  lines.push('', 'Изменить: /host_add @имя · /host_remove @имя · /host_pause @имя [с ГГГГ-ММ-ДД] до ГГГГ-ММ-ДД · /host_resume @имя' + (ctx.real ? ' (с словом test в конце — на тестовой копии)' : ''));
   lines.push('ID появляется, когда человек нажимает кнопку под карточкой, пишет боту или пишет в группе.');
   return lines.join('\n');
 }
 
 async function afterChange(bot, ctx, summary, goneEntry = null) {
-  const lines = [`${ctx.label}${summary}`, `Теперь хостов: <b>${ctx.store.tags().length}</b>.`];
+  const lines = [`${ctx.label}${summary}`, `Теперь активных хостов: <b>${ctx.store.tags().length}</b> (всего в списке ${ctx.store.entries().length}).`];
   const buttons = [];
   if (goneEntry && ctx.real) {
     const reserved = cards.reservationsOfHost(goneEntry);
@@ -104,11 +115,47 @@ function ctxFromArgs(arg) {
   return { ctx: test ? CONTEXTS.t : CONTEXTS.p, name: parts[0] || '' };
 }
 
+// /host_pause @имя [с ГГГГ-ММ-ДД] до ГГГГ-ММ-ДД — человека не тегают, не считают в «из N»
+// и не включают в сводки с первого дня (по умолчанию — сразу) до второго (в 09:00 по
+// Бали того дня он уже снова в обычном режиме). Нажатия на кнопки при этом
+// по-прежнему принимаются.
+async function pauseCommand(bot, ctx, arg) {
+  const text = String(arg || '').replace(/\btest\b/i, ' ');
+  const dates = text.match(/\d{4}-\d{2}-\d{2}/g) || [];
+  const name = text.trim().split(/\s+/)[0];
+  const at0900Bali = (d) => Date.parse(`${d}T01:00:00Z`); // 09:00 Bali = 01:00 UTC
+  if (dates.length === 0 || dates.length > 2) return tell(bot, 'Формат: /host_pause @имя до 2026-11-08 или /host_pause @имя с 2026-11-01 до 2026-11-08');
+  const from = dates.length === 2 ? at0900Bali(dates[0]) : Date.now();
+  const until = at0900Bali(dates[dates.length - 1]);
+  if (!(until > from)) return tell(bot, 'Дата «до» должна быть позже даты «с».');
+  const res = ctx.store.setPause(name, from, until);
+  if (!res.ok) return tell(bot, `${esc(name)} нет в списке хостов.`);
+  return afterChange(bot, ctx, `⏸ Пауза для ${esc(res.entry.tag)}: ${dates.length === 2 ? `с ${dates[0]} ` : 'с сегодняшнего дня '}до ${dates[dates.length - 1]} (в 09:00 по Бали того дня снова в обычном режиме). В это время не тегается, не считается в «из N» и не попадает в сводки.`);
+}
+
+// Elena is asked about people who are not in a new roster: keep them as hosts or
+// remove them. Until she answers they stay "on hold".
+async function askHoldQuestions(bot, ctx, usernames) {
+  for (const u of usernames) {
+    const entry = ctx.store.entryForTag(u);
+    if (!entry) continue;
+    await tell(bot, `${ctx.label}❓ ${esc(entry.tag)} не назван в новом списке хостов. Оставить хостом или убрать?\n(Пока вы не ответили — «на уточнении»: не тегается и не считается в «из N».)`, {
+      reply_markup: { inline_keyboard: [[{ text: '✅ Оставить хостом / Keep', callback_data: `hw:hold:keep:${ctx.key}:${normUser(entry.username)}` }, { text: '🗑 Убрать / Remove', callback_data: `hw:hold:drop:${ctx.key}:${normUser(entry.username)}` }]] },
+    });
+  }
+}
+
 async function handleCommand(bot, msg, command, arg = '') {
   if (!isElena(msg)) return;
   const { ctx, name } = ctxFromArgs(arg);
   if (command === 'hosts') return tell(bot, hostsListText(/^test$/i.test(String(arg).trim()) ? CONTEXTS.t : CONTEXTS.p));
-  if (!name) return tell(bot, `Формат: /${command} @имя`);
+  if (!name) return tell(bot, `Формат: /${command} @имя${command === 'host_pause' ? ' [с ГГГГ-ММ-ДД] до ГГГГ-ММ-ДД' : ''}`);
+  if (command === 'host_pause') return pauseCommand(bot, ctx, arg);
+  if (command === 'host_resume') {
+    const res = ctx.store.clearPause(name);
+    if (!res.ok) return tell(bot, `${esc(name)} нет в списке хостов.`);
+    return afterChange(bot, ctx, `▶️ Пауза ${esc(res.entry.tag)} снята.`);
+  }
   if (command === 'host_add') {
     const res = ctx.store.add(name);
     if (!res.ok) return tell(bot, res.reason === 'exists' ? `${esc(name)} уже в списке.` : 'Не похоже на имя пользователя Telegram (латиница, цифры и _, от 4 знаков).');
@@ -257,6 +304,35 @@ async function onCallback(bot, query) {
     return tell(bot, res.released ? '↩️ Бронь снята, эфир снова свободен (карточка обновлена).' : 'Эту бронь уже не нашла — возможно, она снята.');
   }
 
+  const hold = data.match(/^hw:hold:(keep|drop):([pt]):(.+)$/);
+  if (hold) {
+    const [, action, hk, who] = hold;
+    const c = CONTEXTS[hk];
+    const entry = c.store.entryForTag(who);
+    const msgId0 = query.message && query.message.message_id;
+    const closeMsg = async (suffix) => {
+      try {
+        await bot.editMessageText(`${(query.message.text || '').trim()}\n\n${suffix}`, { chat_id: elenaId(), message_id: msgId0, reply_markup: { inline_keyboard: [] } });
+      } catch {
+        /* unchanged / gone */
+      }
+    };
+    if (!entry || entry.status !== 'hold') {
+      await ack('Уже обработано');
+      return closeMsg('— уже обработано');
+    }
+    if (action === 'keep') {
+      c.store.setStatus(who, 'active');
+      await ack('Оставила хостом');
+      await closeMsg('✅ Остаётся хостом.');
+      return afterChange(bot, c, `✅ ${esc(entry.tag)} остаётся хостом.`);
+    }
+    const res = c.store.remove(who);
+    await ack('Убрала');
+    await closeMsg('✅ Убран(а) из хостов.');
+    return afterChange(bot, c, `➖ Убран хост ${esc(entry.tag)}.`, res.entry);
+  }
+
   const m = data.match(/^hw:(lv|jn):(ok|no):([pt]):(.+)$/);
   if (!m) return ack();
   const [, kind, answer, ctxKey, ref] = m;
@@ -361,6 +437,7 @@ async function tick(bot, now = Date.now()) {
 
 module.exports = {
   handleCommand,
+  askHoldQuestions,
   onChatMember,
   onNewMembers,
   onLeftMember,
