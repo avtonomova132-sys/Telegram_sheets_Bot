@@ -161,11 +161,16 @@ function normalizeRecord(record) {
 
 // "❌ Can't do it / Не могут (N of M / из M): ..." and "Haven't responded yet
 // / Ещё не отметились: ..." — only hosts count, M is the size of the host list.
-function refusalCounterBlock(refusers, candidateTags) {
-  const hostRefusers = (refusers || []).filter((r) => isHost(r, candidateTags));
+// `extras`: usernames that are NOT hosts but are counted (numerator AND denominator)
+// on this one card — a one-off exception (record.countedExtras), e.g. someone who
+// answered before being taken off the list.
+function refusalCounterBlock(refusers, candidateTags, extras = []) {
+  const extraNames = extras.map(normUser);
+  const isExtra = (r) => Boolean(r.username) && extraNames.includes(normUser(r.username));
+  const hostRefusers = (refusers || []).filter((r) => isHost(r, candidateTags) || isExtra(r));
   if (hostRefusers.length === 0) return null;
   const rest = candidateTags.filter((t) => !hostRefusers.some((r) => tagMatchesUser(t, r)));
-  const m = candidateTags.length;
+  const m = candidateTags.length + extraNames.filter((n) => !candidateTags.some((t) => normUser(t) === n)).length;
   const lines = [
     `❌ <b>Can't do it / Не могут (${hostRefusers.length} of ${m} / из ${m}):</b> ${hostRefusers.map((r) => escapeHtml(plainName(r))).join(', ')}`,
   ];
@@ -182,7 +187,7 @@ function cardText(record) {
   } else if (record.reservedBy) {
     lines.push(`⏳ <b>Reserved by / Зарезервировал(а):</b> ${escapeHtml(plainName(record.reservedBy))}`);
   } else {
-    const counter = refusalCounterBlock(record.refusers, record.candidateTags);
+    const counter = refusalCounterBlock(record.refusers, record.candidateTags, record.countedExtras || []);
     // Blank line + a small bold header separates the volunteer-response
     // status from the date/title above it.
     if (counter) lines.push('', '📊 <b>Response status / Статус ответов:</b>', counter);
@@ -1423,6 +1428,23 @@ function batchSummaries() {
   }));
 }
 
+// One-off exception: on the card(s) of the given session also count this username
+// (shown without @, counted in "N of M" on both sides). Not a host, never tagged.
+function addCountedExtraForEvent({ dateIso, azStartMin }, username) {
+  return runSerialStrict(async () => {
+    const store = readJson({ messages: {}, batches: [] });
+    let n = 0;
+    for (const [key, r] of Object.entries(store.messages)) {
+      if (r.mirrorOf || !r.event || r.event.dateIso !== dateIso || r.event.azStartMin !== azStartMin) continue;
+      if (Number(key.split(':')[0]) !== WVP_GROUP_ID) continue;
+      r.countedExtras = [...new Set([...(r.countedExtras || []), username])];
+      n++;
+    }
+    if (n > 0) writeJsonAtomic(store);
+    return n;
+  });
+}
+
 // ---- Hosts: what the card state tells hostAdmin.js ----
 
 // A host was seen pressing a button: remember the id / name, follow a changed
@@ -2295,6 +2317,7 @@ module.exports = {
   weekSchedulerTick,
   runTuesdayPreview,
   rebuildReminderPreview,
+  addCountedExtraForEvent,
   urgentStep,
   runUrgentTest,
   noteHostSeen,
