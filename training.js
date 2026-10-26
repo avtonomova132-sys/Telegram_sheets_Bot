@@ -70,7 +70,6 @@ const MESSAGE = `🎓 Завтра состоится наша встреча-о
 Шаг за шагом разберём, что нужно, чтобы провести эфир в роли хоста. Приходите, если хотите попробовать свои силы или освежить знания.
 
 🕐 Вт 07:00 по Москве
-Вт 12:00 по Бали · Пн 21:00 по Аризоне
 
 {LINK_LINE}
 
@@ -285,7 +284,7 @@ async function runOneShot(bot, now = Date.now()) {
     st.done[weekKey] = { at: now, outcome: 'one-shot' }; // the regular tick must not repeat it this week
     if (!st.activatedAt) st.activatedAt = now;
   });
-  await serial(() => createPreview(bot, { now, weekKey, note: '🔄 Новое превью на завтрашнюю встречу (вт 27.10) с исправленным текстом — предыдущее заменено.' }));
+  await serial(() => createPreview(bot, { now, weekKey, note: '🔄 Новое превью на завтрашнюю встречу (вт 27.10) с исправленным временем (только по Москве) — предыдущее заменено.' }));
 }
 
 module.exports = { tick, handleCommand, handleCallback, handleTextReply, handleYesNo, runOneShot, createPreview, messageText, baliMondayKey, dueAtOf, STATE_PATH };

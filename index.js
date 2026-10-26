@@ -1279,20 +1279,20 @@ function notifyElena(text) {
 // В большую группу ничего не уходит без её «да». Маркер пишется ДО работы. Удалить после выполнения.
 (async () => {
   const fs = require('fs');
-  const markerPath = process.env.TRAINING_ONESHOT2_MARKER_PATH || '/data/training_oneshot2_2026_10_26.json';
+  const markerPath = process.env.TRAINING_ONESHOT3_MARKER_PATH || '/data/training_oneshot3_2026_10_26.json';
   if (!myChatId || fs.existsSync(markerPath)) return;
   try {
     fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
   } catch (err) {
-    console.error('[training-oneshot2] не удалось записать маркер, не запускаю:', err.message);
+    console.error('[training-oneshot3] не удалось записать маркер, не запускаю:', err.message);
     return;
   }
   try {
     await training.runOneShot(bot);
-    console.log('[training-oneshot2] новое превью отправлено Елене');
+    console.log('[training-oneshot3] новое превью отправлено Елене');
   } catch (err) {
-    console.error('[training-oneshot2] ошибка:', err.message);
-    reportProblem(bot, 'training-oneshot2', `Не получилось подготовить превью напоминания об обучении: ${err.message}`, 0).catch(() => {});
+    console.error('[training-oneshot3] ошибка:', err.message);
+    reportProblem(bot, 'training-oneshot3', `Не получилось подготовить превью напоминания об обучении: ${err.message}`, 0).catch(() => {});
   }
 })();
 
