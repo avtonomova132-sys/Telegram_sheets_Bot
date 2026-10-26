@@ -2317,6 +2317,7 @@ module.exports = {
   weekSchedulerTick,
   runTuesdayPreview,
   rebuildReminderPreview,
+  newestPendingAt: () => (pendingList()[0] || {}).createdAt || 0,
   addCountedExtraForEvent,
   urgentStep,
   runUrgentTest,

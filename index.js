@@ -32,6 +32,7 @@ const {
   UNDO_CALLBACK: CARD_UNDO_CALLBACK,
 } = require('./cardButtons');
 const hostAdmin = require('./hostAdmin');
+const training = require('./training');
 const cardButtons = require('./cardButtons');
 const { generateAssistanceReport } = require('./assistance');
 const { generateSeriesCheckReport } = require('./assistantsSeries');
@@ -421,6 +422,7 @@ bot.on('message', async (msg) => {
 
   // «да» / «нет» ОТВЕТОМ на превью Анонса или напоминания (Елене) — решение
   // отправлять/не отправлять в группу; обычный текст сюда не попадает.
+  if (await training.handleTextReply(bot, msg)) return;
   if (await handleWeekTextReply(bot, msg)) return;
 
   // Уточнение стороны измерения (/габариты) перехватывает свободный текст
@@ -939,6 +941,11 @@ bot.on('callback_query', (query) => {
     handleWeekCallback(bot, query);
     return;
   }
+  // Превью напоминания об обучении «Хочу быть хостом» (Елене) — training.js.
+  if (data.startsWith('tr:')) {
+    Promise.resolve(training.handleCallback(bot, query)).catch((err) => reportProblem(bot, 'training-cb', `Не получилось обработать кнопку напоминания об обучении: ${err.message}`, 0).catch(() => {}));
+    return;
+  }
   // Карточки в напоминании — копии карточек Анонса с теми же кнопками, так что
   // нажатия приходят сюда же; см. cardButtons.js.
   if (data !== CARD_TAKE_CALLBACK && data !== CARD_PASS_CALLBACK && data !== CARD_UNDO_CALLBACK) return;
@@ -1266,6 +1273,28 @@ function notifyElena(text) {
   if (!myChatId) return;
   bot.sendMessage(myChatId, text).catch((err) => console.error('[weekly-announce] не удалось написать Елене:', err.message));
 }
+
+// ВРЕМЕННО (разово), Елена 26.10: понедельничный слот 14:00 уже прошёл — превью
+// напоминания об обучении (вт 27.10) Елене сейчас + тест такого же текста в «Дебаты».
+// В большую группу ничего не уходит без её «да». Маркер пишется ДО работы. Удалить после выполнения.
+(async () => {
+  const fs = require('fs');
+  const markerPath = process.env.TRAINING_ONESHOT_MARKER_PATH || '/data/training_oneshot_2026_10_26.json';
+  if (!myChatId || fs.existsSync(markerPath)) return;
+  try {
+    fs.writeFileSync(markerPath, JSON.stringify({ at: new Date().toISOString() }));
+  } catch (err) {
+    console.error('[training-oneshot] не удалось записать маркер, не запускаю:', err.message);
+    return;
+  }
+  try {
+    await training.runOneShot(bot);
+    console.log('[training-oneshot] превью отправлено Елене, тест — в «Дебаты»');
+  } catch (err) {
+    console.error('[training-oneshot] ошибка:', err.message);
+    reportProblem(bot, 'training-oneshot', `Не получилось подготовить превью напоминания об обучении: ${err.message}`, 0).catch(() => {});
+  }
+})();
 
 // Прямая воскресная авторассылка В ГРУППУ УДАЛЕНА (Елена, 2026-10-21): в группу
 // без её подтверждения ничего не уходит. Вместо неё — расписание с превью
@@ -1940,12 +1969,20 @@ cron.schedule('*/5 * * * *', async () => {
   } catch (err) {
     console.error('[week-schedule] ошибка тика:', err.message);
   }
+  await trainingTick();
 });
 // И один раз после старта: если бот был выключен/перезапускался в момент
 // срабатывания (до 3 часов), то, что пропущено, делается сейчас — один раз.
 setTimeout(() => {
   weekSchedulerTick(bot).catch((err) => console.error('[week-schedule] ошибка тика при старте:', err.message));
+  trainingTick();
 }, 45 * 1000);
+
+// Понедельник 14:00 по Бали — напоминание об обучении «Хочу быть хостом» (отдельная
+// функция, см. training.js; не затрагивает Анонс/напоминание/сводку/«за 24 часа»).
+function trainingTick() {
+  return training.tick(bot).catch((err) => reportProblem(bot, 'training-tick', `Напоминание об обучении не сработало: ${err.message}`).catch(() => {}));
+}
 
 // /yes, /no — ответ на превью (то же, что кнопки «Отправить» / «Не отправлять»);
 // /announce [next|this|ГГГГ-ММ-ДД] — подготовить превью Анонса вручную (по
@@ -1998,8 +2035,20 @@ bot.onText(/^\/urgent_test(?:@\S+)?\s*$/i, (msg) => {
   cardButtons.runUrgentTest(bot).catch((err) => reportProblem(bot, 'urgent-test', `Тест срочного сообщения не удался: ${err.message}`, 0).catch(() => {}));
 });
 
-bot.onText(/^\/yes(?:@\S+)?$/i, (msg) => handleWeekCommand(bot, msg, 'yes'));
-bot.onText(/^\/no(?:@\S+)?$/i, (msg) => handleWeekCommand(bot, msg, 'no'));
+// /yes и /no достаются самому новому превью: обучение (training.js) или недельное.
+bot.onText(/^\/yes(?:@\S+)?$/i, (msg) => {
+  if (training.handleYesNo(bot, msg, 'yes', cardButtons.newestPendingAt())) return;
+  handleWeekCommand(bot, msg, 'yes');
+});
+bot.onText(/^\/no(?:@\S+)?$/i, (msg) => {
+  if (training.handleYesNo(bot, msg, 'no', cardButtons.newestPendingAt())) return;
+  handleWeekCommand(bot, msg, 'no');
+});
+// Напоминание об обучении: /training_on|off, /training_auto_on|off, /training_link ссылка,
+// /training_text, /training_now, /training_test (в «Дебаты»). Только Елене в личке.
+bot.onText(/^\/training_(on|off|auto_on|auto_off|link|text|now|test)(?:@\S+)?(?:\s+(.+))?$/i, (msg, match) => {
+  training.handleCommand(bot, msg, match[1].toLowerCase(), match[2]).catch((err) => reportProblem(bot, 'training-cmd', `Команда /training_${match[1]} не сработала: ${err.message}`, 0).catch(() => {}));
+});
 bot.onText(/^\/announce(?:@\S+)?(?:\s+(\S+))?\s*$/i, (msg, match) => handleWeekCommand(bot, msg, 'announce', match && match[1]));
 
 // /remind_test — сразу отправить такое же напоминание в тестовую группу
