@@ -19,22 +19,21 @@ const MAX_LOG = 50;
 const MAX_BODY = 6000;
 const ERROR_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
-const CATEGORIES = ['paid_trial', 'block_fine', 'new_required_field', 'rule_change', 'money_or_deadline', 'dimensions_changed', 'fbs_out_of_stock', 'ignore'];
+const CATEGORIES = ['paid_trial', 'block_fine', 'new_required_field', 'rule_change', 'money_or_deadline', 'dimensions_changed', 'ignore'];
 // Информационные категории: короткое уведомление без срочности, без «что сделать» и склада.
-const INFO_CATEGORIES = ['dimensions_changed', 'fbs_out_of_stock'];
+const INFO_CATEGORIES = ['dimensions_changed'];
 
 const SYSTEM_PROMPT = `Ты разбираешь письма маркетплейса Ozon для продавца (Елена, магазин Portretkina Beauty). Нужно решить, требует ли письмо её внимания.
 
 Верни СТРОГО один JSON-объект без markdown и пояснений:
 {"important": bool, "category": "...", "deadline": "YYYY-MM-DD или пустая строка", "summary_ru": "что случилось, 1 предложение", "action_ru": "что сделать, 1-2 предложения", "warehouse_needed": bool, "warehouse_text_ru": "..."}
 
-category — одно из: paid_trial | block_fine | new_required_field | rule_change | money_or_deadline | dimensions_changed | fbs_out_of_stock | ignore.
+category — одно из: paid_trial | block_fine | new_required_field | rule_change | money_or_deadline | dimensions_changed | ignore.
 
 ВАЖНЫЕ (important=true): платный пробный период или подписка с датой начала списаний; блокировка или штраф; новые обязательные поля или документы; смена правил; всё, где есть деньги или срок.
 ИНФОРМАЦИОННЫЕ (important=true, короткое уведомление без срочности; deadline пустой, action_ru пустой, warehouse_needed=false):
 - «Изменили габариты и вес ваших товаров» → category=dimensions_changed. summary_ru: какие товары (артикул/название) и, если есть в письме, старые и новые габариты и вес («было → стало»). Не выдумывай значения, которых нет в письме.
-- «[FBS] У вас закончились товары» → category=fbs_out_of_stock. summary_ru: какие товары закончились (артикулы/названия, если есть в письме), спокойным тоном.
-ИГНОРИРУЕМ (important=false, category=ignore): опросы («Как прошла отгрузка?»), реклама, обычные уведомления («Возвраты в пути», «Новый акт по возвратам»), обзоры и дайджесты.
+ИГНОРИРУЕМ (important=false, category=ignore): опросы («Как прошла отгрузка?»), реклама, обычные уведомления («Возвраты в пути», «Новый акт по возвратам», «[FBS] У вас закончились товары»), обзоры и дайджесты.
 
 warehouse_needed=true только если для выполнения действия нужно что-то сделать на складе в Москве (маркировка, упаковка, документы на поставку, этикетки, изменение габаритов/комплектации и т.п.). Тогда warehouse_text_ru — готовое короткое сообщение для рабочей группы склада на русском, которое можно переслать как есть: что нужно сделать и к какой дате. Иначе warehouse_text_ru — пустая строка.
 deadline — дата в формате YYYY-MM-DD, если в письме есть срок/дата начала списаний/блокировки, иначе пустая строка. Если год не указан, текущий год ${new Date().getFullYear()}.
@@ -93,7 +92,7 @@ const fmtDate = (iso) => (iso ? `${iso.slice(8, 10)}.${iso.slice(5, 7)}.${iso.sl
 const CATEGORY_LABEL = {
   paid_trial: '💳 Платный период', block_fine: '⛔ Блокировка/штраф', new_required_field: '📝 Новые обязательные данные',
   rule_change: '📜 Смена правил', money_or_deadline: '⏰ Деньги/срок',
-  dimensions_changed: '📐 Ozon изменил габариты/вес', fbs_out_of_stock: '📦 FBS: закончились товары', ignore: 'пропущено',
+  dimensions_changed: '📐 Ozon изменил габариты/вес', ignore: 'пропущено',
 };
 
 function buildAlert(c) {
