@@ -623,3 +623,21 @@ test('наборы по 7/9/14/16 штук входят в семью', () => {
   assert.strictEqual(skipped.length, 0);
   assert.deepStrictEqual(families[0].members.map((m) => m.pieces), [1, 7]);
 });
+
+
+test('supplier: срез из файла без сервисного аккаунта', async () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const f = path.join(os.tmpdir(), `sc_${Date.now()}.json`);
+  fs.writeFileSync(f, JSON.stringify({ rows: [['ЗефирВдохЯгодное1ШТ', '1', 'РФ25204'], ['ЗефирВдохЯгодное2ШТ', '2', 'РФ25204']] }));
+  process.env.SUPPLIER_CODES_PATH = f;
+  delete require.cache[require.resolve('./supplier')];
+  const sup = require('./supplier');
+  const saved = process.env.GOOGLE_SERVICE_ACCOUNT_JSON; delete process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  try {
+    const st = await sup.coverage();
+    assert.equal(st.codes, 1);
+    assert.equal(sup.status().source, 'file');
+  } finally { if (saved) process.env.GOOGLE_SERVICE_ACCOUNT_JSON = saved; fs.unlinkSync(f); delete process.env.SUPPLIER_CODES_PATH; }
+});

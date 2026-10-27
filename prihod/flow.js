@@ -689,6 +689,11 @@ async function catalogDebug(chatId, query) {
 async function codesCoverage(chatId) {
   const email = supplier.accountEmail();
   if (!email) {
+    // нет сервисного аккаунта — пробуем срез Номенклатуры из файла
+    try {
+      const st = await supplier.coverage();
+      if (supplier.status().source === 'file') return sendCoverage(chatId, st, 'файл-срез (/data/supplier_codes.json или prihod/data), без цен');
+    } catch (_) { /* ниже — подсказка */ }
     return bot.sendMessage(chatId, '🔒 Номенклатуру читаю только через сервисный аккаунт. В Railway не задан GOOGLE_SERVICE_ACCOUNT_JSON: создай ключ сервисного аккаунта Google (роль не нужна), вставь JSON в эту переменную, затем дай аккаунту доступ «Читатель» к Номенклатуре и повтори /приход_коды.');
   }
   let st;
@@ -701,6 +706,11 @@ async function codesCoverage(chatId) {
     throw err;
   }
   await bot.sendMessage(chatId, `Сервисный аккаунт (доступ «Читатель»): ${email}`);
+  return sendCoverage(chatId, st);
+}
+
+async function sendCoverage(chatId, st, from) {
+  if (from) await bot.sendMessage(chatId, `Источник: ${from}`);
   const pct = (n) => (st.total ? Math.round((n / st.total) * 100) : 0);
   await bot.sendMessage(chatId, [
     '🔎 Артикул поставщика в Номенклатуре (столбец AB)',

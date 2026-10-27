@@ -9,6 +9,8 @@
 // Артикул ПОСТАВЩИК) отдельными диапазонами; столбец с ценами не запрашивается,
 // ничего на диск не пишется (кэш только в памяти).
 
+const fs = require('fs');
+const path = require('path');
 const nomenclature = require('../nomenclature');
 const { findFamilyByArticle } = require('./family');
 const { weightOk } = require('./weight');
@@ -28,6 +30,33 @@ const COLS = [
 ];
 
 class SupplierAccessError extends Error {}
+
+// Запасной источник без Google: готовый срез Номенклатуры (только артикул,
+// кол-во в наборе, артикул поставщика — БЕЗ цен и баркодов).
+// Порядок: /data/supplier_codes.json (на томе, правится без деплоя), затем
+// prihod/data/supplier_codes.json (в репозитории, если его туда положили).
+const FILE_PATHS = [
+  process.env.SUPPLIER_CODES_PATH || '/data/supplier_codes.json',
+  path.join(__dirname, 'data', 'supplier_codes.json'),
+];
+
+function readSnapshot() {
+  for (const p of FILE_PATHS) {
+    try {
+      if (!fs.existsSync(p)) continue;
+      const data = JSON.parse(fs.readFileSync(p, 'utf8'));
+      const list = Array.isArray(data) ? data : data.rows;
+      if (!Array.isArray(list) || !list.length) continue;
+      return list.map((r) => (Array.isArray(r)
+        ? { article: clean(r[0]), pieces: clean(r[1]), supplier: clean(r[2]) }
+        : { article: clean(r.article), pieces: clean(r.pieces), supplier: clean(r.supplier) }))
+        .filter((r) => r.article);
+    } catch (err) {
+      console.error('[supplier] не прочитала', p, err.message);
+    }
+  }
+  return null;
+}
 
 // Латиница, похожая на кириллицу (в накладных «K» бывает латинской) → кириллица.
 const LAT2CYR = { A: 'А', B: 'В', C: 'С', E: 'Е', H: 'Н', K: 'К', M: 'М', O: 'О', P: 'Р', T: 'Т', X: 'Х', Y: 'У' };
@@ -80,8 +109,11 @@ const clean = (v) => String(v ?? '').replace(/\s+/g, ' ').trim();
 async function fetchColumns() {
   const sa = nomenclature.loadServiceAccount();
   if (!sa) {
+    const snap = readSnapshot();
+    if (snap) { source = 'file'; return snap; }
     throw new SupplierAccessError('нужен GOOGLE_SERVICE_ACCOUNT_JSON (сервисный аккаунт с доступом «Читатель» к Номенклатуре) — публичную ссылку не использую, в таблице закупочные цены');
   }
+  source = 'sheet';
   const token = await nomenclature.getAccessToken(sa);
   const auth = { headers: { Authorization: `Bearer ${token}` } };
   const base = `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}`;
@@ -122,6 +154,7 @@ async function fetchColumns() {
   return rows;
 }
 
+let source = 'sheet'; // 'sheet' | 'file' — откуда прочитан последний раз
 let cache = null; // { at, index, stats }
 let lastError = null;
 
@@ -210,7 +243,7 @@ function accountEmail() {
 }
 
 function status() {
-  return { lastError, loadedAt: cache ? cache.at : null };
+  return { lastError, loadedAt: cache ? cache.at : null, source };
 }
 
 // Только для тестов: подставить готовый индекс вместо чтения таблицы.
