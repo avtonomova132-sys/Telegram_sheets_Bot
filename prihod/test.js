@@ -502,3 +502,97 @@ test('распознавание пометок: уверенное «нет», 
   assert.deepStrictEqual([d.mark.kind, d.mark.pending], ['unclear', true]);
   assert.strictEqual(prepareLine({ n: 5, name: 'Д', qty: 1, price: 1, sum: 1 }).mark, null);
 });
+
+// ---------- поиск по артикулу поставщика (Номенклатура, AB) ----------
+const supplier = require('./supplier');
+const { matchLines } = require('./match');
+
+test('код поставщика: начало «две буквы + пять цифр», латиница → кириллица', () => {
+  assert.strictEqual(supplier.supplierKey('РФ25204D108'), 'РФ25204');
+  assert.strictEqual(supplier.supplierKey('КО19986R113'), 'КО19986');
+  assert.strictEqual(supplier.supplierKey('KO19986R113'), 'КО19986'); // латинские K, O
+  assert.strictEqual(supplier.supplierKey(' ББ 12694 K562'), 'ББ12694');
+  assert.strictEqual(supplier.supplierKey('Педикюрная терка MANITA 60/120'), null);
+  assert.strictEqual(supplier.supplierKey(''), null);
+});
+
+test('поиск по коду поставщика: семья из AB, вес и каталог Озона сверяются', async () => {
+  const cat = [
+    ...[1, 2, 4, 6, 10].map((k) => ({ article: `150NeoBotanikaСмузиЧерникаБанан${k}ШТ`, name: 'Мармелад 150 г' })),
+    ...[1, 2, 3, 5, 10].map((k) => ({ article: `200DarkCreamТемныйШоколадМиндальФундук${k}шт`, name: 'Dark Cream 200 г' })),
+    ...[1, 2, 3, 5, 10].map((k) => ({ article: `ЗЕЛБабаевскийDC${k}ШТ`, name: 'Бабаевский DC 200 г' })),
+  ];
+  const { families } = buildFamilies(cat);
+  supplier._setIndex([
+    ...[1, 2, 4, 6, 10].map((k) => ({ article: `150NeoBotanikaСмузиЧерникаБанан${k}ШТ`, barcode: '1', pieces: String(k), supplier: 'РФ25204' })),
+    ...[1, 2, 3, 5, 10].map((k) => ({ article: `200DarkCreamТемныйШоколадМиндальФундук${k}шт`, barcode: '1', pieces: String(k), supplier: 'ББ12694' })),
+    ...[1, 2, 3, 5, 10].map((k) => ({ article: `ЗЕЛБабаевскийDC${k}ШТ`, barcode: '1', pieces: String(k), supplier: 'ББ12692' })),
+    { article: 'Крафт60100MANITA100ШТ', barcode: '', pieces: '1', supplier: 'Педикюрная терка MANITA' },
+    { article: 'Пустой1шт', barcode: '', pieces: '1', supplier: '' },
+  ]);
+  const lines = [
+    { name: 'КОНФ_ВЕС_Neo_botanica_СМУЗИ_Light_черника_банан_1/150', supplierCode: 'РФ25204D108', unitWeightG: 150 },
+    { name: 'КОНФ_КОР_Бабаевские_Цел_фунд_и_орех_крем_Dark_cream_1/200', supplierCode: 'ББ12692К501', unitWeightG: 200 },
+    { name: 'КОНФ_КОР_Бабаевские_Дробл_мина_Dark_cream_collection_1/200', supplierCode: 'ББ12694K562', unitWeightG: 200 },
+  ];
+  const res = await matchLines(lines, families);
+  assert.strictEqual(res[0].status, 'matched');
+  assert.strictEqual(res[0].family.base, '150NeoBotanikaСмузиЧерникаБанан');
+  assert.match(res[0].via, /код поставщика РФ25204/);
+  assert.strictEqual(res[1].family.base, 'ЗЕЛБабаевскийDC');
+  assert.strictEqual(res[2].family.base, '200DarkCreamТемныйШоколадМиндальФундук');
+  const st = await supplier.coverage.call(null).catch(() => null); // без доступа к таблице — не падаем
+  assert.ok(st === null || typeof st.total === 'number');
+});
+
+test('код не найден в AB → поиск по названию как раньше; вес отсекает чужой вес того же кода', async () => {
+  const cat = [
+    { article: '250ТестКонфета1шт', name: 'Тест 250 г' },
+    { article: '1КгТестКонфета1шт', name: 'Тест 1 кг' },
+  ];
+  const { families } = buildFamilies(cat);
+  supplier._setIndex([
+    { article: '250ТестКонфета1шт', barcode: '1', pieces: '1', supplier: 'РФ11111' },
+    { article: '1КгТестКонфета1шт', barcode: '1', pieces: '1', supplier: 'РФ11111' },
+  ]);
+  const res = await matchLines([
+    { name: 'Тестовая конфета 1/250', supplierCode: 'РФ11111A101', unitWeightG: 250 },
+    { name: 'Тестовая конфета 1/1000', supplierCode: 'РФ11111A101', unitWeightG: 1000 },
+    { name: 'Неизвестная 1/250', supplierCode: 'РФ99999A101', unitWeightG: 250 },
+  ], families);
+  assert.strictEqual(res[0].family.weightG, 250);
+  assert.strictEqual(res[1].family.weightG, 1000);
+  assert.notStrictEqual(res[2].via && res[2].via.startsWith('код поставщика'), true);
+});
+
+test('prepareLine переносит код поставщика', () => {
+  const l = prepareLine({ n: 1, name: 'X', qty: 3, supplier_code: 'РФ25204D108' });
+  assert.strictEqual(l.supplierCode, 'РФ25204D108');
+});
+
+test('AB с названием поставщика (бирки/крафт): совпадение по названию строки накладной', async () => {
+  const cat = ['18162БЕЛЫЙ1000', '20162БЕЛЫЙ1000', '20162МЕТКАБЕЛЫЙ1000', '13162БиркаСадовая2000шт'].map((a) => ({ article: a, name: 'Бирка садовая' }));
+  const { families } = buildFamilies(cat);
+  supplier._setIndex([
+    { article: '18162БЕЛЫЙ1000', barcode: '1', pieces: '1', supplier: 'Бирка садовая 18х162, белая, 1000 шт, вт. 40' },
+    { article: '20162БЕЛЫЙ1000', barcode: '1', pieces: '1', supplier: 'Бирка садовая 20х162(70), белая, 1000 шт, вт. 40' },
+    { article: '20162МЕТКАБЕЛЫЙ1000', barcode: '1', pieces: '1', supplier: 'Бирка садовая 20х162(70), белая с меткой, 1000 шт, вт. 40' },
+    { article: '13162БиркаСадовая2000шт', barcode: '1', pieces: '1', supplier: 'Бирка садовая 13х162, 2000 шт, рул.' },
+  ]);
+  const res = await matchLines([
+    { name: 'Бирка садовая 18x162, белая, 1000 шт, вт. 40', supplierCode: '' },
+    { name: 'Бирка садовая 20x162(70), белая с меткой, 1000 шт', supplierCode: '' },
+    { name: 'Бирка садовая 13x162, 2000 шт, рул.', supplierCode: '' },
+  ], families);
+  assert.deepStrictEqual(res.map((r) => r.status), ['matched', 'matched', 'matched']);
+  assert.strictEqual(res[0].family.members[0].article, '18162БЕЛЫЙ1000');
+  assert.strictEqual(res[1].family.members[0].article, '20162МЕТКАБЕЛЫЙ1000');
+  assert.strictEqual(res[2].family.members[0].article, '13162БиркаСадовая2000шт');
+});
+
+test('набор из 11 штук (Мама приехала 11ШТ, Мишка 11ШТ) входит в семью', () => {
+  const cat = [1, 2, 4, 11].map((k) => ({ article: `200КОМамаПриехала${k}ШТ`, name: 'Мама приехала 200 г' }));
+  const { families, skipped } = buildFamilies(cat);
+  assert.strictEqual(skipped.length, 0);
+  assert.deepStrictEqual(distribute(families[0], 110).map((x) => [x.pieces, x.qty]), [[1, 110], [2, 55], [4, 27], [11, 10]]);
+});

@@ -10,6 +10,7 @@ const { buildFamilies, findFamilyByArticle } = require('./family');
 const { matchLines, candidatesFor, looseCandidates } = require('./match');
 const { computePlan, checkTotals } = require('./plan');
 const nameMap = require('./nameMap');
+const supplier = require('./supplier');
 const { dense } = require('./text');
 const ostatki = require('./ostatki');
 const sheet = require('./sheet');
@@ -278,6 +279,11 @@ async function finishCollecting(chatId, s) {
     const toMatch = s.lines.filter((l) => !l.decision || l.decision.status !== 'not_arrived');
     applyResults(toMatch, await matchLines(toMatch, s.families), s.families);
     await refineNone(s, cat.cached);
+    // Поиск по коду поставщика недоступен (нет доступа к Номенклатуре) — один раз скажем Елене.
+    const supErr = supplier.status().lastError;
+    if (supErr && s.lines.some((l) => l.supplierCode)) {
+      await bot.sendMessage(chatId, `ℹ️ По коду поставщика искать не смогла (${String(supErr.message).slice(0, 300)}), искала по названию.`);
+    }
     s.state = 'resolving';
     await askNextAmbiguous(chatId, s);
   } catch (err) {
@@ -679,6 +685,33 @@ async function catalogDebug(chatId, query) {
   await send(chatId, L.join('\n'));
 }
 
+// /приход_коды: сколько строк Номенклатуры, где поиск по артикулу поставщика (AB) работает.
+async function codesCoverage(chatId) {
+  const email = supplier.accountEmail();
+  if (!email) {
+    return bot.sendMessage(chatId, '🔒 Номенклатуру читаю только через сервисный аккаунт. В Railway не задан GOOGLE_SERVICE_ACCOUNT_JSON: создай ключ сервисного аккаунта Google (роль не нужна), вставь JSON в эту переменную, затем дай аккаунту доступ «Читатель» к Номенклатуре и повтори /приход_коды.');
+  }
+  let st;
+  try {
+    st = await supplier.coverage();
+  } catch (err) {
+    if (err instanceof supplier.SupplierAccessError) {
+      return bot.sendMessage(chatId, `🔒 Дай доступ «Читатель» к таблице «Номенклатура» на e-mail сервисного аккаунта:\n${email}\nи повтори /приход_коды.`);
+    }
+    throw err;
+  }
+  await bot.sendMessage(chatId, `Сервисный аккаунт (доступ «Читатель»): ${email}`);
+  const pct = (n) => (st.total ? Math.round((n / st.total) * 100) : 0);
+  await bot.sendMessage(chatId, [
+    '🔎 Артикул поставщика в Номенклатуре (столбец AB)',
+    `Строк с артикулом: ${st.total}`,
+    `Заполнено: ${st.filled} (${pct(st.filled)}%)`,
+    `• из них код вида «РФ25204» (как в накладной): ${st.codeForm} (${pct(st.codeForm)}%), разных кодов: ${st.codes}`,
+    `• из них текст/название (крафт, косметика — по коду накладной не ищется): ${st.textOnly}`,
+    `Пусто: ${st.empty} (${pct(st.empty)}%) — такие товары ищутся по названию.`,
+  ].join('\n'));
+}
+
 function init(botInstance, { isTrustedUser }) {
   bot = botInstance;
   isTrusted = isTrustedUser;
@@ -696,6 +729,10 @@ function init(botInstance, { isTrustedUser }) {
   });
   bot.onText(/^\/приход_каталог(?:@\S+)?(?:\s+([\s\S]+))?$/, (msg, m) => {
     catalogDebug(msg.chat.id, m[1] ? m[1].trim() : '').catch((e) => fail(msg.chat.id, 'проверить каталог', e));
+  });
+  bot.onText(/^\/приход_коды(?:@\S+)?$/, (msg) => {
+    if (!isTrusted(msg.chat.id)) return;
+    codesCoverage(msg.chat.id).catch((e) => fail(msg.chat.id, 'проверить коды поставщика', e));
   });
   bot.on('callback_query', (q) => { onCallback(q).catch((e) => console.error('[prihod] callback:', e.message)); });
   return { handlePhoto, handleDocument, handleText };

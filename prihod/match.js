@@ -4,10 +4,11 @@
 const Anthropic = require('@anthropic-ai/sdk');
 const { norm, dense, translit, tokens, trigrams, dice } = require('./text');
 const nameMap = require('./nameMap');
+const { weightOk } = require('./weight');
+const supplier = require('./supplier');
 
 const MAX_CANDIDATES = 5;
 const MIN_SCORE = 0.28;
-const WEIGHT_TOL = 0.03;
 
 const MODEL_ALIASES = {
   sonnet: 'claude-sonnet-4-6',
@@ -33,11 +34,6 @@ const RULES = [
   // Рот Фронт «Лимончики» — не «Лимонная карамель».
   (inv, cand) => !/лимончики/.test(inv) || !/лимонная ?карамель/.test(cand),
 ];
-
-function weightOk(lineG, famG) {
-  if (!lineG || !famG) return true; // неизвестный вес не отсекает, решает модель/Елена
-  return Math.abs(lineG - famG) / famG <= WEIGHT_TOL;
-}
 
 function candidatesFor(line, families, { minScore = MIN_SCORE, max = MAX_CANDIDATES } = {}) {
   const inv = norm(line.name);
@@ -89,7 +85,22 @@ async function askModel(items) {
 async function matchLines(lines, families) {
   const out = new Array(lines.length);
   const pending = [];
+  // 0) артикул поставщика из Номенклатуры (колонка AB): самый надёжный признак.
+  //    Нет доступа/кода/артикулов в каталоге — молча идём по названию (ошибка
+  //    доступа остаётся в supplier.status() и показывается Елене один раз).
+  const byCode = new Array(lines.length).fill(null);
+  for (let i = 0; i < lines.length; i += 1) {
+    try {
+      const r = await supplier.resolve(lines[i], families);
+      if (r.status !== 'none') byCode[i] = r;
+      else console.log(`[prihod] код «${lines[i].supplierCode}»: ${r.why}`);
+    } catch (err) {
+      console.error('[prihod] поиск по коду поставщика недоступен:', err.message);
+      break;
+    }
+  }
   lines.forEach((line, i) => {
+    if (byCode[i]) { out[i] = byCode[i]; return; }
     // 1) подтверждённая карта названий
     const entry = nameMap.lookup(line.name);
     if (entry && entry.none) {

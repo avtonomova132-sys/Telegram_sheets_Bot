@@ -19,6 +19,7 @@ const SYSTEM = `Ты читаешь фото одного листа товар�
  "lines": [{
    "n": номер строки,
    "name": "название как напечатано",
+   "supplier_code": "код товара из колонки «код» (графа 3) дословно, напр. РФ25204D108, КО19986R113, ББ12694K562; пусто, если колонки нет или код не читается",
    "qty": число,                    // количество. Если две колонки количества — бери «Всего шт.»
    "price": число|null,
    "y": число,                      // вертикальное положение строки на фото, доля высоты 0..1 (0 — верх)
@@ -144,7 +145,7 @@ function prepareLine(raw) {
     mark = { kind, qty: markQty, text: String(hw.text || '').trim(), pending: kind === 'unclear' || hw.confident === false };
   }
   return {
-    mark, n: raw.n, name: String(raw.name || '').trim(), qty, printedQty, packMult: mult, sterilization: Boolean(raw.sterilization_pack),
+    mark, n: raw.n, name: String(raw.name || '').trim(), supplierCode: String(raw.supplier_code || '').trim(), qty, printedQty, packMult: mult, sterilization: Boolean(raw.sterilization_pack),
     price, sum, sumNoVat, nettoKg, y: num(raw.y), arithmetic, unitWeightG: raw.sterilization_pack ? null : unitWeightG, flags,
   };
 }

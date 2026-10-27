@@ -4,7 +4,7 @@
 
 const { dense, tokens, trigrams, articleWords } = require('./text');
 
-const SET_SIZES = [1, 2, 3, 4, 5, 6, 8, 10, 12, 20];
+const SET_SIZES = [1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 20];
 const PIECES_RE = /(?:^|[^0-9a-zа-я])(\d{1,2})\s*шт\.?/i;
 const PIECES_STRIP_RE = /[\s_\-(]*\d{1,2}\s*шт\.?\)?/gi;
 const WEIGHT_RE = /(\d+(?:[.,]\d+)?)\s*(кг|kg|г|гр|g|мл|ml|л)(?![a-zа-я])/i;
