@@ -20,6 +20,8 @@ const SYSTEM = `Ты читаешь фото одного листа товар�
    "n": номер строки,
    "name": "название как напечатано",
    "supplier_code": "код товара из колонки «код» (графа 3) дословно, напр. РФ25204D108, КО19986R113, ББ12694K562; пусто, если колонки нет или код не читается",
+   "places": число|null,            // графа 8 «мест» (количество мест/коробов), ПЕЧАТНОЕ число
+   "per_place": число|null,         // графа 7 «в одном месте», ПЕЧАТНОЕ число
    "qty": число,                    // количество. Если две колонки количества — бери «Всего шт.»
    "price": число|null,
    "y": число,                      // вертикальное положение строки на фото, доля высоты 0..1 (0 — верх)
@@ -28,7 +30,7 @@ const SYSTEM = `Ты читаешь фото одного листа товар�
    "netto_kg": число|null,          // масса нетто по строке, если есть колонка
    "unit_weight_g": число|null,     // вес единицы: из названия (200 г, 1/180, 1/250, 1/1000 = граммы), иначе netto_kg*1000/qty
    "sterilization_pack": true|false, // пакеты для стерилизации Альянс Хим, где «1» = пачка 100 листов
-   "handwritten": null | {          // РУКОПИСНАЯ пометка возле строки (ручкой/карандашом), не печатный текст
+   "handwritten": null | {          // РУКОПИСНАЯ пометка возле строки (ручкой/карандашом), не печатный текст. НЕ пометка (handwritten=null): кружок/овал/обводка вокруг ПЕЧАТНОГО числа (чаще всего вокруг «мест» — склад так отмечает проверенное), галочка, подчёркивание, дата срока годности вида 28.03 / 12.05.27 / 22.12.26 рядом с названием
      "kind": "not_arrived" | "qty_changed" | "unclear", // «нет», строка зачёркнута / вместо печатного количества написано другое число / непонятно
      "qty": число|null,             // для qty_changed — число из пометки (в тех же единицах, что и qty)
      "text": "как написано",
@@ -36,7 +38,7 @@ const SYSTEM = `Ты читаешь фото одного листа товар�
    }
  }]
 }
-qty и sum — ПЕЧАТНЫЕ значения; рукописное число никогда не подставляй в qty, а верни его в handwritten. Не выдумывай: нечитаемое число = null, а если нечитаемо много — legible=false. Числа — десятичные с точкой.`;
+qty, places, per_place и sum — ПЕЧАТНЫЕ значения (обведённое кружком печатное число остаётся печатным); рукописное число никогда не подставляй в qty, а верни его в handwritten. Не выдумывай: нечитаемое число = null, а если нечитаемо много — legible=false. Числа — десятичные с точкой.`;
 
 // temperature 0 — чтение должно быть повторяемым; если модель параметр не
 // принимает, повторяем без него.
@@ -139,10 +141,23 @@ function prepareLine(raw) {
   // Рукописная пометка: «нет»/зачёркнуто → не пришло; другое число → правка количества.
   let mark = null;
   const hw = raw.handwritten;
+  const places = num(raw.places);
+  const perPlace = num(raw.per_place);
   if (hw && typeof hw === 'object' && ['not_arrived', 'qty_changed', 'unclear'].includes(hw.kind)) {
     const markQty = num(hw.qty);
-    const kind = hw.kind === 'qty_changed' && markQty === null ? 'unclear' : hw.kind;
-    mark = { kind, qty: markQty, text: String(hw.text || '').trim(), pending: kind === 'unclear' || hw.confident === false };
+    // Склад обводит кружком печатное число мест (4 места × 10 = 40 шт): это не правка количества.
+    const isRingedPrint = markQty !== null && (
+      (places !== null && markQty === places) ||
+      (printedQty !== null && perPlace && markQty * perPlace === printedQty) ||
+      (printedQty !== null && markQty === printedQty));
+    // Дата срока годности (28.03, 12.05.27) — не пометка о количестве.
+    const isDate = /^\s*\d{1,2}\s*[.\/]\s*\d{1,2}(\s*[.\/]\s*\d{2,4})?\s*$/.test(String(hw.text || ''));
+    if (hw.kind !== 'not_arrived' && (isRingedPrint || isDate)) {
+      console.log(`[prihod] «${raw.name}»: пометка «${hw.text || markQty}» — ${isDate ? 'срок годности' : 'обводка печатного числа'}, не правка количества`);
+    } else {
+      const kind = hw.kind === 'qty_changed' && markQty === null ? 'unclear' : hw.kind;
+      mark = { kind, qty: markQty, text: String(hw.text || '').trim(), pending: kind === 'unclear' || hw.confident === false };
+    }
   }
   return {
     mark, n: raw.n, name: String(raw.name || '').trim(), supplierCode: String(raw.supplier_code || '').trim(), qty, printedQty, packMult: mult, sterilization: Boolean(raw.sterilization_pack),

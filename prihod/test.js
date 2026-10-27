@@ -596,3 +596,30 @@ test('набор из 11 штук (Мама приехала 11ШТ, Мишка 
   assert.strictEqual(skipped.length, 0);
   assert.deepStrictEqual(distribute(families[0], 110).map((x) => [x.pieces, x.qty]), [[1, 110], [2, 55], [4, 27], [11, 10]]);
 });
+
+// ---------- накладная №23269: обводка «мест» ≠ правка количества; склейка «2501ШТ» ----------
+test('обведённое кружком число мест не считается правкой количества', () => {
+  const base = { n: 7, name: 'КАРАМЕЛЬ_Лимончики_фас_1/250', qty: 40, places: 4, per_place: 10, price: 53.22, sum: 2597.29 };
+  assert.strictEqual(prepareLine({ ...base, handwritten: { kind: 'qty_changed', qty: 4, text: '4', confident: true } }).mark, null);
+  assert.strictEqual(prepareLine({ ...base, handwritten: { kind: 'unclear', qty: null, text: '28.03', confident: false } }).mark, null);
+  const real = prepareLine({ ...base, handwritten: { kind: 'qty_changed', qty: 36, text: '36', confident: true } });
+  assert.strictEqual(real.mark.kind, 'qty_changed');
+  assert.strictEqual(real.mark.qty, 36);
+  const notArrived = prepareLine({ ...base, handwritten: { kind: 'not_arrived', qty: null, text: 'нет', confident: true } });
+  assert.strictEqual(notArrived.mark.kind, 'not_arrived');
+});
+
+test('Помадка с цукатом: 2501ШТ = вес 250 + 1 шт, семья 1/2/3/4/6', () => {
+  const cat = [['ПомадкаСЦукатом2501ШТ', 'Помадка с цукатом 1 упаковка 180 гр'], ['ПомадкаСЦукатом250/2ШТ', 'Помадка с цукатом 2 упаковки по 180 гр'],
+    ['ПомадкаСЦукатом250/3ШТ', 'Помадка с цукатом 3 упаковки по 180 гр'], ['ПомадкаСЦукатом250/4ШТ', 'Помадка с цукатом 4 упаковки по 180 гр'],
+    ['ПомадкаСЦукатом250/6ШТ', 'Помадка с цукатом 6 упаковок по 180 гр']].map(([article, name]) => ({ article, name }));
+  const { families } = buildFamilies(cat);
+  assert.strictEqual(families.length, 1);
+  assert.deepStrictEqual(distribute(families[0], 36).map((x) => [x.pieces, x.qty]), [[1, 36], [2, 18], [3, 12], [4, 9], [6, 6]]);
+});
+
+test('наборы по 7/9/14/16 штук входят в семью', () => {
+  const { families, skipped } = buildFamilies([7, 1].map((k) => ({ article: `200ТрюфелиКО${k === 1 ? '1ШТ' : '7'}`, name: 'Трюфели 200 г' })));
+  assert.strictEqual(skipped.length, 0);
+  assert.deepStrictEqual(families[0].members.map((m) => m.pieces), [1, 7]);
+});

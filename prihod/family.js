@@ -4,7 +4,7 @@
 
 const { dense, tokens, trigrams, articleWords } = require('./text');
 
-const SET_SIZES = [1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 20];
+const SET_SIZES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16, 20];
 const PIECES_RE = /(?:^|[^0-9a-zа-я])(\d{1,2})\s*шт\.?/i;
 const PIECES_STRIP_RE = /[\s_\-(]*\d{1,2}\s*шт\.?\)?/gi;
 const WEIGHT_RE = /(\d+(?:[.,]\d+)?)\s*(кг|kg|г|гр|g|мл|ml|л)(?![a-zа-я])/i;
@@ -35,7 +35,11 @@ function parseWeightG(text) {
 // наборе (одна-две цифры, перед ними не цифра, чтобы не резать вес «…200»).
 const TRAIL_PIECES_RE = /[\s_\-]*(?<![0-9])(\d{1,2})\s*(?:шт\.?|pcs)?$/i;
 
+// «ПомадкаСЦукатом2501ШТ»: вес 250 + «1ШТ» слиплись в одно число — это набор из 1.
+const GLUED_ONE_RE = /^(.*[^\d\s_\-/])(\d{3})1\s*шт\.?$/i;
+
 function parsePieces(article, name) {
+  if (GLUED_ONE_RE.test(String(article || '').trim())) return 1;
   const t = TRAIL_PIECES_RE.exec(String(article || '').trim());
   if (t) return Number(t[1]);
   for (const src of [article, name]) {
@@ -64,9 +68,11 @@ function parseArticleWeight(article) {
 // Основа семьи = артикул без хвоста «N шт» (200КОМамаПриехала).
 function articleBase(article, name) {
   const a = String(article || '').trim();
+  const glued = GLUED_ONE_RE.exec(a);
+  if (glued) return `${glued[1]}${glued[2]}`;
   let base = a.replace(TRAIL_PIECES_RE, '');
   if (base === a) base = a.replace(PIECES_STRIP_RE, '');
-  base = base.replace(/[\s_\-]+$/, '');
+  base = base.replace(/[\s_\-/]+$/, '');
   return base || String(name || '').replace(PIECES_STRIP_RE, '').trim();
 }
 
