@@ -104,6 +104,7 @@ const { saveArticlesFile, findArticle } = require('./gabarity/articles');
 const { buildResultText: buildGabarityText } = require('./gabarity/format');
 const { isTrustedUser } = require('./auth');
 const prihod = require('./prihod/flow');
+const fotoFlow = require('./prihod/fotoFlow');
 const { isKnownItem } = require('./proekty/items');
 const { getDay: getProDay, toggleItem: toggleProItem } = require('./proekty/store');
 const { buildProMessage, NOOP_CALLBACK: PRO_NOOP_CALLBACK, TOGGLE_PREFIX: PRO_TOGGLE_PREFIX } = require('./proekty/view');
@@ -217,6 +218,8 @@ const openai = openaiKey ? new OpenAI({ apiKey: openaiKey, maxRetries: 0, timeou
 
 // /приход: фото накладной → xlsx остатков для Ozon (prihod/flow.js)
 const prihodHooks = prihod.init(bot, { isTrustedUser });
+// /остатки_фото (/вк): фото этикетки + остаток → семья артикулов → «Применить» → остатки в Озон (prihod/fotoFlow.js)
+const fotoHooks = fotoFlow.init(bot, { isTrustedUser });
 
 console.log('Бот запущен и слушает сообщения...');
 
@@ -434,6 +437,7 @@ bot.on('message', async (msg) => {
 
   // Ответ Елены текстом внутри /приход (правка количества/суммы/товара).
   if (await prihodHooks.handleText(msg)) return;
+  if (await fotoHooks.handleText(msg)) return;
 
   // Активная сессия /new перехватывает свободный текст первой — иначе он
   // упал бы либо в парсер напоминаний, либо в эхо-ответ ниже.
@@ -3345,6 +3349,7 @@ bot.on('photo', async (msg) => {
 
   // Во время /приход фото — это лист накладной, а не габариты.
   if (prihodHooks.handlePhoto(msg)) return;
+  if (fotoHooks.handlePhoto(msg)) return;
 
   if (!gabarityConfigured) {
     await bot.sendMessage(chatId, 'Распознавание фото пока не настроено (нет ANTHROPIC_API_KEY) 😔');
@@ -3474,6 +3479,7 @@ async function handleFboPlacementDocument(chatId, document) {
 bot.on('document', async (msg) => {
   const chatId = msg.chat.id;
   if (await prihodHooks.handleDocument(msg)) return;
+  if (await fotoHooks.handleDocument(msg)) return;
   const caption = (msg.caption || '').trim();
   const isUploadCommand = /^\/z(?:@\S+)?$/.test(caption);
   const waitingSince = pendingArticlesUpload.get(chatId);

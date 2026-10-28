@@ -61,6 +61,7 @@ async function fetchLive() {
         article,
         name: String(it.name || '').trim(),
         barcode: Array.isArray(it.barcodes) ? it.barcodes[0] || '' : String(it.barcode || ''),
+        barcodes: Array.isArray(it.barcodes) ? it.barcodes.filter(Boolean).map(String) : (it.barcode ? [String(it.barcode)] : []),
         status: String(statuses.status_name || statuses.status || ''),
         archived: Boolean(it.is_archived) || archivedSet.has(article),
       });

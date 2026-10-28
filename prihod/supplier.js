@@ -15,6 +15,7 @@ const nomenclature = require('../nomenclature');
 const { findFamilyByArticle } = require('./family');
 const { weightOk } = require('./weight');
 const { dense } = require('./text');
+const { normBarcode } = require('./barcode');
 
 const SPREADSHEET_ID = process.env.NOMENCLATURE_SPREADSHEET_ID || '16Mq06mwMN9zALJaioiFdBaEe7ucGDBF0Dxp_d6-ti6w';
 const TAB_GID = process.env.NOMENCLATURE_GID || '38517625';
@@ -161,9 +162,12 @@ let lastError = null;
 function buildIndex(rows) {
   const index = new Map(); // ключ кода → [{article, pieces}]
   const textIndex = new Map(); // нормализованное название → [{article, pieces}]
+  const barIndex = new Map(); // нормализованный штрихкод (столбец F) → [артикул]
   let filled = 0;
   let codeForm = 0;
   for (const r of rows) {
+    const bc = normBarcode(r.barcode);
+    if (bc) { if (!barIndex.has(bc)) barIndex.set(bc, []); barIndex.get(bc).push(r.article); }
     if (r.supplier) filled += 1;
     const entry = { article: r.article, pieces: Number(String(r.pieces).replace(',', '.')) || null };
     const k = supplierKey(r.supplier);
@@ -180,6 +184,7 @@ function buildIndex(rows) {
   return {
     index,
     textIndex,
+    barIndex,
     stats: { total, filled, empty: total - filled, codeForm, textOnly: filled - codeForm, codes: index.size, texts: textIndex.size },
   };
 }
@@ -187,8 +192,8 @@ function buildIndex(rows) {
 async function load({ force = false } = {}) {
   if (!force && cache && Date.now() - cache.at < CACHE_MS) return cache;
   try {
-    const { index, textIndex, stats } = buildIndex(await fetchColumns());
-    cache = { at: Date.now(), index, textIndex, stats };
+    const { index, textIndex, barIndex, stats } = buildIndex(await fetchColumns());
+    cache = { at: Date.now(), index, textIndex, barIndex, stats };
     lastError = null;
     return cache;
   } catch (err) {
@@ -242,15 +247,24 @@ function accountEmail() {
   return sa ? sa.client_email : null;
 }
 
+// Артикулы Озона (столбец D) по штрихкоду из столбца F Номенклатуры. Нет доступа
+// к таблице — [] (поиск идёт дальше по каталогу Озона и «Арт:» с этикетки).
+async function articlesByBarcode(barcode) {
+  const key = normBarcode(barcode);
+  if (!key) return [];
+  const { barIndex } = await load();
+  return (barIndex && barIndex.get(key)) || [];
+}
+
 function status() {
   return { lastError, loadedAt: cache ? cache.at : null, source };
 }
 
 // Только для тестов: подставить готовый индекс вместо чтения таблицы.
 function _setIndex(rows) {
-  const { index, textIndex, stats } = buildIndex(rows);
-  cache = { at: Date.now(), index, textIndex, stats };
+  const { index, textIndex, barIndex, stats } = buildIndex(rows);
+  cache = { at: Date.now(), index, textIndex, barIndex, stats };
   lastError = null;
 }
 
-module.exports = { accountEmail, _setIndex, supplierKey, resolve, coverage, status, load, buildIndex, colLetter, SupplierAccessError };
+module.exports = { articlesByBarcode, accountEmail, _setIndex, supplierKey, resolve, coverage, status, load, buildIndex, colLetter, SupplierAccessError };

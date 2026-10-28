@@ -748,4 +748,4 @@ function init(botInstance, { isTrustedUser }) {
   return { handlePhoto, handleDocument, handleText };
 }
 
-module.exports = { init, buildReport, applyResults };
+module.exports = { init, buildReport, applyResults, getTemplate };
