@@ -83,12 +83,12 @@ test('подарок 800 г Красный Октябрь, 4 → 4/2', async () 
   assert.deepStrictEqual(qtys(p), [4, 2]);
 });
 
-test('КраснШап150Гр1УП, 2 → 2/1/0/0; у карточки без штрихкода остаток не ставим', async () => {
+test('КраснШап150Гр1УП, 2 → 2/1/0/0; штрихкод в карточке Озона не проверяется', async () => {
   const { plan: p } = await plan('4600000000080', 2);
   assert.deepStrictEqual(qtys(p), [2, 1, 0, 0]);
-  assert.deepStrictEqual(p.noBarcode.map((m) => m.article), ['150КраснШап150Гр2УП']);
-  assert.ok(!p.writes.some((w) => w.article === '150КраснШап150Гр2УП'));
-  assert.strictEqual(p.writes.length, 1); // 1УП=2; 2УП без штрихкода; 3УП и 4УП уже 0 = без изменений
+  assert.ok(p.writes.some((w) => w.article === '150КраснШап150Гр2УП')); // карточка без штрихкода остаток получает
+  assert.strictEqual(p.writes.length, 2); // 1УП=2, 2УП=1; 3УП и 4УП уже 0 = без изменений
+  assert.ok(!/штрихкод/i.test(buildText(p)));
 });
 
 test('701ВеселыеКаникулы1, 5 — одна карточка', async () => {
@@ -176,7 +176,7 @@ test('экран подтверждения (пример)', async () => {
   const text = buildText(p, { notFound: [{ author: 'Алина', text: 'штрихкод 4601… не опознан' }], unclear: [{ author: 'Алина', text: 'Остаток-1 нет' }] });
   console.log(`\n${text}\n`);
   assert.match(text, /^📋 Проверь/);
-  assert.ok(!/Нет штрихкода[\s\S]*Не нашёл/.test(text) || true);
+  assert.ok(!/штрихкод:|Нет штрихкода/.test(text));
 });
 
 test('штрихкод читается с картинки (zbar)', async (t) => {
@@ -294,7 +294,8 @@ test('фото без подписи → «Сколько штук?» → чис
   await e.text('2');
   const review = await e.waitFor(/^📋 Проверь/);
   assert.match(review.text, /150КраснШап150Гр1УП: 0 → 2/);
-  assert.match(review.text, /Нет штрихкода[\s\S]*150КраснШап150Гр2УП — было бы 1/);
+  assert.match(review.text, /150КраснШап150Гр2УП: 0 → 1$/m);
+  assert.ok(!/штрихкод/i.test(review.text));
 });
 
 test('неясная подпись → кнопки', async () => {
