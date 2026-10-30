@@ -414,7 +414,7 @@ function ordersDiagCommand(re, run) {
     if (!isTrustedUser(msg.chat.id)) return;
     try {
       const text = await run();
-      for (const chunk of chunkMessage(text)) await bot.sendMessage(msg.chat.id, chunk);
+      for (const chunk of ordersReport.splitMessage(text)) await bot.sendMessage(msg.chat.id, chunk);
     } catch (err) {
       console.error('[orders]', err.message);
       await bot.sendMessage(msg.chat.id, `Не получилось 😔 ${err.message}`);
@@ -428,7 +428,7 @@ bot.onText(/^\/заказы_отчёт(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, 
   try {
     await bot.sendMessage(msg.chat.id, 'Собираю заказы Озона… это может занять несколько минут ⏳');
     const text = await ordersReport.runOrdersReport(match[1] || '');
-    for (const chunk of chunkMessage(text)) await bot.sendMessage(msg.chat.id, chunk);
+    for (const chunk of ordersReport.splitMessage(text)) await bot.sendMessage(msg.chat.id, chunk);
   } catch (err) {
     console.error('[orders]', err.message);
     await bot.sendMessage(msg.chat.id, `Не получилось 😔 ${err.message}`);

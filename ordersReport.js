@@ -96,7 +96,7 @@ function fieldPaths(obj, prefix = '', out = []) {
   } else if (obj && typeof obj === 'object') {
     for (const [k, v] of Object.entries(obj)) fieldPaths(v, prefix ? `${prefix}.${k}` : k, out);
   } else {
-    out.push(`${prefix}: ${obj === null ? 'null' : typeof obj}`);
+    out.push(`${prefix}: ${obj === null ? 'null' : obj === '' ? 'string (ПУСТАЯ)' : typeof obj}`);
   }
   return out;
 }
@@ -366,8 +366,8 @@ const ENRICH = {
   'Нижний штрихкод': [['barcodes.lower_barcode']],
   'Кластер отгрузки': [['financial_data.cluster_from']],
   'Кластер доставки': [['financial_data.cluster_to']],
-  'Регион доставки': [['analytics_data.region']],
-  'Город доставки': [['analytics_data.city']],
+  'Регион доставки': [['analytics_data.region', 'customer.address.region']],
+  'Город доставки': [['analytics_data.city', 'customer.address.city']],
   'Способ доставки': [['analytics_data.delivery_type']],
   'Сегмент клиента': [['analytics_data.is_premium'], premium],
   'Способ оплаты': [['analytics_data.payment_type_group_name']],
@@ -375,17 +375,20 @@ const ENRICH = {
   'Наименование': [['legal_info.company_name']],
   'ИНН': [['legal_info.inn']],
   'КПП': [['legal_info.kpp']],
-  'Имя покупателя': [['customer.name']],
-  'Email покупателя': [['customer.email']],
-  'Имя получателя': [['addressee.name']],
-  'Телефон получателя': [['addressee.phone', 'customer.phone']],
-  'Адрес доставки': [['customer.address.address_tail']],
-  'Адрес покупателя': [['customer.address.address_tail']],
-  'Индекс': [['customer.address.zip_code']],
   'Склад отгрузки': [['analytics_data.warehouse_name', 'analytics_data.warehouse', 'delivery_method.warehouse']],
   'Перевозчик': [['analytics_data.tpl_provider', 'delivery_method.tpl_provider']],
   'Название метода': [['delivery_method.name']],
+  'Итоговый объемный вес отправления': [['volume_weight']],
+  'Способ отгрузки': [['delivery_method.name'], shipMethod],
 };
+const WEIGHT_COL = 'Заявленный итоговый вес для отправления';
+const WEIGHT_KEYS = ['_w_total', '_w_line', '_w_total_kg', '_w_line_kg'];
+function shipMethod(name) {
+  const t = String(name || '');
+  if (/самостоятельно/i.test(t)) return 'Самостоятельно';
+  if (/забор/i.test(t)) return 'Забор';
+  return '';
+}
 
 async function fetchPostingList(schema, from, to) {
   const isFbs = schema === 'fbs';
@@ -409,7 +412,15 @@ async function fetchPostingList(schema, from, to) {
     const body = r.json?.result ?? r.json ?? {};
     const list = Array.isArray(body) ? body : body.postings || r.json?.postings || [];
     const before = map.size;
-    for (const p of list) if (p.posting_number) map.set(String(p.posting_number), flatten(p));
+    for (const p of list) {
+      if (!p.posting_number) continue;
+      const flat = flatten(p);
+      const prods = Array.isArray(p.products) ? p.products : [];
+      const line = prods.reduce((a, x) => a + (Number(x.weight) || 0), 0);
+      const total = prods.reduce((a, x) => a + (Number(x.weight) || 0) * (Number(x.quantity) || 1), 0);
+      if (line) { flat._w_line = line; flat._w_total = total; flat._w_line_kg = line / 1000; flat._w_total_kg = total / 1000; }
+      map.set(String(p.posting_number), flat);
+    }
     if (!list.length || map.size === before) break; // пусто или страница повторилась (offset/cursor не сработал)
     const next = body.cursor || r.json?.cursor || '';
     const hasNext = body.has_next ?? r.json?.has_next;
@@ -428,7 +439,7 @@ function toCell(v) {
   return s;
 }
 
-function buildRows(sheetHeader, report, postings) {
+function buildRows(sheetHeader, report, postings, opts = {}) {
   const idx = Object.fromEntries(report.header.map((h, i) => [h, i]));
   const numIdx = idx['Номер отправления'];
   const filled = Object.fromEntries(sheetHeader.map((h) => [h, 0]));
@@ -437,6 +448,7 @@ function buildRows(sheetHeader, report, postings) {
     return sheetHeader.map((h) => {
       let v = '';
       if (h in idx) v = r[idx[h]];
+      else if (h === WEIGHT_COL) v = flat[opts.weightKey || WEIGHT_KEYS[0]] ?? '';
       else if (ENRICH[h]) {
         const [paths, fn] = ENRICH[h];
         const key = paths.find((p) => flat[p] !== undefined);
@@ -488,6 +500,70 @@ async function writeTab(tab, sheetHeader, rows) {
   return meta.properties.locale;
 }
 
+function sameCell(a, b) {
+  const x = String(a ?? '').trim();
+  const y = String(b ?? '').trim();
+  if (x === y) return true;
+  if (/E\+/i.test(x) || /E\+/i.test(y)) return true; // экспоненциальная запись в таблице — не сравниваем
+  const nx = Number(x.replace(',', '.'));
+  const ny = Number(y.replace(',', '.'));
+  return x !== '' && y !== '' && Number.isFinite(nx) && Number.isFinite(ny) && Math.abs(nx - ny) < 0.005;
+}
+
+// Сравнивает то, что собрал бот, с тем, что уже лежит во вкладке (ручная вставка). Строки — по номеру отправления + порядку внутри него.
+async function compareWithSheet(tab, header, newRows) {
+  const pi = header.indexOf('Номер отправления');
+  const existing = await readRange(tab, `A3:${colName(header.length - 1)}`);
+  const keyed = (rows) => {
+    const seen = {};
+    const m = new Map();
+    for (const r of rows) {
+      const p = String(r[pi] ?? '').trim();
+      if (!p) continue;
+      seen[p] = (seen[p] || 0) + 1;
+      m.set(`${p}#${seen[p]}`, r);
+    }
+    return m;
+  };
+  const oldMap = keyed(existing);
+  const newMap = keyed(newRows);
+  const common = [...newMap.keys()].filter((k) => oldMap.has(k));
+  return { common, oldMap, newMap, existingCount: oldMap.size };
+}
+
+const VOLATILE = new Set(['Статус', 'Дата доставки', 'Фактическая дата передачи в доставку', 'Дата отмены', 'Выкуп товара', 'Связанные отправления']);
+
+function compareSummary(header, cmp) {
+  const lines = [`Сверка с тем, что уже лежит во вкладке: общих строк ${cmp.common.length} из ${cmp.existingCount} в таблице`];
+  if (!cmp.common.length) return lines.concat('нечего сравнивать (в таблице другой период)');
+  const stats = [];
+  header.forEach((h, c) => {
+    if (VOLATILE.has(h)) return;
+    let bad = 0, ex = null;
+    for (const k of cmp.common) {
+      const a = cmp.newMap.get(k)[c], b = cmp.oldMap.get(k)[c];
+      if (!sameCell(a, b)) { bad += 1; if (!ex) ex = `бот «${String(a).slice(0, 30)}» / таблица «${String(b ?? '').slice(0, 30)}»`; }
+    }
+    if (bad) stats.push({ h, bad, ex });
+  });
+  if (!stats.length) return lines.concat('✅ все сравниваемые столбцы совпали');
+  stats.sort((x, y) => y.bad - x.bad);
+  lines.push('Расхождения (кроме статусов и дат доставки/отмены):');
+  for (const s of stats.slice(0, 15)) lines.push(`• ${s.h}: ${s.bad} из ${cmp.common.length}; напр. ${s.ex}`);
+  return lines;
+}
+
+function splitMessage(text, max = 3500) {
+  const out = [];
+  let cur = '';
+  for (const line of String(text).split('\n')) {
+    const l = line.length > max ? `${line.slice(0, max - 1)}…` : line;
+    if ((cur + '\n' + l).length > max && cur) { out.push(cur); cur = l; } else cur = cur ? `${cur}\n${l}` : l;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
 let running = false;
 async function runOrdersReport(argText) {
   if (running) throw new Error('отчёт уже идёт, подожди окончания');
@@ -513,7 +589,25 @@ async function runOrdersReport(argText) {
         if (!report.rows.length) { out.push('', `📄 ${tab}: за период нет заказов — вкладку не трогаю`); continue; }
         let postings = { map: new Map(), note: '' };
         try { postings = await fetchPostingList(schema, from, to); } catch (e) { postings.note = `детали отправлений не получены: ${e.message}`; }
-        const { rows, filled } = buildRows(header, report, postings);
+        let built = buildRows(header, report, postings);
+        let cmp = null;
+        try {
+          cmp = await compareWithSheet(tab, header, built.rows);
+          if (schema === 'fbs' && header.includes(WEIGHT_COL) && cmp.common.length) {
+            // Единицы и способ расчёта «Заявленного веса» подбираем по тому, что совпало с текущей вставкой.
+            const wi = header.indexOf(WEIGHT_COL);
+            let best = { key: WEIGHT_KEYS[0], score: -1 };
+            for (const key of WEIGHT_KEYS) {
+              const tryBuilt = buildRows(header, report, postings, { weightKey: key });
+              const tc = await compareWithSheet(tab, header, tryBuilt.rows);
+              const score = tc.common.filter((k) => sameCell(tc.newMap.get(k)[wi], tc.oldMap.get(k)[wi])).length;
+              if (score > best.score) best = { key, score, built: tryBuilt, cmp: tc };
+            }
+            built = best.built; cmp = best.cmp;
+            out.push(`Вес: способ «${best.key}» совпал в ${best.score} из ${cmp.common.length} строк`);
+          }
+        } catch (e) { out.push(`⚠️ сверка с текущей вставкой не удалась: ${e.message}`); }
+        const { rows, filled } = built;
         if (!dry) locale = await writeTab(tab, header, rows);
         const empty = header.filter((h) => !filled[h]);
         out.push('', `📄 ${tab}: ${dry ? 'было бы вставлено' : 'вставлено'} строк: ${rows.length}`);
@@ -521,6 +615,7 @@ async function runOrdersReport(argText) {
         if (postings.note) out.push(`⚠️ ${postings.note}`);
         if (report.badEncoding) out.push('⚠️ в файле отчёта есть нечитаемые символы (кодировка)');
         out.push(`Пустые во всех строках: ${empty.join(', ') || 'нет'}`);
+        if (cmp) out.push(...compareSummary(header, cmp));
       } catch (e) {
         out.push('', `📄 ${tab}: ❌ ${e.message}`);
       }
@@ -533,4 +628,4 @@ async function runOrdersReport(argText) {
   }
 }
 
-module.exports = { buildRows, runOrdersReport, parseArgs, parseCsv, dependenciesMessage, reportProbeMessage, headersMessage, ozonFieldsMessage, readRange, SPREADSHEET_ID, TABS };
+module.exports = { splitMessage, buildRows, runOrdersReport, parseArgs, parseCsv, dependenciesMessage, reportProbeMessage, headersMessage, ozonFieldsMessage, readRange, SPREADSHEET_ID, TABS };
