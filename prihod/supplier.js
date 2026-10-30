@@ -83,6 +83,16 @@ function textKey(raw) {
   return d.length >= 8 ? d : null;
 }
 
+// Артикулы поставщика ВНУТРИ названия: «(арт. 2763)», «(арт.MP301101)», длинные
+// «856.104.243.080.018». Нужны, когда в AB стоит название, а в накладной оно записано иначе.
+function nameTokens(raw) {
+  const t = String(raw ?? '');
+  const out = new Set();
+  for (const m of t.matchAll(/\d{3}\.\d{3}\.\d{3}\.\d{3}\.\d{3}/g)) out.add(m[0]);
+  for (const m of t.matchAll(/арт\.?\s*([A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9.\-]{2,})/gi)) out.add(`арт:${dense(m[1])}`);
+  return [...out];
+}
+
 function colLetter(i) {
   let n = i + 1;
   let s = '';
@@ -162,6 +172,7 @@ let lastError = null;
 function buildIndex(rows) {
   const index = new Map(); // ключ кода → [{article, pieces}]
   const textIndex = new Map(); // нормализованное название → [{article, pieces}]
+  const tokenIndex = new Map(); // артикул внутри названия → [{article, pieces}]
   const barIndex = new Map(); // нормализованный штрихкод (столбец F) → [артикул]
   let filled = 0;
   let codeForm = 0;
@@ -172,6 +183,7 @@ function buildIndex(rows) {
     const entry = { article: r.article, pieces: Number(String(r.pieces).replace(',', '.')) || null };
     const k = supplierKey(r.supplier);
     if (!k) {
+      for (const tok of nameTokens(r.supplier)) { if (!tokenIndex.has(tok)) tokenIndex.set(tok, []); tokenIndex.get(tok).push(entry); }
       const tk = r.supplier ? textKey(r.supplier) : null;
       if (tk) { if (!textIndex.has(tk)) textIndex.set(tk, []); textIndex.get(tk).push(entry); }
       continue;
@@ -184,6 +196,7 @@ function buildIndex(rows) {
   return {
     index,
     textIndex,
+    tokenIndex,
     barIndex,
     stats: { total, filled, empty: total - filled, codeForm, textOnly: filled - codeForm, codes: index.size, texts: textIndex.size },
   };
@@ -192,8 +205,8 @@ function buildIndex(rows) {
 async function load({ force = false } = {}) {
   if (!force && cache && Date.now() - cache.at < CACHE_MS) return cache;
   try {
-    const { index, textIndex, barIndex, stats } = buildIndex(await fetchColumns());
-    cache = { at: Date.now(), index, textIndex, barIndex, stats };
+    const { index, textIndex, tokenIndex, barIndex, stats } = buildIndex(await fetchColumns());
+    cache = { at: Date.now(), index, textIndex, tokenIndex, barIndex, stats };
     lastError = null;
     return cache;
   } catch (err) {
@@ -205,7 +218,7 @@ async function load({ force = false } = {}) {
 // Семьи Озона по коду из накладной. status: 'matched' | 'ambiguous' | 'none'.
 // none = кода нет в AB или его артикулов нет в каталоге Озона → ищем по названию.
 async function resolve(line, families) {
-  const { index, textIndex } = await load();
+  const { index, textIndex, tokenIndex } = await load();
   const key = supplierKey(line.supplierCode);
   let entries = key ? index.get(key) : null;
   let how = key ? `код поставщика ${key}` : '';
@@ -213,6 +226,12 @@ async function resolve(line, families) {
     const tk = textKey(line.name);
     entries = tk ? textIndex.get(tk) : null;
     how = 'название поставщика из Номенклатуры';
+  }
+  if ((!entries || !entries.length) && tokenIndex) {
+    // артикул поставщика внутри названия накладной («арт. 2763», 856.104.243.080.018)
+    const found = [];
+    for (const tok of nameTokens(line.name)) for (const e of tokenIndex.get(tok) || []) if (!found.includes(e)) found.push(e);
+    if (found.length) { entries = found; how = 'артикул поставщика в названии'; }
   }
   if (!entries || !entries.length) {
     return { status: 'none', why: key ? `код ${key} и название не найдены в Номенклатуре` : 'нет кода поставщика, название не найдено в AB' };
@@ -262,9 +281,9 @@ function status() {
 
 // Только для тестов: подставить готовый индекс вместо чтения таблицы.
 function _setIndex(rows) {
-  const { index, textIndex, barIndex, stats } = buildIndex(rows);
-  cache = { at: Date.now(), index, textIndex, barIndex, stats };
+  const { index, textIndex, tokenIndex, barIndex, stats } = buildIndex(rows);
+  cache = { at: Date.now(), index, textIndex, tokenIndex, barIndex, stats };
   lastError = null;
 }
 
-module.exports = { articlesByBarcode, accountEmail, _setIndex, supplierKey, resolve, coverage, status, load, buildIndex, colLetter, SupplierAccessError };
+module.exports = { nameTokens, articlesByBarcode, accountEmail, _setIndex, supplierKey, resolve, coverage, status, load, buildIndex, colLetter, SupplierAccessError };

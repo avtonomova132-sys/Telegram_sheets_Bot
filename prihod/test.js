@@ -659,3 +659,20 @@ test('flow: расчёт переживает перезапуск (savePending/
   assert.equal(flow._loadPending(78), null);
   fs.unlinkSync(f);
 });
+
+test('supplier: артикул поставщика внутри названия (арт. 2763, 856.104.243.080.018)', async () => {
+  delete require.cache[require.resolve('./supplier')];
+  const sup = require('./supplier');
+  assert.deepEqual(sup.nameTokens('Camillen Педикюрная терка Camillen 60 УЗКАЯ (арт. 2763)'), ['арт:2763']);
+  assert.ok(sup.nameTokens('ВладМиВа Фреза алмазная 856.104.243.080.018').includes('856.104.243.080.018'));
+  sup._setIndex([
+    { article: '60120Camillen1ШТ', pieces: '1', supplier: 'Camillen 60 УЗКАЯ (арт. 2763) (20 шт/кор)' },
+    { article: '60120Camillen2ШТ', pieces: '2', supplier: 'Camillen 60 УЗКАЯ (арт. 2763) (20 шт/кор)' },
+  ]);
+  const fams = buildFamilies([
+    { article: '60120Camillen1ШТ', name: 'Терка Camillen 60 120' },
+    { article: '60120Camillen2ШТ', name: 'Терка Camillen 60 120' },
+  ].map((x) => ({ ...x, offer_id: x.article }))).families;
+  const r = await sup.resolve({ name: 'Camillen Педикюрная терка Camillen 60 УЗКАЯ (арт. 2763)', qty: 372 }, fams);
+  assert.equal(r.status, 'matched');
+});
