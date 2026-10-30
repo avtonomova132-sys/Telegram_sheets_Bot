@@ -422,6 +422,7 @@ function ordersDiagCommand(re, run) {
   });
 }
 ordersDiagCommand(/^\/заказы_шапка(?:@\S+)?$/, ordersReport.headersMessage);
+ordersDiagCommand(/^\/заказы_проба(?:@\S+)?$/, ordersReport.reportProbeMessage);
 ordersDiagCommand(/^\/заказы_ozon_поля(?:@\S+)?$/, ordersReport.ozonFieldsMessage);
 
 // ===== Напоминания =====

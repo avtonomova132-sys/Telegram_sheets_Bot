@@ -126,4 +126,83 @@ async function ozonFieldsMessage() {
   return lines.join('\n');
 }
 
-module.exports = { headersMessage, ozonFieldsMessage, readRange, SPREADSHEET_ID, TABS };
+
+// ---- Проба методов Озона (только чтение/формирование отчёта) ----
+async function ozonRaw(endpoint, body) {
+  const res = await fetch(`${OZON_HOST}${endpoint}`, {
+    method: 'POST',
+    headers: {
+      'Client-Id': String(process.env.OZON_CLIENT_ID).trim(),
+      'Api-Key': String(process.env.OZON_API_KEY).trim(),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(40000),
+  });
+  const text = await res.text();
+  let json = null;
+  try { json = JSON.parse(text); } catch { /* не JSON */ }
+  return { status: res.status, text, json };
+}
+
+function csvHeader(text) {
+  const line = text.replace(/^\uFEFF/, '').split(/\r?\n/)[0] || '';
+  const sep = line.includes(';') ? ';' : ',';
+  return line.split(sep).map((c) => c.replace(/^"|"$/g, '').trim());
+}
+
+async function probeMethods() {
+  const day = 86400000;
+  const range = { since: new Date(Date.now() - 3 * day).toISOString(), to: new Date().toISOString() };
+  const lines = ['Какие методы списков отвечают (только статус):'];
+  for (const ep of ['/v3/posting/fbs/list', '/v4/posting/fbs/list', '/v2/posting/fbo/list', '/v3/posting/fbo/list', '/v4/posting/fbo/list']) {
+    const r = await ozonRaw(ep, { dir: 'ASC', filter: range, limit: 1, offset: 0 });
+    lines.push(`${ep} → HTTP ${r.status} ${r.status === 200 ? 'OK' : r.text.slice(0, 120)}`);
+  }
+  return lines.join('\n');
+}
+
+// Формирует «Отчёт об отправлениях» (аналог выгрузки кабинета) и сравнивает его шапку со строкой 2 вкладки.
+async function probeReport(schema) {
+  const tab = schema === 'fbs' ? TABS.fbs : TABS.fbo;
+  const day = 86400000;
+  const from = new Date(Date.now() - 3 * day);
+  const to = new Date(Date.now() - day);
+  const created = await ozonRaw('/v1/report/postings/create', {
+    filter: { processed_at_from: from.toISOString(), processed_at_to: to.toISOString(), delivery_schema: [schema] },
+    language: 'DEFAULT',
+  });
+  const code = created.json?.result?.code;
+  if (!code) return `${schema.toUpperCase()}: отчёт не создан, HTTP ${created.status} ${created.text.slice(0, 200)}`;
+  let info = null;
+  for (let i = 0; i < 20; i++) {
+    await new Promise((r) => setTimeout(r, 4000));
+    info = await ozonRaw('/v1/report/info', { code });
+    const st = info.json?.result?.status;
+    if (st === 'success' || st === 'failed') break;
+  }
+  const result = info?.json?.result;
+  if (result?.status !== 'success' || !result.file) return `${schema.toUpperCase()}: отчёт не готов (${result?.status || info?.status}) ${result?.error || ''}`;
+  const file = await fetch(result.file, { signal: AbortSignal.timeout(60000) });
+  const header = csvHeader(await file.text());
+  const sheet = ((await readRange(tab, 'A2:BZ2'))[0] || []).map((c) => String(c).trim());
+  const missing = header.filter((h) => !sheet.includes(h));
+  const absent = sheet.filter((h) => h && !header.includes(h));
+  return [
+    `${schema.toUpperCase()}: колонок в отчёте API ${header.length}, в строке 2 вкладки «${tab}» ${sheet.filter(Boolean).length}`,
+    `Порядок совпадает: ${header.every((h, i) => h === sheet[i]) ? 'да' : 'нет'}`,
+    `Есть в API, нет во вкладке: ${missing.join(', ') || '—'}`,
+    `Есть во вкладке, нет в API: ${absent.join(', ') || '—'}`,
+    `Шапка API: ${header.join(' | ')}`,
+  ].join('\n');
+}
+
+async function reportProbeMessage() {
+  const out = [await probeMethods(), ''];
+  for (const schema of ['fbs', 'fbo']) {
+    try { out.push(await probeReport(schema), ''); } catch (e) { out.push(`${schema.toUpperCase()}: ${e.message}`, ''); }
+  }
+  return out.join('\n');
+}
+
+module.exports = { reportProbeMessage, headersMessage, ozonFieldsMessage, readRange, SPREADSHEET_ID, TABS };
