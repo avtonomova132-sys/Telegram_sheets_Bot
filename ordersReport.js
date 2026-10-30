@@ -394,10 +394,10 @@ async function fetchPostingList(schema, from, to) {
   const withFlags = { analytics_data: true, financial_data: true, legal_info: true, barcodes: true };
   const map = new Map();
   let note = '';
-  const limit = isFbs ? 1000 : 1000;
+  const limit = 100; // Озон: limit должен быть в (0, 100]
   let offset = 0;
   let cursor = '';
-  for (let page = 0; page < 200; page++) {
+  for (let page = 0; page < 2000; page++) {
     const base = { dir: 'ASC', filter, limit, offset };
     if (cursor) base.cursor = cursor;
     let r = await ozonRaw(endpoint, { ...base, with: withFlags });
@@ -408,7 +408,9 @@ async function fetchPostingList(schema, from, to) {
     if (r.status !== 200) throw new Error(`${endpoint} HTTP ${r.status}: ${r.text.slice(0, 200)}`);
     const body = r.json?.result ?? r.json ?? {};
     const list = Array.isArray(body) ? body : body.postings || r.json?.postings || [];
+    const before = map.size;
     for (const p of list) if (p.posting_number) map.set(String(p.posting_number), flatten(p));
+    if (!list.length || map.size === before) break; // пусто или страница повторилась (offset/cursor не сработал)
     const next = body.cursor || r.json?.cursor || '';
     const hasNext = body.has_next ?? r.json?.has_next;
     if (next && next !== cursor) { cursor = next; if (hasNext === false) break; continue; }
