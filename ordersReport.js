@@ -205,4 +205,68 @@ async function reportProbeMessage() {
   return out.join('\n');
 }
 
-module.exports = { reportProbeMessage, headersMessage, ozonFieldsMessage, readRange, SPREADSHEET_ID, TABS };
+
+// ---- Зависимости: какие столбцы двух вкладок используют формулы других вкладок ----
+function colIndex(letters) {
+  return letters.split('').reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
+}
+
+async function sheetsGet(path) {
+  const sa = nomenclature.loadServiceAccount();
+  if (!sa) throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON не задан');
+  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}${path}`, {
+    headers: { Authorization: `Bearer ${await getToken(sa)}` },
+    signal: AbortSignal.timeout(90000),
+  });
+  if (!res.ok) throw new Error(`Sheets HTTP ${res.status}`);
+  return res.json();
+}
+
+async function dependenciesMessage() {
+  const meta = await sheetsGet('?fields=sheets.properties(title,gridProperties(rowCount,columnCount)),namedRanges(name,range)');
+  const titles = meta.sheets.map((x) => x.properties.title);
+  const names = Object.values(TABS);
+  const headers = {};
+  for (const t of names) headers[t] = ((await readRange(t, 'A2:BZ2'))[0] || []).map((c) => String(c).trim());
+
+  const refRe = new RegExp(
+    `(?:'(${names.join('|')})'|(${names.map((n) => n.replace(/\s/g, '\\s')).join('|')}))!\\$?([A-Z]{1,3})(?:\\$?\\d+)?(?::\\$?([A-Z]{1,3})(?:\\$?\\d+)?)?`,
+    'g'
+  );
+  const found = {}; // 'вкладка-потребитель → вкладка-источник' → {cols:Set, count, sample}
+  let scanned = 0;
+  for (const t of titles) {
+    const rows = (await sheetsGet(`/values/${encodeURIComponent(`'${t}'!A1:CZ`)}?valueRenderOption=FORMULA`)).values || [];
+    scanned += 1;
+    for (const row of rows) {
+      for (const cell of row) {
+        if (typeof cell !== 'string' || cell[0] !== '=' || !names.some((n) => cell.includes(n))) continue;
+        for (const m of cell.matchAll(refRe)) {
+          const src = m[1] || m[2];
+          const a = colIndex(m[3]);
+          const b = m[4] ? colIndex(m[4]) : a;
+          const key = `${t} → ${src}`;
+          const f = (found[key] ||= { cols: new Set(), count: 0, sample: cell.slice(0, 140) });
+          for (let i = Math.min(a, b); i <= Math.max(a, b) && i < 80; i++) f.cols.add(i);
+          f.count += 1;
+        }
+        if (/INDIRECT/i.test(cell)) {
+          const f = (found[`${t} → INDIRECT`] ||= { cols: new Set(), count: 0, sample: cell.slice(0, 140) });
+          f.count += 1;
+        }
+      }
+    }
+  }
+  const lines = [`Просмотрено вкладок: ${scanned}. Именованные диапазоны: ${(meta.namedRanges || []).map((n) => n.name).join(', ') || 'нет'}`];
+  const keys = Object.keys(found);
+  if (!keys.length) lines.push('Формул, ссылающихся на две вкладки заказов, не найдено.');
+  for (const key of keys) {
+    const src = key.split(' → ')[1];
+    const cols = [...found[key].cols].sort((x, y) => x - y)
+      .map((i) => `${colName(i)} «${(headers[src] || [])[i] || '?'}»`);
+    lines.push('', `${key}: формул ${found[key].count}`, `столбцы: ${cols.join('; ') || '—'}`, `пример: ${found[key].sample}`);
+  }
+  return lines.join('\n');
+}
+
+module.exports = { dependenciesMessage, reportProbeMessage, headersMessage, ozonFieldsMessage, readRange, SPREADSHEET_ID, TABS };
