@@ -382,6 +382,31 @@ bot.onText(/^\/chatid(?:@\S+)?$/, (msg) => {
   bot.sendMessage(msg.chat.id, `ID этого чата: ${msg.chat.id}${thread}`, msg.message_thread_id != null ? { message_thread_id: msg.message_thread_id } : {});
 });
 
+// Email сервисного аккаунта Google — чтобы дать ему доступ к таблице. Из ключа
+// читаем ТОЛЬКО client_email; остальное (private_key и т.д.) не показываем и не логируем.
+function readServiceAccountEmail() {
+  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  if (!raw) return null;
+  try {
+    const text = raw.trim().startsWith('{') ? raw : Buffer.from(raw, 'base64').toString('utf8');
+    const email = JSON.parse(text).client_email;
+    return typeof email === 'string' && email ? email : null;
+  } catch {
+    return null;
+  }
+}
+
+bot.onText(/^\/sa_email(?:@\S+)?$/, (msg) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  const email = readServiceAccountEmail();
+  bot.sendMessage(
+    msg.chat.id,
+    email
+      ? `Email сервисного аккаунта:\n${email}`
+      : 'GOOGLE_SERVICE_ACCOUNT_JSON не задан или не читается (нужен JSON ключа или его base64).'
+  );
+});
+
 // ===== Напоминания =====
 function parseReminder(text) {
   const timeMatch = text.match(/(\d{1,2})[:.](\d{2})/);
