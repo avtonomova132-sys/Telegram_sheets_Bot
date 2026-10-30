@@ -407,6 +407,23 @@ bot.onText(/^\/sa_email(?:@\S+)?$/, (msg) => {
   );
 });
 
+// ===== Заказы Озона → таблица (ordersReport.js), этап диагностики =====
+const ordersReport = require('./ordersReport');
+function ordersDiagCommand(re, run) {
+  bot.onText(re, async (msg) => {
+    if (!isTrustedUser(msg.chat.id)) return;
+    try {
+      const text = await run();
+      for (const chunk of chunkMessage(text)) await bot.sendMessage(msg.chat.id, chunk);
+    } catch (err) {
+      console.error('[orders]', err.message);
+      await bot.sendMessage(msg.chat.id, `Не получилось 😔 ${err.message}`);
+    }
+  });
+}
+ordersDiagCommand(/^\/заказы_шапка(?:@\S+)?$/, ordersReport.headersMessage);
+ordersDiagCommand(/^\/заказы_ozon_поля(?:@\S+)?$/, ordersReport.ozonFieldsMessage);
+
 // ===== Напоминания =====
 function parseReminder(text) {
   const timeMatch = text.match(/(\d{1,2})[:.](\d{2})/);
