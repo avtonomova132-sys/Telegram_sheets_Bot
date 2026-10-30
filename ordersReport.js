@@ -103,29 +103,29 @@ function fieldPaths(obj, prefix = '', out = []) {
 
 async function ozonFieldsMessage() {
   const to = new Date();
-  const since = new Date(to.getTime() - 30 * 86400000);
+  const since = new Date(to.getTime() - 5 * 86400000);
   const range = { since: since.toISOString(), to: to.toISOString() };
+  const withFlags = { analytics_data: true, financial_data: true, legal_info: true, barcodes: true };
   const lines = [];
-  try {
-    const r = await ozonPost('/v3/posting/fbs/list', {
-      dir: 'DESC', filter: range, limit: 1, offset: 0,
-      with: { analytics_data: true, financial_data: true },
-    });
-    const p = (r.result?.postings || [])[0];
-    lines.push('FBS /v3/posting/fbs/list:', ...(p ? fieldPaths(p) : ['(нет отправлений за 30 дн.)']));
-  } catch (e) { lines.push(`FBS: ${e.message}`); }
-  lines.push('');
-  try {
-    const r = await ozonPost('/v2/posting/fbo/list', {
-      dir: 'DESC', filter: range, limit: 1, offset: 0,
-      with: { analytics_data: true, financial_data: true },
-    });
-    const p = (r.result || [])[0];
-    lines.push('FBO /v2/posting/fbo/list:', ...(p ? fieldPaths(p) : ['(нет отправлений за 30 дн.)']));
-  } catch (e) { lines.push(`FBO: ${e.message}`); }
+  const section = async (title, listEp, getEp, getBody) => {
+    try {
+      const r = await ozonPost(listEp, { dir: 'DESC', filter: range, limit: 1, offset: 0, with: withFlags });
+      const body = r.result ?? r;
+      const p = (Array.isArray(body) ? body : body.postings || [])[0];
+      lines.push(`${title} ${listEp}:`, ...(p ? fieldPaths(p) : ['(нет отправлений)']));
+      if (p && getEp) {
+        try {
+          const g = await ozonPost(getEp, getBody(p.posting_number));
+          lines.push('', `${getEp}:`, ...fieldPaths(g.result ?? g));
+        } catch (e) { lines.push('', `${getEp}: ${e.message}`); }
+      }
+    } catch (e) { lines.push(`${title}: ${e.message}`); }
+    lines.push('');
+  };
+  await section('FBS', '/v4/posting/fbs/list', '/v3/posting/fbs/get', (n) => ({ posting_number: n, with: withFlags }));
+  await section('FBO', '/v3/posting/fbo/list', '/v2/posting/fbo/get', (n) => ({ posting_number: n, with: withFlags }));
   return lines.join('\n');
 }
-
 
 // ---- Проба методов Озона (только чтение/формирование отчёта) ----
 async function ozonRaw(endpoint, body) {
