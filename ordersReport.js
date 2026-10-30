@@ -33,13 +33,13 @@ async function getToken(sa) {
   return tokenCache.token;
 }
 
-async function readRange(tab, range) {
+async function readRange(tab, range, render = 'FORMATTED_VALUE') {
   const sa = nomenclature.loadServiceAccount();
   if (!sa) throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON не задан');
   const token = await getToken(sa);
   const a1 = encodeURIComponent(`'${tab}'!${range}`);
   const res = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${a1}?valueRenderOption=FORMATTED_VALUE`,
+    `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${a1}?valueRenderOption=${render}`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
   if (res.status === 403 || res.status === 404) {
@@ -362,13 +362,12 @@ const premium = (v) => (v === true ? 'Премиум' : v === false ? 'Не пр
 // Столбец таблицы → [пути в ответе списка отправлений, преобразование].
 // Если пути не нашлись — столбец остаётся пустым и попадает в сводку «не заполнено».
 const ENRICH = {
-  'Верхний штрихкод': [['barcodes.upper_barcode']],
   'Нижний штрихкод': [['barcodes.lower_barcode']],
   'Кластер отгрузки': [['financial_data.cluster_from']],
   'Кластер доставки': [['financial_data.cluster_to']],
   'Регион доставки': [['analytics_data.region', 'customer.address.region']],
   'Город доставки': [['analytics_data.city', 'customer.address.city']],
-  'Способ доставки': [['analytics_data.delivery_type']],
+  'Способ доставки': [['analytics_data.delivery_type'], deliveryType],
   'Сегмент клиента': [['analytics_data.is_premium'], premium],
   'Способ оплаты': [['analytics_data.payment_type_group_name']],
   'Юридическое лицо': [['analytics_data.is_legal'], yesNo],
@@ -378,11 +377,15 @@ const ENRICH = {
   'Склад отгрузки': [['analytics_data.warehouse_name', 'analytics_data.warehouse', 'delivery_method.warehouse']],
   'Перевозчик': [['analytics_data.tpl_provider', 'delivery_method.tpl_provider']],
   'Название метода': [['delivery_method.name']],
-  'Итоговый объемный вес отправления': [['volume_weight']],
+  'Итоговый объемный вес отправления': [['volume_weight'], (v) => (Number(v) ? v : '')],
   'Способ отгрузки': [['delivery_method.name'], shipMethod],
 };
 const WEIGHT_COL = 'Заявленный итоговый вес для отправления';
 const WEIGHT_KEYS = ['_w_total', '_w_line', '_w_total_kg', '_w_line_kg'];
+function deliveryType(v) {
+  const t = String(v || '');
+  return { PVZ: 'ПВЗ', Postamat: 'Постамат', POSTAMAT: 'Постамат', Courier: 'Курьер', COURIER: 'Курьер' }[t] || t;
+}
 function shipMethod(name) {
   const t = String(name || '');
   if (/самостоятельно/i.test(t)) return 'Самостоятельно';
@@ -431,10 +434,19 @@ async function fetchPostingList(schema, from, to) {
   return { map, note };
 }
 
+const DATE_COLS = ['Принят в обработку', 'Дата отгрузки', 'Дата отгрузки без просрочки', 'Дата доставки', 'Фактическая дата передачи в доставку', 'Дата отмены'];
+// ISO из отчёта → вид таблицы «29.09.2026 21:03» (час без нуля, без секунд): локаль таблицы разберёт как дату.
+function ruDate(s) {
+  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?$/);
+  if (m) return `${m[3]}.${m[2]}.${m[1]} ${Number(m[4])}:${m[5]}`;
+  m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : s;
+}
+
 function toCell(v) {
   if (v === undefined || v === null) return '';
   if (typeof v === 'number') return v;
-  const s = String(v).trim();
+  const s = ruDate(String(v).trim());
   if (/^-?(0|[1-9]\d*)([.,]\d+)?$/.test(s)) return Number(s.replace(',', '.')); // числа — числами, как при вставке из Excel
   return s;
 }
@@ -504,7 +516,15 @@ function sameCell(a, b) {
   const x = String(a ?? '').trim();
   const y = String(b ?? '').trim();
   if (x === y) return true;
-  if (/E\+/i.test(x) || /E\+/i.test(y)) return true; // экспоненциальная запись в таблице — не сравниваем
+  const sci = (a, b) => {
+    const m = String(a).match(/^(\d+)[.,]?(\d*)E\+(\d+)$/i);
+    const n = Number(String(b).replace(',', '.'));
+    if (!m || !Number.isFinite(n)) return null;
+    const digits = m[1].length + m[2].length;
+    return Number(n.toExponential(digits - 1)) === Number(String(a).replace(',', '.'));
+  };
+  if (/E\+/i.test(x)) return sci(x, y) ?? false; // таблица показывает число в экспоненциальной записи — сверяем по значащим цифрам
+  if (/E\+/i.test(y)) return sci(y, x) ?? false;
   const nx = Number(x.replace(',', '.'));
   const ny = Number(y.replace(',', '.'));
   return x !== '' && y !== '' && Number.isFinite(nx) && Number.isFinite(ny) && Math.abs(nx - ny) < 0.005;
@@ -608,7 +628,12 @@ async function runOrdersReport(argText) {
           }
         } catch (e) { out.push(`⚠️ сверка с текущей вставкой не удалась: ${e.message}`); }
         const { rows, filled } = built;
-        if (!dry) locale = await writeTab(tab, header, rows);
+        if (!dry) {
+          locale = await writeTab(tab, header, rows);
+          const first = ((await readRange(tab, `A3:${colName(header.length - 1)}3`, 'UNFORMATTED_VALUE'))[0] || []);
+          const textDates = DATE_COLS.filter((h) => header.includes(h) && typeof first[header.indexOf(h)] === 'string' && first[header.indexOf(h)] !== '');
+          if (textDates.length) out.push(`⚠️ после записи даты остались ТЕКСТОМ (локаль ${locale}): ${textDates.join(', ')}`);
+        }
         const empty = header.filter((h) => !filled[h]);
         out.push('', `📄 ${tab}: ${dry ? 'было бы вставлено' : 'вставлено'} строк: ${rows.length}`);
         out.push(`Совпало с деталями отправлений: ${rows.filter((_, i) => postings.map.has(String(report.rows[i][report.header.indexOf('Номер отправления')] || '').trim())).length} из ${rows.length}`);
