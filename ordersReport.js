@@ -294,7 +294,7 @@ function parseArgs(text) {
   }
   const dry = /(^|\s)(сухо|dry)(\s|$)/i.test(text || '');
   const yesterday = mskDay(new Date(Date.now() - DAY_MS));
-  const from = dates[0] || mskDay(new Date(Date.now() - 30 * DAY_MS));
+  const from = dates[0] || mskDay(new Date(Date.now() - 31 * DAY_MS)); // вчера минус 30 дней, обе даты включительно
   const to = dates[1] || yesterday;
   if (to > yesterday) throw new Error('Сегодняшний день не берём: конец периода не позже вчера');
   if (from > to) throw new Error('Начало периода позже конца');
@@ -441,6 +441,44 @@ function ruDate(s) {
   if (m) return `${m[3]}.${m[2]}.${m[1]} ${Number(m[4])}:${m[5]}`;
   m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   return m ? `${m[3]}.${m[2]}.${m[1]}` : s;
+}
+
+
+// Регион/город в списке иногда пустые — добираем из «получить отправление по номеру» (если там они есть).
+async function fillGeoFromGet(schema, postings) {
+  const ep = schema === 'fbs' ? '/v3/posting/fbs/get' : '/v2/posting/fbo/get';
+  const need = [...postings.map.entries()].filter(([, f]) => !f['analytics_data.region'] || !f['analytics_data.city']).map(([n]) => n);
+  if (!need.length) return 'регион и город пришли в списке полностью';
+  const one = async (n) => {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const r = await ozonRaw(ep, { posting_number: n, with: { analytics_data: true } });
+      if (r.status === 429) { await new Promise((x) => setTimeout(x, 1000 * (attempt + 1))); continue; }
+      if (r.status !== 200) throw new Error(`${ep} HTTP ${r.status} ${r.text.slice(0, 120)}`);
+      const flat = flatten(r.json?.result ?? r.json ?? {});
+      const f = postings.map.get(n);
+      let got = 0;
+      for (const k of ['region', 'city']) {
+        const v = flat[`analytics_data.${k}`];
+        if (v && !f[`analytics_data.${k}`]) { f[`analytics_data.${k}`] = v; got += 1; }
+      }
+      return got;
+    }
+    return 0;
+  };
+  try {
+    let probe = 0;
+    for (const n of need.slice(0, 15)) probe += await one(n);
+    if (!probe) return `по номеру регион/город тоже не отдаются (проба ${Math.min(15, need.length)} из ${need.length} отправлений без региона или города)`;
+    let filled = probe;
+    const rest = need.slice(15);
+    let i = 0;
+    await Promise.all(Array.from({ length: 6 }, async () => {
+      while (i < rest.length) { const n = rest[i++]; try { filled += await one(n); } catch { /* пропускаем */ } }
+    }));
+    return `регион/город добраны по номеру отправления (${need.length} запросов, найдено полей: ${filled})`;
+  } catch (e) {
+    return `добор региона/города по номеру не удался: ${e.message}`;
+  }
 }
 
 function toCell(v) {
@@ -609,6 +647,8 @@ async function runOrdersReport(argText) {
         if (!report.rows.length) { out.push('', `📄 ${tab}: за период нет заказов — вкладку не трогаю`); continue; }
         let postings = { map: new Map(), note: '' };
         try { postings = await fetchPostingList(schema, from, to); } catch (e) { postings.note = `детали отправлений не получены: ${e.message}`; }
+        let geoNote = '';
+        if (postings.map.size) geoNote = await fillGeoFromGet(schema, postings);
         let built = buildRows(header, report, postings);
         let cmp = null;
         try {
@@ -638,6 +678,7 @@ async function runOrdersReport(argText) {
         out.push('', `📄 ${tab}: ${dry ? 'было бы вставлено' : 'вставлено'} строк: ${rows.length}`);
         out.push(`Совпало с деталями отправлений: ${rows.filter((_, i) => postings.map.has(String(report.rows[i][report.header.indexOf('Номер отправления')] || '').trim())).length} из ${rows.length}`);
         if (postings.note) out.push(`⚠️ ${postings.note}`);
+        if (geoNote) out.push(`Регион/город: ${geoNote}`);
         if (report.badEncoding) out.push('⚠️ в файле отчёта есть нечитаемые символы (кодировка)');
         out.push(`Пустые во всех строках: ${empty.join(', ') || 'нет'}`);
         if (cmp) out.push(...compareSummary(header, cmp));
