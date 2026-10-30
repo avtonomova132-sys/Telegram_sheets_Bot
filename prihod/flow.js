@@ -22,6 +22,10 @@ const CB = 'prh:';
 const TEMPLATE_PATH = process.env.PRIHOD_TEMPLATE_PATH || '/data/prihod_template.xlsx';
 const REPO_TEMPLATE_PATH = path.join(__dirname, 'template', 'ostatki_template.xlsx');
 const SESSION_TTL_MS = 3 * 60 * 60 * 1000;
+// Сессия живёт в памяти и теряется при перезапуске контейнера (деплой Railway).
+// Поэтому готовый расчёт (экран проверки) дублируем на диск: «Всё верно» срабатывает и после рестарта.
+const PENDING_PATH = process.env.PRIHOD_PENDING_PATH || '/data/prihod_pending.json';
+const PENDING_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_REREADS = 12;
 
 let bot;
@@ -48,6 +52,44 @@ function session(chatId) {
   if (s && Date.now() - s.touched > SESSION_TTL_MS) { sessions.delete(chatId); return null; }
   if (s) s.touched = Date.now();
   return s || null;
+}
+
+function savePending(chatId, s) {
+  try {
+    if (s.kind === 'ostatki' || !s.plan || !s.plan.check || !s.plan.check.ok) return;
+    const remember = (s.lines || [])
+      .filter((l) => l.decision && l.decision.status === 'matched' && l.decision.via !== 'карта' && l.decision.family)
+      .map((l) => ({ name: l.name, base: l.decision.family.base, weightG: l.decision.family.weightG ?? null }));
+    const body = JSON.stringify({ chatId, savedAt: Date.now(), plan: s.plan, remember }, (k, v) => {
+      if (v instanceof Set) return [...v];
+      if (k === 'family' || k === 'families' || k === 'match' || k === 'members') return undefined;
+      return v;
+    });
+    fs.mkdirSync(path.dirname(PENDING_PATH), { recursive: true });
+    const tmp = `${PENDING_PATH}.tmp`;
+    fs.writeFileSync(tmp, body);
+    fs.renameSync(tmp, PENDING_PATH);
+  } catch (err) {
+    console.error('[prihod] не сохранила расчёт на диск:', err.message);
+  }
+}
+
+function loadPending(chatId) {
+  try {
+    const d = JSON.parse(fs.readFileSync(PENDING_PATH, 'utf8'));
+    if (String(d.chatId) !== String(chatId) || Date.now() - d.savedAt > PENDING_TTL_MS || !d.plan) return null;
+    // Восстановленная «сессия»: build() берёт из неё plan и lines (для карты названий).
+    return {
+      state: 'review',
+      plan: d.plan,
+      lines: (d.remember || []).map((r) => ({ name: r.name, decision: { status: 'matched', via: 'восстановлено', family: { base: r.base, weightG: r.weightG } } })),
+      touched: Date.now(),
+    };
+  } catch { return null; }
+}
+
+function clearPending() {
+  try { fs.unlinkSync(PENDING_PATH); } catch { /* нет файла */ }
 }
 
 const kb = (rows) => ({ reply_markup: { inline_keyboard: rows } });
@@ -379,6 +421,7 @@ function buildReport(s) {
 async function showReview(chatId, s) {
   s.state = 'review';
   const { text, plan } = buildReport(s);
+  savePending(chatId, s);
   const rows = [];
   if (plan.check.ok) rows.push([{ text: '✅ Всё верно', callback_data: `${CB}ok` }]);
   rows.push([{ text: '✏️ Исправить', callback_data: `${CB}fixmenu` }]);
@@ -420,6 +463,7 @@ async function build(chatId, s) {
     if (plan.edited.length) S.push(`Правки по пометкам: ${plan.edited.map((l) => `${l.name} ${fmt(l.origQty)}→${fmt(l.qty)}`).join('; ')}.`);
     await send(chatId, S.join('\n'));
     sessions.delete(chatId);
+    clearPending();
   } catch (err) {
     await fail(chatId, 'собрать файл (файл не отправлен)', err);
   }
@@ -518,8 +562,12 @@ async function onCallback(query) {
   try { await bot.answerCallbackQuery(query.id); } catch { /* ignore */ }
   if (!chatId || !isTrusted(query.from && query.from.id)) return;
   const cmd = data.slice(CB.length);
-  if (cmd === 'cancel') { sessions.delete(chatId); return bot.sendMessage(chatId, 'Отменено. /приход — начать заново.'); }
-  const s = session(chatId);
+  if (cmd === 'cancel') { sessions.delete(chatId); clearPending(); return bot.sendMessage(chatId, 'Отменено. /приход — начать заново.'); }
+  let s = session(chatId);
+  if (!s && cmd === 'ok') {
+    const restored = loadPending(chatId);
+    if (restored) { s = restored; sessions.set(chatId, s); }
+  }
   if (!s) return bot.sendMessage(chatId, 'Сессия закончилась. /приход — начать заново.');
   try {
     if (cmd === 'done' && s.state === 'collect') return await finishCollecting(chatId, s);
@@ -748,4 +796,4 @@ function init(botInstance, { isTrustedUser }) {
   return { handlePhoto, handleDocument, handleText };
 }
 
-module.exports = { init, buildReport, applyResults, getTemplate };
+module.exports = { init, buildReport, applyResults, getTemplate, _savePending: savePending, _loadPending: loadPending };

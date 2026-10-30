@@ -641,3 +641,21 @@ test('supplier: срез из файла без сервисного аккау�
     assert.equal(sup.status().source, 'file');
   } finally { if (saved) process.env.GOOGLE_SERVICE_ACCOUNT_JSON = saved; fs.unlinkSync(f); delete process.env.SUPPLIER_CODES_PATH; }
 });
+
+test('flow: расчёт переживает перезапуск (savePending/loadPending)', () => {
+  const f = path.join(os.tmpdir(), `pend_${Date.now()}.json`);
+  process.env.PRIHOD_PENDING_PATH = f;
+  delete require.cache[require.resolve('./flow')];
+  const flow = require('./flow');
+  const fam = { base: 'МОСКВА', weightG: 200, stems: new Set(['москва']), members: [{ article: 'МОСКВА1ШТ' }] };
+  const s = {
+    plan: { check: { ok: true, reason: 'сверка' }, items: [{ article: 'МОСКВА1ШТ', qty: 104 }], remainders: [], zeroSets: [], notInOzon: [], notArrived: [], edited: [] },
+    lines: [{ name: 'Москва 200', decision: { status: 'matched', via: 'название', family: fam } }],
+  };
+  flow._savePending(77, s);
+  const back = flow._loadPending(77);
+  assert.equal(back.plan.items[0].qty, 104);
+  assert.equal(back.lines[0].decision.family.base, 'МОСКВА');
+  assert.equal(flow._loadPending(78), null);
+  fs.unlinkSync(f);
+});
