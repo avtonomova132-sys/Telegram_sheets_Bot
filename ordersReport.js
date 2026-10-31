@@ -422,6 +422,11 @@ async function fetchPostingList(schema, from, to) {
       const line = prods.reduce((a, x) => a + (Number(x.weight) || 0), 0);
       const total = prods.reduce((a, x) => a + (Number(x.weight) || 0) * (Number(x.quantity) || 1), 0);
       if (line) { flat._w_line = line; flat._w_total = total; flat._w_line_kg = line / 1000; flat._w_total_kg = total / 1000; }
+      flat._items = prods.length;
+      flat._fin = (p.financial_data?.products || []).map((x) => ({
+        id: String(x.product_id), q: Number(x.quantity) || 1, cp: Number(x.customer_price?.amount ?? x.client_price) || 0,
+        old: Number(x.old_price) || 0, price: Number(x.price) || 0, disc: Number(x.total_discount_value) || 0, pct: Number(x.total_discount_percent) || 0,
+      }));
       map.set(String(p.posting_number), flat);
     }
     if (!list.length || map.size === before) break; // пусто или страница повторилась (offset/cursor не сработал)
@@ -481,6 +486,19 @@ async function fillGeoFromGet(schema, postings) {
   }
 }
 
+function dateSerial(s) {
+  const m = String(s).match(/^(\d{2})\.(\d{2})\.(\d{4})(?: (\d{1,2}):(\d{2}))?$/);
+  if (!m) return null;
+  return (Date.UTC(+m[3], +m[2] - 1, +m[1], +(m[4] || 0), +(m[5] || 0)) - Date.UTC(1899, 11, 30)) / 86400000;
+}
+function serialToRu(n) {
+  const min = Math.round(n * 1440);
+  const d = new Date(Date.UTC(1899, 11, 30) + min * 60000);
+  const p2 = (x) => String(x).padStart(2, '0');
+  return `${p2(d.getUTCDate())}.${p2(d.getUTCMonth() + 1)}.${d.getUTCFullYear()} ${d.getUTCHours()}:${p2(d.getUTCMinutes())}`;
+}
+const dispCell = (h, v) => (DATE_COLS.includes(h) && typeof v === 'number' ? serialToRu(v) : v);
+
 function toCell(v) {
   if (v === undefined || v === null) return '';
   if (typeof v === 'number') return v;
@@ -504,7 +522,8 @@ function buildRows(sheetHeader, report, postings, opts = {}) {
         const key = paths.find((p) => flat[p] !== undefined);
         if (key) v = fn ? fn(flat[key]) : flat[key];
       }
-      const cell = toCell(v);
+      let cell = toCell(v);
+      if (DATE_COLS.includes(h) && typeof cell === 'string' && cell) { const sr = dateSerial(cell); if (sr !== null) cell = sr; }
       if (cell !== '') filled[h] += 1;
       return cell;
     });
@@ -541,10 +560,19 @@ async function writeTab(tab, sheetHeader, rows) {
   for (let i = 0; i < rows.length; i += CHUNK) {
     const part = rows.slice(i, i + CHUNK);
     const start = 3 + i;
-    await sheetsWrite('PUT', `/values/${encodeURIComponent(`'${tab}'!A${start}:${lastCol}${start + part.length - 1}`)}?valueInputOption=USER_ENTERED`, {
+    await sheetsWrite('PUT', `/values/${encodeURIComponent(`'${tab}'!A${start}:${lastCol}${start + part.length - 1}`)}?valueInputOption=RAW`, {
       values: part,
     });
   }
+  // Даты записаны числами (RAW, без авторазбора Google) — задаём явный формат отображения.
+  const dateFmt = DATE_COLS.filter((h) => sheetHeader.includes(h)).map((h) => ({
+    repeatCell: {
+      range: { sheetId: sh.properties.sheetId, startRowIndex: 2, endRowIndex: 2 + rows.length, startColumnIndex: sheetHeader.indexOf(h), endColumnIndex: sheetHeader.indexOf(h) + 1 },
+      cell: { userEnteredFormat: { numberFormat: { type: 'DATE_TIME', pattern: 'dd.mm.yyyy h:mm' } } },
+      fields: 'userEnteredFormat.numberFormat',
+    },
+  }));
+  if (dateFmt.length) await sheetsWrite('POST', ':batchUpdate', { requests: dateFmt });
   // Старые строки ниже вставленного блока — убрать.
   await sheetsWrite('POST', `/values/${encodeURIComponent(`'${tab}'!A${rows.length + 3}:${CLEAR_COLS}`)}:clear`, {});
   return meta.properties.locale;
@@ -591,7 +619,7 @@ async function compareWithSheet(tab, header, newRows) {
 
 const VOLATILE = new Set(['Статус', 'Дата доставки', 'Фактическая дата передачи в доставку', 'Дата отмены', 'Выкуп товара', 'Связанные отправления']);
 
-function compareSummary(header, cmp) {
+function compareSummary(header, cmp, postings) {
   const lines = [`Сверка с тем, что уже лежит во вкладке: общих строк ${cmp.common.length} из ${cmp.existingCount} в таблице`];
   if (!cmp.common.length) return lines.concat('нечего сравнивать (в таблице другой период)');
   const stats = [];
@@ -599,16 +627,17 @@ function compareSummary(header, cmp) {
     if (VOLATILE.has(h)) return;
     let bad = 0, ex = null;
     for (const k of cmp.common) {
-      const a = cmp.newMap.get(k)[c], b = cmp.oldMap.get(k)[c];
+      const a = dispCell(h, cmp.newMap.get(k)[c]), b = cmp.oldMap.get(k)[c];
       if (!sameCell(a, b)) { bad += 1; if (!ex) ex = `бот «${String(a).slice(0, 30)}» / таблица «${String(b ?? '').slice(0, 30)}»`; }
     }
     if (bad) stats.push({ h, bad, ex });
   });
-  if (!stats.length) return lines.concat('✅ все сравниваемые столбцы совпали');
+  const money = postings ? moneyDiag(header, cmp, postings) : [];
+  if (!stats.length) return lines.concat('✅ все сравниваемые столбцы совпали', money);
   stats.sort((x, y) => y.bad - x.bad);
   lines.push('Расхождения (кроме статусов и дат доставки/отмены):');
   for (const s of stats.slice(0, 15)) lines.push(`• ${s.h}: ${s.bad} из ${cmp.common.length}; напр. ${s.ex}`);
-  return lines;
+  return lines.concat(money);
 }
 
 function splitMessage(text, max = 3500) {
@@ -620,6 +649,68 @@ function splitMessage(text, max = 3500) {
   }
   if (cur) out.push(cur);
   return out;
+}
+
+// После записи читаем ячейки без форматирования и сверяем тип и значение с тем, что отправляли.
+async function verifyWrite(tab, header, rows) {
+  const picks = new Set([0, rows.length - 1, Math.floor(rows.length / 2)]);
+  for (let i = 0; i < rows.length && picks.size < 9; i++) {
+    if (rows[i].some((v) => typeof v === 'number' && !Number.isInteger(v))) picks.add(i);
+  }
+  let checked = 0, bad = 0;
+  const examples = [];
+  for (const i of picks) {
+    const got = (await readRange(tab, `A${3 + i}:${colName(header.length - 1)}${3 + i}`, 'UNFORMATTED_VALUE'))[0] || [];
+    header.forEach((h, c) => {
+      const sent = rows[i][c], back = got[c] ?? '';
+      if (sent === '' && back === '') return;
+      checked += 1;
+      const ok = typeof sent === 'number' ? typeof back === 'number' && Math.abs(back - sent) < 1e-6 : back === sent;
+      if (!ok) { bad += 1; if (examples.length < 4) examples.push(`${h}, строка ${3 + i}: отправлено ${JSON.stringify(sent)}, в таблице ${JSON.stringify(back)}`); }
+    });
+  }
+  const di = header.findIndex((h) => DATE_COLS.includes(h));
+  let sample = '';
+  if (di >= 0) {
+    const f = (await readRange(tab, `${colName(di)}3`))[0] || [];
+    sample = `; дата в ${colName(di)}3 показывается как «${f[0] ?? ''}»`;
+  }
+  return `Проверка записи: ячеек ${checked}, не совпало ${bad}${sample}${examples.length ? `\n${examples.join('\n')}` : ''}`;
+}
+
+// Деньги: расхождения бота и таблицы с разбором по financial_data.products[] этого отправления.
+const MONEY_COLS = ['Оплачено покупателем', 'Цена товара до скидок', 'Скидка руб', 'Скидка %', 'Сумма отправления'];
+function moneyDiag(header, cmp, postings) {
+  const si = header.indexOf('SKU');
+  const out = [];
+  for (const h of MONEY_COLS) {
+    const c = header.indexOf(h);
+    if (c < 0) continue;
+    let real = 0, corrupt = 0;
+    const ex = [];
+    for (const k of cmp.common) {
+      const a = cmp.newMap.get(k)[c], b = cmp.oldMap.get(k)[c];
+      if (sameCell(a, b)) continue;
+      if (/^[А-Яа-яA-Za-z]{3}\.\s?\d+$/.test(String(b ?? '').trim())) { corrupt += 1; continue; } // «дек.49» — таблица сама испортила число
+      real += 1;
+      if (ex.length < 3) {
+        const posting = k.split('#')[0];
+        const flat = postings.map.get(posting) || {};
+        const sku = String(cmp.newMap.get(k)[si] ?? '');
+        const f = (flat._fin || []).find((x) => x.id === sku) || (flat._fin || [])[0];
+        const av = Number(a), bv = Number(String(b).replace(',', '.'));
+        let hint = 'нет financial_data';
+        if (f) {
+          const cand = { 'customer_price': f.cp, 'customer_price×кол-во': f.cp * f.q, 'old_price': f.old, 'old_price×кол-во': f.old * f.q, 'price': f.price, 'price×кол-во': f.price * f.q, 'скидка': f.disc, 'скидка×кол-во': f.disc * f.q, '(old−price)×кол-во': (f.old - f.price) * f.q };
+          const eq = (v) => Object.entries(cand).filter(([, x]) => Number.isFinite(v) && Math.abs(x - v) < 0.01).map(([n]) => n).join(', ') || '—';
+          hint = `кол-во ${f.q}, customer_price ${f.cp}, price ${f.price}, old_price ${f.old}, скидка ${f.disc}; бот = ${eq(av)}; таблица = ${eq(bv)}`;
+        }
+        ex.push(`  ${posting}, SKU ${sku}, товаров в отправлении ${flat._items ?? '?'}: бот ${a} / таблица ${b}; ${hint}`);
+      }
+    }
+    if (real || corrupt) out.push(`• ${h}: настоящих расхождений ${real}, из-за «дек.49»-порчи в таблице ${corrupt}`, ...ex);
+  }
+  return out.length ? ['Деньги (разбор расхождений):', ...out] : [];
 }
 
 let running = false;
@@ -670,9 +761,7 @@ async function runOrdersReport(argText) {
         const { rows, filled } = built;
         if (!dry) {
           locale = await writeTab(tab, header, rows);
-          const first = ((await readRange(tab, `A3:${colName(header.length - 1)}3`, 'UNFORMATTED_VALUE'))[0] || []);
-          const textDates = DATE_COLS.filter((h) => header.includes(h) && typeof first[header.indexOf(h)] === 'string' && first[header.indexOf(h)] !== '');
-          if (textDates.length) out.push(`⚠️ после записи даты остались ТЕКСТОМ (локаль ${locale}): ${textDates.join(', ')}`);
+          out.push(await verifyWrite(tab, header, rows));
         }
         const empty = header.filter((h) => !filled[h]);
         out.push('', `📄 ${tab}: ${dry ? 'было бы вставлено' : 'вставлено'} строк: ${rows.length}`);
@@ -681,7 +770,7 @@ async function runOrdersReport(argText) {
         if (geoNote) out.push(`Регион/город: ${geoNote}`);
         if (report.badEncoding) out.push('⚠️ в файле отчёта есть нечитаемые символы (кодировка)');
         out.push(`Пустые во всех строках: ${empty.join(', ') || 'нет'}`);
-        if (cmp) out.push(...compareSummary(header, cmp));
+        if (cmp) out.push(...compareSummary(header, cmp, postings));
       } catch (e) {
         out.push('', `📄 ${tab}: ❌ ${e.message}`);
       }
@@ -694,4 +783,4 @@ async function runOrdersReport(argText) {
   }
 }
 
-module.exports = { splitMessage, buildRows, runOrdersReport, parseArgs, parseCsv, dependenciesMessage, reportProbeMessage, headersMessage, ozonFieldsMessage, readRange, SPREADSHEET_ID, TABS };
+module.exports = { moneyDiag, serialToRu, splitMessage, buildRows, runOrdersReport, parseArgs, parseCsv, dependenciesMessage, reportProbeMessage, headersMessage, ozonFieldsMessage, readRange, SPREADSHEET_ID, TABS };
