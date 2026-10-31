@@ -434,6 +434,15 @@ bot.onText(/^\/заказы_отчёт(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, 
     await bot.sendMessage(msg.chat.id, `Не получилось 😔 ${err.message}`);
   }
 });
+bot.onText(/^\/заказы_отправление(?:@\S+)?(?:\s+([\s\S]+))?$/, async (msg, match) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  try {
+    await bot.sendMessage(msg.chat.id, 'Смотрю отправления… до пары минут ⏳');
+    for (const chunk of ordersReport.splitMessage(await ordersReport.inspectPostings(match[1] || 'случайные'))) await bot.sendMessage(msg.chat.id, chunk);
+  } catch (err) {
+    await bot.sendMessage(msg.chat.id, `Не получилось 😔 ${err.message}`);
+  }
+});
 ordersDiagCommand(/^\/заказы_проба(?:@\S+)?$/, ordersReport.reportProbeMessage);
 ordersDiagCommand(/^\/заказы_ozon_поля(?:@\S+)?$/, ordersReport.ozonFieldsMessage);
 
@@ -3533,6 +3542,19 @@ async function handleFboPlacementDocument(chatId, document) {
 
 bot.on('document', async (msg) => {
   const chatId = msg.chat.id;
+  if (/^\/заказы_сверка/i.test((msg.caption || '').trim()) && isTrustedUser(chatId)) {
+    try {
+      await bot.sendMessage(chatId, 'Сверяю файл с данными бота… это может занять пару минут ⏳');
+      const link = await bot.getFileLink(msg.document.file_id);
+      const buf = Buffer.from(await (await fetch(link)).arrayBuffer());
+      const text = await ordersReport.compareWithFile(buf, (msg.caption || '').replace(/^\/заказы_сверка(?:@\S+)?/i, ''));
+      for (const chunk of ordersReport.splitMessage(text)) await bot.sendMessage(chatId, chunk);
+    } catch (err) {
+      console.error('[orders] сверка файла:', err.message);
+      await bot.sendMessage(chatId, `Не получилось 😔 ${err.message}`);
+    }
+    return;
+  }
   if (await prihodHooks.handleDocument(msg)) return;
   if (await fotoHooks.handleDocument(msg)) return;
   const caption = (msg.caption || '').trim();

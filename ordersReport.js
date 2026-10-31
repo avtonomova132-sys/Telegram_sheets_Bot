@@ -423,6 +423,7 @@ async function fetchPostingList(schema, from, to) {
       const total = prods.reduce((a, x) => a + (Number(x.weight) || 0) * (Number(x.quantity) || 1), 0);
       if (line) { flat._w_line = line; flat._w_total = total; flat._w_line_kg = line / 1000; flat._w_total_kg = total / 1000; }
       flat._items = prods.length;
+      flat._prod = prods.map((x) => ({ sku: x.sku, q: x.quantity, price: x.price?.amount ?? x.price }));
       flat._fin = (p.financial_data?.products || []).map((x) => ({
         id: String(x.product_id), q: Number(x.quantity) || 1, cp: Number(x.customer_price?.amount ?? x.client_price) || 0,
         old: Number(x.old_price) || 0, price: Number(x.price) || 0, disc: Number(x.total_discount_value) || 0, pct: Number(x.total_discount_percent) || 0,
@@ -734,6 +735,90 @@ function moneyDiag(header, cmp, postings) {
   return out.length ? ['Деньги (разбор расхождений):', ...out] : [];
 }
 
+
+// ---------- Разбор конкретных отправлений и сверка с Excel из кабинета ----------
+const SHOW_COLS = ['Номер отправления', 'Статус', 'SKU', 'Количество', 'Сумма отправления', 'Предельная цена', 'Оплачено покупателем', 'Цена товара до скидок', 'Скидка %', 'Скидка руб', 'Акции'];
+
+// /заказы_отправление 87901088-0543-1 | случайные [fbo] — откуда берутся суммы: строка отчёта (CSV) и ответы API по этому отправлению.
+async function inspectPostings(argText) {
+  const schema = /fbo/i.test(argText) ? 'fbo' : 'fbs';
+  const { from, to } = parseArgs('');
+  const report = await fetchReportRows(schema, from, to);
+  const idx = Object.fromEntries(report.header.map((h, i) => [h, i]));
+  const ni = idx['Номер отправления'];
+  const nums = argText.match(/\d+-\d+-\d+/g) || [];
+  let picks = nums;
+  if (!picks.length) {
+    const multi = report.rows.filter((r) => Number(String(r[idx['Количество']]).replace(',', '.')) > 1);
+    const single = report.rows.filter((r) => Number(String(r[idx['Количество']]).replace(',', '.')) <= 1);
+    const take = (a, n) => Array.from({ length: Math.min(n, a.length) }, () => a[Math.floor(Math.random() * a.length)][ni]);
+    picks = [...take(multi, 3), ...take(single, 2)];
+  }
+  const out = [`Период ${from} — ${to}, схема ${schema.toUpperCase()}`];
+  for (const n of [...new Set(picks)]) {
+    out.push('', `━ ${n}`);
+    const rows = report.rows.filter((r) => r[ni] === n);
+    if (!rows.length) out.push('в отчёте API такого отправления нет');
+    rows.forEach((r, i) => out.push(`строка отчёта ${i + 1}: ${SHOW_COLS.filter((h) => h in idx).map((h) => `${h}=${r[idx[h]]}`).join(' | ')}`));
+    try {
+      const ep = schema === 'fbs' ? '/v3/posting/fbs/get' : '/v2/posting/fbo/get';
+      const g = await ozonRaw(ep, { posting_number: n, with: { analytics_data: true, financial_data: true } });
+      const res = g.json?.result ?? g.json ?? {};
+      (res.products || []).forEach((x) => out.push(`API products: sku=${x.sku} кол-во=${x.quantity} price=${x.price?.amount ?? x.price} offer=${x.offer_id}`));
+      (res.financial_data?.products || []).forEach((x) => out.push(`API financial: product_id=${x.product_id} кол-во=${x.quantity} price=${x.price} old_price=${x.old_price} customer_price=${x.customer_price?.amount ?? x.client_price} скидка=${x.total_discount_value} скидка%=${x.total_discount_percent} payout=${x.payout} commission=${x.commission?.amount}`));
+      if (g.status !== 200) out.push(`${ep}: HTTP ${g.status} ${g.text.slice(0, 120)}`);
+    } catch (e) { out.push(`API get: ${e.message}`); }
+  }
+  return out.join('\n');
+}
+
+const CMP_MONEY = ['Сумма отправления', 'Цена товара до скидок', 'Скидка руб', 'Оплачено покупателем'];
+
+// Excel из кабинета (присланный боту с подписью /заказы_сверка) против того, что собрал бы бот за тот же период.
+async function compareWithFile(buffer, argText) {
+  const { readFirstSheet } = require('./miniXlsx');
+  const sheet = readFirstSheet(buffer);
+  const hi = sheet.findIndex((r) => r.some((c) => String(c).trim() === 'Номер отправления'));
+  if (hi < 0) throw new Error('в файле нет колонки «Номер отправления» — это не отчёт «Заказы»');
+  const fh = sheet[hi].map((c) => String(c).trim());
+  const schema = fh.includes('Код этикетки') ? 'fbs' : 'fbo';
+  const { from, to } = parseArgs(argText);
+  const tab = TABS[schema];
+  const header = ((await readRange(tab, 'A2:BZ2'))[0] || []).map((c) => String(c).trim()).filter(Boolean);
+  const report = await fetchReportRows(schema, from, to);
+  const postings = await fetchPostingList(schema, from, to).catch(() => ({ map: new Map() }));
+  const { rows } = buildRows(header, report, postings);
+  const num = (v) => Number(String(v ?? '').replace(/\s/g, '').replace(',', '.'));
+  const keyed = (head, data) => {
+    const ni = head.indexOf('Номер отправления'), si = head.indexOf('SKU'), seen = {};
+    const m = new Map();
+    for (const r of data) {
+      const base = `${String(r[ni]).trim()}|${String(num(r[si]))}`;
+      seen[base] = (seen[base] || 0) + 1;
+      m.set(`${base}#${seen[base]}`, r);
+    }
+    return m;
+  };
+  const mine = keyed(header, rows);
+  const theirs = keyed(fh, sheet.slice(hi + 1).filter((r) => String(r[fh.indexOf('Номер отправления')] ?? '').trim()));
+  const common = [...mine.keys()].filter((k) => theirs.has(k));
+  const onlyMine = [...mine.keys()].filter((k) => !theirs.has(k));
+  const onlyTheirs = [...theirs.keys()].filter((k) => !mine.has(k));
+  const out = [`Сверка ${schema.toUpperCase()}, период ${from} — ${to}`, `Строк в файле Елены: ${theirs.size}, у бота: ${mine.size}, общих: ${common.length}`];
+  if (onlyMine.length) out.push(`Только у бота: ${onlyMine.length}; напр. ${onlyMine.slice(0, 5).map((k) => k.split('#')[0]).join(', ')}`);
+  if (onlyTheirs.length) out.push(`Только в файле Елены: ${onlyTheirs.length}; напр. ${onlyTheirs.slice(0, 5).map((k) => k.split('#')[0]).join(', ')}`);
+  const qi = header.indexOf('Количество'), fqi = fh.indexOf('Количество');
+  for (const h of CMP_MONEY) {
+    const c = header.indexOf(h), fc = fh.indexOf(h);
+    if (c < 0 || fc < 0) { out.push(`• ${h}: нет в одной из таблиц`); continue; }
+    const bad = common.filter((k) => !(Math.abs(num(mine.get(k)[c]) - num(theirs.get(k)[fc])) < 0.01));
+    const multi = bad.filter((k) => num(mine.get(k)[qi]) > 1).length;
+    out.push(`• ${h}: расходится ${bad.length} из ${common.length} (из них с количеством >1: ${multi})`);
+    for (const k of bad.slice(0, 3)) out.push(`    ${k.split('#')[0]}, кол-во ${theirs.get(k)[fqi]}: бот ${mine.get(k)[c]} / файл ${theirs.get(k)[fc]}`);
+  }
+  return out.join('\n');
+}
+
 let running = false;
 async function runOrdersReport(argText) {
   if (running) throw new Error('отчёт уже идёт, подожди окончания');
@@ -804,4 +889,4 @@ async function runOrdersReport(argText) {
   }
 }
 
-module.exports = { moneyDiag, serialToRu, splitMessage, buildRows, runOrdersReport, parseArgs, parseCsv, dependenciesMessage, reportProbeMessage, headersMessage, ozonFieldsMessage, readRange, SPREADSHEET_ID, TABS };
+module.exports = { inspectPostings, compareWithFile, moneyDiag, serialToRu, splitMessage, buildRows, runOrdersReport, parseArgs, parseCsv, dependenciesMessage, reportProbeMessage, headersMessage, ozonFieldsMessage, readRange, SPREADSHEET_ID, TABS };
