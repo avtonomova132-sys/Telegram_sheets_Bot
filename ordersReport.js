@@ -503,6 +503,8 @@ function toCell(v) {
   if (v === undefined || v === null) return '';
   if (typeof v === 'number') return v;
   const s = ruDate(String(v).trim());
+  const pct = s.match(/^(\d+(?:[.,]\d+)?)\s?%$/);
+  if (pct) return Number((Number(pct[1].replace(',', '.')) / 100).toFixed(6)); // «45%» → 0,45 (в таблице проценты хранятся числом с форматом %)
   if (/^-?(0|[1-9]\d*)([.,]\d+)?$/.test(s)) return Number(s.replace(',', '.')); // числа — числами, как при вставке из Excel
   return s;
 }
@@ -583,7 +585,14 @@ async function writeTab(tab, sheetHeader, rows) {
       fields: 'userEnteredFormat.numberFormat',
     },
   }));
-  if (dateFmt.length) await sheetsWrite('POST', ':batchUpdate', { requests: dateFmt });
+  const pctFmt = sheetHeader.map((h, c) => (h.includes('%') ? c : -1)).filter((c) => c >= 0).map((c) => ({
+    repeatCell: {
+      range: { sheetId: sh.properties.sheetId, startRowIndex: 2, endRowIndex: 2 + rows.length, startColumnIndex: c, endColumnIndex: c + 1 },
+      cell: { userEnteredFormat: { numberFormat: { type: 'PERCENT', pattern: '0%' } } },
+      fields: 'userEnteredFormat.numberFormat',
+    },
+  }));
+  if (dateFmt.length || pctFmt.length) await sheetsWrite('POST', ':batchUpdate', { requests: [...dateFmt, ...pctFmt] });
   // Старые строки ниже вставленного блока — убрать.
   await sheetsWrite('POST', `/values/${encodeURIComponent(`'${tab}'!A${rows.length + 3}:${CLEAR_COLS}`)}:clear`, {});
   return meta.properties.locale;
