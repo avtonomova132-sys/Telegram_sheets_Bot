@@ -564,6 +564,17 @@ async function writeTab(tab, sheetHeader, rows) {
       values: part,
     });
   }
+  // В ячейках таблицы остались чужие форматы (число 568 показывается как «1901.07», 0,25 как «дек.30») — сбрасываем формат чисел
+  // на автоматический во всём блоке, а даты ниже получают явный формат. Значения при этом не меняются.
+  await sheetsWrite('POST', ':batchUpdate', {
+    requests: [{
+      repeatCell: {
+        range: { sheetId: sh.properties.sheetId, startRowIndex: 2, endRowIndex: 2 + rows.length, startColumnIndex: 0, endColumnIndex: sheetHeader.length },
+        cell: { userEnteredFormat: {} },
+        fields: 'userEnteredFormat.numberFormat',
+      },
+    }],
+  });
   // Даты записаны числами (RAW, без авторазбора Google) — задаём явный формат отображения.
   const dateFmt = DATE_COLS.filter((h) => sheetHeader.includes(h)).map((h) => ({
     repeatCell: {
@@ -578,7 +589,8 @@ async function writeTab(tab, sheetHeader, rows) {
   return meta.properties.locale;
 }
 
-function sameCell(a, b) {
+function sameCell(a, b, h) {
+  if (h && DATE_COLS.includes(h) && typeof a === 'number' && typeof b === 'number') return Math.round(a * 1440) === Math.round(b * 1440);
   const x = String(a ?? '').trim();
   const y = String(b ?? '').trim();
   if (x === y) return true;
@@ -599,7 +611,7 @@ function sameCell(a, b) {
 // Сравнивает то, что собрал бот, с тем, что уже лежит во вкладке (ручная вставка). Строки — по номеру отправления + порядку внутри него.
 async function compareWithSheet(tab, header, newRows) {
   const pi = header.indexOf('Номер отправления');
-  const existing = await readRange(tab, `A3:${colName(header.length - 1)}`);
+  const existing = await readRange(tab, `A3:${colName(header.length - 1)}`, 'UNFORMATTED_VALUE');
   const keyed = (rows) => {
     const seen = {};
     const m = new Map();
@@ -627,8 +639,8 @@ function compareSummary(header, cmp, postings) {
     if (VOLATILE.has(h)) return;
     let bad = 0, ex = null;
     for (const k of cmp.common) {
-      const a = dispCell(h, cmp.newMap.get(k)[c]), b = cmp.oldMap.get(k)[c];
-      if (!sameCell(a, b)) { bad += 1; if (!ex) ex = `бот «${String(a).slice(0, 30)}» / таблица «${String(b ?? '').slice(0, 30)}»`; }
+      const a = cmp.newMap.get(k)[c], b = cmp.oldMap.get(k)[c];
+      if (!sameCell(a, b, h)) { bad += 1; if (!ex) ex = `бот «${String(a).slice(0, 30)}» / таблица «${String(b ?? '').slice(0, 30)}»`; }
     }
     if (bad) stats.push({ h, bad, ex });
   });
@@ -690,8 +702,8 @@ function moneyDiag(header, cmp, postings) {
     const ex = [];
     for (const k of cmp.common) {
       const a = cmp.newMap.get(k)[c], b = cmp.oldMap.get(k)[c];
-      if (sameCell(a, b)) continue;
-      if (/^[А-Яа-яA-Za-z]{3}\.\s?\d+$/.test(String(b ?? '').trim())) { corrupt += 1; continue; } // «дек.49» — таблица сама испортила число
+      if (sameCell(a, b, h)) continue;
+      if (typeof b === 'number' && b > 20000 && Number(a) < 20000) { corrupt += 1; continue; } // в таблице вместо числа лежит ДАТА («дек.49», «10.май») — порча ручной вставки
       real += 1;
       if (ex.length < 3) {
         const posting = k.split('#')[0];
