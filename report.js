@@ -63,6 +63,21 @@ const mainTags = (tags) => (tags || []).slice(0, TAGS_PER_MESSAGE);
 const tagLineIsLast = (text, tags) =>
   (tags || []).length > TAGS_PER_MESSAGE && String(text).trimEnd().endsWith(mainTags(tags).map((t) => escapeHtml(formatCommunityTag(t))).join(' '));
 
+// Announce / Monday reminder / 24h: AFTER the cards one separate last message -
+// the thanks lines and the tags that did not fit in the header (6th..10th; just
+// the thanks when there are none) - then, for the 11th tag on, further messages
+// of 5 (replies to the header, the short "please mark above" note, no thanks).
+// Returns [{ text, reply }] in sending order.
+function tagFollowUps(tags) {
+  const rest = (tags || []).slice(TAGS_PER_MESSAGE);
+  const show = (list) => list.map((t) => escapeHtml(formatCommunityTag(t))).join(' ');
+  const out = [{ text: rest.length > 0 ? `${THANKS_HELP_LINES}\n\n${show(rest.slice(0, TAGS_PER_MESSAGE))}` : THANKS_HELP_LINES, reply: false }];
+  for (let i = TAGS_PER_MESSAGE; i < rest.length; i += TAGS_PER_MESSAGE) {
+    out.push({ text: `${EXTRA_TAGS_NOTE}\n\n${show(rest.slice(i, i + TAGS_PER_MESSAGE))}`, reply: true });
+  }
+  return out;
+}
+
 // Texts (HTML) of the follow-up messages: groups of 5 from the 6th tag on.
 function extraTagMessages(tags) {
   const rest = (tags || []).slice(TAGS_PER_MESSAGE);
@@ -1331,7 +1346,7 @@ function buildWeekCardParts(events, range, { restOfWeek = false, tags = [] } = {
     'Отметьтесь, пожалуйста, ниже, нажав на:',
     '✅ - беру эфир - попадёте во вкладку эфира.',
     '❌ - не могу - будем знать, кто точно не может 🙏',
-    ...(tags.length > 0 ? ['', THANKS_HELP_LINES, mainTags(tags).map(formatCommunityTag).join(' ')] : []),
+    ...(tags.length > 0 ? ['', mainTags(tags).map(formatCommunityTag).join(' ')] : []),
   ].join('\n');
 
   const cards = open.map((e, i) => ({
@@ -2070,6 +2085,7 @@ module.exports = {
   isExcludedProgramEvent,
   extraTagMessages,
   mainTags,
+  tagFollowUps,
   THANKS_HELP_LINES,
   EXTRA_TAGS_NOTE,
   loadConfig,
