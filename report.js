@@ -15,18 +15,23 @@ function loadConfig() {
 // code change needed), this is just a safety ceiling on top of it.
 const MAX_COMMUNITY_TAGS = 5;
 
-// Tags of people removed from the host list (hostsStore.js) never appear in
-// these tags, even if community-tags.json still names them.
+// 2026-11-01 (Elena): the closing @-line of the old-format messages ("NEEDED 1
+// HOST", /check, /weekly, 2-day reminder, daily diff) no longer comes from the
+// fixed community-tags.json list (it tagged five people regardless of the real
+// roster). It is the CURRENT list of ACTIVE hosts (hostsStore: /hosts) - so
+// hosts on pause / on hold, removed ones, and everyone added since are handled
+// the same way as in the cards. community-tags.json is only a fallback if the
+// store cannot be read at all.
 function loadCommunityTags() {
   try {
+    const active = require('./hostsStore').hosts.tags();
+    if (Array.isArray(active)) return active;
+  } catch {
+    /* fall through to the file */
+  }
+  try {
     const tags = JSON.parse(fs.readFileSync(TAGS_PATH, 'utf8'));
-    let removed = [];
-    try {
-      removed = require('./hostsStore').hosts.removedTags().map((t) => String(t).replace(/^@/, '').toLowerCase());
-    } catch {
-      removed = [];
-    }
-    return tags.filter((t) => !removed.includes(String(t).replace(/^@/, '').toLowerCase())).slice(0, MAX_COMMUNITY_TAGS);
+    return tags.slice(0, MAX_COMMUNITY_TAGS);
   } catch {
     return [];
   }
@@ -512,21 +517,54 @@ function isPastAzStart(e, now) {
 // title has no "… with …" program name of its own (every real program title
 // on this sheet has one) — a different program inheriting the label keeps
 // showing up.
-const EXCLUDED_BY_TITLE_ONLY = ['Pramana - The Emptiness of Colors with Adam Andrade & Juan Jasso'];
-const EXCLUDED_BY_TITLE_OR_TABNAME = ['McMichael'];
-const EXCLUDED_BY_TITLE_OR_GENERIC_ROW_UNDER_LABEL = ['THE BREAKFAST CLUB with Nick Lashaw'];
+// 2026-11-01 (Elena): Pramana returned to the Announce although it was
+// "excluded". Root cause: the old rule compared the title with ONE exact,
+// case-sensitive string ("Pramana - The Emptiness of Colors with Adam Andrade &
+// Juan Jasso"), so any other title of the same program ("#47 Pramana - Door to
+// Emptiness with Juan Jasso", a different dash, double spaces, another case) or
+// a row whose title is only a topic under the Pramana label slipped through.
+// Now every comparison is on a normalised string (lower case, dashes and
+// whitespace folded) and goes by short, stable markers, not whole titles.
+//
+// Per program:
+// * PRAMANA - "pramana" ANYWHERE in the title or in the program label; plus
+//   the program's own people/subtitle ("adam andrade", "juan jasso",
+//   "emptiness of colors") in the title, for rows whose title omits the word.
+//   A row under the Pramana label whose title names ANOTHER program ("... with
+//   ..." and none of those markers) is NOT excluded: on the shared gid
+//   104338179 tab the next program (e.g. "Foundational Debate Masters Training
+//   with Ben Kramer") inherits the Pramana label when it has no standalone
+//   title row. A bare title ("Class 12", "") under the Pramana label is
+//   excluded.
+// * ACI with Inna Ivanina and Bill McMichael - "mcmichael" / "ivanina" in the
+//   title OR the label (the tab is single-program end to end).
+// * THE BREAKFAST CLUB with Nick Lashaw - "breakfast club" / "nick lashaw" in
+//   the title, or the label is that program and the title has no "... with ..."
+//   of its own (same inheritance trap as Pramana).
+const normProgramText = (s) =>
+  String(s || '')
+    .toLowerCase()
+    .replace(/[‐-―−]/g, '-')
+    .replace(/[\s ]+/g, ' ')
+    .trim();
+
+const EXCLUDED_ALWAYS_BY_TITLE_OR_LABEL = ['mcmichael', 'ivanina'];
+const PRAMANA_TITLE_MARKERS = ['pramana', 'adam andrade', 'juan jasso', 'emptiness of colors'];
+const BREAKFAST_MARKERS = ['breakfast club', 'nick lashaw'];
 
 function isExcludedProgramEvent(title, tabName = '') {
-  if (EXCLUDED_BY_TITLE_ONLY.some((marker) => title.includes(marker))) return true;
-  if (EXCLUDED_BY_TITLE_OR_TABNAME.some((marker) => title.includes(marker) || tabName.includes(marker))) return true;
+  const t = normProgramText(title);
+  const l = normProgramText(tabName);
+  const hasOwnProgramName = /\bwith\b/.test(t);
 
-  const lowerTitle = title.toLowerCase();
-  const lowerTab = tabName.toLowerCase();
-  const hasOwnProgramName = /\bwith\b/i.test(title);
-  return EXCLUDED_BY_TITLE_OR_GENERIC_ROW_UNDER_LABEL.some((marker) => {
-    const m = marker.toLowerCase();
-    return lowerTitle.includes(m) || (lowerTab.includes(m) && !hasOwnProgramName);
-  });
+  if (EXCLUDED_ALWAYS_BY_TITLE_OR_LABEL.some((m) => t.includes(m) || l.includes(m))) return true;
+
+  if (PRAMANA_TITLE_MARKERS.some((m) => t.includes(m))) return true;
+  if (l.includes('pramana') && !hasOwnProgramName) return true;
+
+  if (BREAKFAST_MARKERS.some((m) => t.includes(m))) return true;
+  if (BREAKFAST_MARKERS.some((m) => l.includes(m)) && !hasOwnProgramName) return true;
+  return false;
 }
 
 const isoDay = (d) => d.toISOString().slice(0, 10);
@@ -1806,7 +1844,9 @@ async function runDailyHostDiffCheck(now = new Date(), { updateLastRunDate = fal
 
   const currentByKey = new Map(allEvents.map((e) => [eventKey(e), e]));
   const prevState = readDiffState();
-  const prevEvents = prevState.events || {};
+  // Snapshot entries of excluded programs (Pramana etc.) from before the rule
+  // was fixed are dropped: they must neither read as "vanished" nor re-appear.
+  const prevEvents = Object.fromEntries(Object.entries(prevState.events || {}).filter(([, v]) => !isExcludedProgramEvent(String((v && v.title) || ''), String((v && v.tabName) || ''))));
 
   // Vanished-by-identity: yesterday's snapshot entries whose exact key
   // (tab+date+start-time) no longer exists today, indexed by their
@@ -1999,6 +2039,7 @@ function chunkMessage(text, maxLen = 3500) {
 }
 
 module.exports = {
+  isExcludedProgramEvent,
   loadConfig,
   loadCommunityTags,
   parseCsv,

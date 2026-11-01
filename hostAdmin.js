@@ -435,7 +435,51 @@ async function tick(bot, now = Date.now()) {
   }
 }
 
+// One-shot (Elena, 2026-11-01): Darya_Marchenko9 stays a host (active, tagged,
+// counted); Anzhelika (@anzhelikakarmolog) is on pause until the Sunday Announce
+// of 15.11 (09:00 Bali, i.e. not tagged on 1.11, 2.11, 8.11, 9.11, left out of
+// the Tuesday summaries 3.11 / 10.11 and out of "N of M"). The state lives on
+// the Railway volume, so it is applied by the bot itself at start, once; then
+// the waiting Announce preview for 2-8 Nov is cancelled and a new one is sent.
+const ROSTER_FIX_ID = 'roster-pramana-2026-11-01';
+const PAUSE_UNTIL = Date.parse('2026-11-15T01:00:00Z'); // 15.11 09:00 Bali
+async function rosterFixOnce(bot) {
+  const store = realStore;
+  const flag = store.read().oneShots || {};
+  if (flag[ROSTER_FIX_ID]) return { skipped: true };
+  const lines = [];
+  const darya = store.entryForTag('@Darya_Marchenko9');
+  if (!darya) store.applyRoster({ active: ['Darya_Marchenko9'] });
+  else {
+    store.setStatus('Darya_Marchenko9', 'active');
+    store.clearPause('Darya_Marchenko9');
+  }
+  const anzh = store.setPause('anzhelikakarmolog', Date.now(), PAUSE_UNTIL);
+  if (!anzh.ok) lines.push('⚠️ @anzhelikakarmolog не найдена в списке хостов — пауза НЕ поставлена.');
+  const others = store
+    .entries()
+    .filter((h) => normUser(h.username) !== 'anzhelikakarmolog' && /ксени|ksen/i.test(`${h.username} ${h.name}`));
+  if (others.length > 0) lines.push(`❓ В списке есть ещё человек с именем Ксения/Ksenia: ${others.map((h) => esc(h.tag)).join(', ')}. Я с ним ничего не делала — подскажите, что делать.`);
+  store.update((st) => {
+    st.oneShots = { ...(st.oneShots || {}), [ROSTER_FIX_ID]: Date.now() };
+  });
+  await cards.refreshCardsAfterHostListChange(bot).catch(() => {});
+  const list = store.entries();
+  const active = store.tags().length;
+  const text = [
+    '✅ <b>Список хостов обновлён</b>',
+    `Дарья (@Darya_Marchenko9): активна, тегается и считается в «из N».`,
+    `Анжелика (@anzhelikakarmolog): пауза до 15.11 (обычный режим с воскресного Анонса 15.11).`,
+    '',
+    hostsListText(CONTEXTS.p),
+    ...lines,
+  ].join('\n');
+  await tell(bot, text);
+  return { ok: true, active, total: list.length };
+}
+
 module.exports = {
+  rosterFixOnce,
   handleCommand,
   askHoldQuestions,
   onChatMember,

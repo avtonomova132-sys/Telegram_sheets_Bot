@@ -1765,6 +1765,33 @@ async function rebuildReminderPreview(bot, now = Date.now()) {
   });
 }
 
+// Cancel the waiting announce preview(s) of a week and send a new one (same as
+// /announce) built from the current sheet rules and host list. Nothing goes to
+// the group. `once` makes it a one-shot: remembered in the scheduler state.
+async function reissueAnnouncePreview(bot, { monday, once = null, now = Date.now() }) {
+  return runSerialStrict(async () => {
+    if (once && readJson({ messages: {}, batches: [] }).scheduler?.oneShots?.[once]) return { skipped: true };
+    const weekStart = isoOf(monday);
+    const olds = pendingList().filter((p) => p.kind === 'announce' && p.weekStart === weekStart);
+    let prevItems = null;
+    for (const p of olds) {
+      prevItems = p.items || prevItems;
+      updateScheduler((s) => {
+        s.pending[p.id].status = 'cancelled';
+      });
+      await removeButtons(bot, p);
+    }
+    const res = await createAnnouncePreview(bot, { monday, now, prevItems, manual: true });
+    if (once) {
+      updateScheduler((s) => {
+        s.oneShots = s.oneShots || {};
+        s.oneShots[once] = now;
+      });
+    }
+    return { ...res, cancelled: olds.length };
+  });
+}
+
 // ---- The answer: button, "да"/"нет" reply, /yes, /no ----
 async function confirmPending(bot, id, approve) {
   const now = Date.now();
@@ -2317,6 +2344,7 @@ module.exports = {
   weekSchedulerTick,
   runTuesdayPreview,
   rebuildReminderPreview,
+  reissueAnnouncePreview,
   newestPendingAt: () => (pendingList()[0] || {}).createdAt || 0,
   addCountedExtraForEvent,
   urgentStep,

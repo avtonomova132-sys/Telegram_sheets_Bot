@@ -21,6 +21,7 @@ const {
   handleCardCallback,
   syncCardsWithSheet,
   refreshCardsAfterHostListChange,
+  reissueAnnouncePreview,
   weekSchedulerTick,
   handleWeekCallback,
   handleWeekTextReply,
@@ -2003,6 +2004,18 @@ setTimeout(runCardSheetSync, 30 * 1000);
 setTimeout(() => {
   refreshCardsAfterHostListChange(bot).catch((err) => console.error('[card-buttons] обновление карточек после смены списка хостов:', err.message));
 }, 15 * 1000);
+
+// Разовая правка 2026-11-01 (Елена): Дарья — активный хост, Анжелика — пауза до 15.11;
+// затем сегодняшнее превью Анонса (2–8.11) отменяется и приходит новое (без Pramana).
+setTimeout(async () => {
+  try {
+    await hostAdmin.rosterFixOnce(bot);
+    const monday = new Date(Date.UTC(2026, 10, 2));
+    await reissueAnnouncePreview(bot, { monday, once: 'announce-reissue-pramana-2026-11-01' });
+  } catch (err) {
+    console.error('[roster-fix] ошибка:', err.message);
+  }
+}, 25 * 1000);
 
 // Одно напоминание хостам, не отметившимся под карточками, через 24 часа после
 // Анонса (любого, отправленного ботом в группу: воскресная рассылка или
