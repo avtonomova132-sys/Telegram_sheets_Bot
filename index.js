@@ -2015,7 +2015,7 @@ setTimeout(async () => {
   try {
     await hostAdmin.rosterFixOnce(bot);
     const monday = new Date(Date.UTC(2026, 10, 2));
-    await reissueAnnouncePreview(bot, { monday, once: 'announce-reissue-tags5-2026-11-01' });
+    await reissueAnnouncePreview(bot, { monday, once: 'announce-reissue-headtags-2026-11-01' });
   } catch (err) {
     console.error('[roster-fix] ошибка:', err.message);
   }

@@ -34,7 +34,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { extraTagMessages, mainTags, escapeHtml, formatCommunityTag, getNextWeekRange, collectWeekEvents, buildWeekCardParts, isPastAzStart, describeDoubt, formatRange24h, formatRange12h, formatMonthDayEn, formatMonthDayRu, mskDate, programLine, setReservationLookup, sessionLabel, sundayButtonWhen, weekCardDateLine } = require('./report');
+const { extraTagMessages, mainTags, THANKS_HELP_LINES, escapeHtml, formatCommunityTag, getNextWeekRange, collectWeekEvents, buildWeekCardParts, isPastAzStart, describeDoubt, formatRange24h, formatRange12h, formatMonthDayEn, formatMonthDayRu, mskDate, programLine, setReservationLookup, sessionLabel, sundayButtonWhen, weekCardDateLine } = require('./report');
 
 // Telegram allows roughly 20 messages/minute into one group — a week is
 // ~25 cards, so group sends are paced ~3.2s apart (a burst gets HTTP 429).
@@ -370,7 +370,10 @@ async function sendExtraTagMessages(bot, chatId, tags, replyToId, gapMs) {
 }
 
 async function postWeekCards(bot, chatId, events, range, failedTabs = [], review = null, { restOfWeek = false } = {}) {
-  const { header, cards, closing, openCount } = buildWeekCardParts(events, range, { restOfWeek });
+  const allTags = loadHostCandidates();
+  const nMsgs = 1 + extraTagMessages(allTags).length;
+  const { header: baseHeader, cards, closing, openCount } = buildWeekCardParts(events, range, { restOfWeek, tags: allTags });
+  const header = previewTag(chatId, 1, nMsgs, `основное (шапка с тегами 1–${Math.min(5, allTags.length)}, карточки)`) + baseHeader;
   // Every event of the week already has a host — nothing to ask for.
   if (openCount === 0) return { aborted: 'allCovered', failedTabs, events: events.length, sent: 0 };
 
@@ -408,12 +411,8 @@ async function postWeekCards(bot, chatId, events, range, failedTabs = [], review
     sent++;
     await sleep(gapMs);
     // Tags: always the real hosts only (the temporary "Elena is a host" test
-    // mode counts her on the cards but must never end up in this line).
-    const allTags = loadHostCandidates();
-    const nMsgs = 1 + extraTagMessages(allTags).length;
-    const tagLine = previewTag(chatId, 1, nMsgs, `основное (теги 1–${Math.min(5, allTags.length)})`) + tagsHtml(mainTags(allTags));
-    await withRetry(() => bot.sendMessage(chatId, tagLine, { parse_mode: 'HTML' }));
-    sent++;
+    // mode counts her on the cards but must never end up in the tags). The first
+    // 5 stand at the end of the header; the rest follow as replies to the header.
     sent += await sendExtraTagMessages(bot, chatId, allTags, headerMessage.message_id, gapMs);
     // Last: the odd sessions, in plain words — only when there are any.
     if (review) {
@@ -1361,7 +1360,7 @@ function reminderHeaderText(n, names) {
     `${ru} Пожалуйста, нажмите ✅ или ❌ ниже — это займёт пару секунд и очень поможет с планированием. 🙏`,
   ];
   if (names.length > 0) {
-    parts.push('', `<b>Haven't responded yet / Ещё не отметились:</b> ${mainTags(names).map((t) => escapeHtml(formatCommunityTag(t))).join(', ')}`);
+    parts.push('', THANKS_HELP_LINES, mainTags(names).map((t) => escapeHtml(formatCommunityTag(t))).join(' '));
   }
   return parts.join('\n');
 }
@@ -2127,6 +2126,7 @@ function urgentTexts(e, tags, { test = false } = {}) {
     `EN: Less than 24 hours until <b>${what}</b> (${when}). There is no host yet. Please tap ✅ if you can take it, or ❌ if you can't. 🙏`,
     `RU: Осталось меньше 24 часов до эфира <b>${what}</b> (${when}). Хоста пока нет. Нажмите ✅, если сможете, или ❌, если не можете. 🙏`,
     '',
+    THANKS_HELP_LINES,
     mainTags(tags).map((t) => escapeHtml(formatCommunityTag(t))).join(' '),
   ].join('\n');
   const card = {

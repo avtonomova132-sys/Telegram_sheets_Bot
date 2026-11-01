@@ -51,6 +51,8 @@ function formatCommunityTag(tag) {
 // rest go in follow-up messages of 5, each with a short note (never bare tags),
 // sent as replies to the main message in the same "send to group" action.
 const TAGS_PER_MESSAGE = 5;
+// Friendly line before the tags in the header (Announce, Monday reminder, 24h).
+const THANKS_HELP_LINES = 'Thank you so much for your help! 🙏🌸\nОгромное спасибо за вашу помощь! 🙏🌸';
 const EXTRA_TAGS_NOTE = '👆 Пожалуйста, отметьтесь выше / Please mark above 🙏';
 
 // First message's tags (main message), order unchanged.
@@ -1311,7 +1313,7 @@ function weekCardDateLine(e) {
 
 // `restOfWeek`: an announce sent mid-week for what is still open ("for the rest of
 // the week" / "до конца недели") instead of the usual "upcoming week" one.
-function buildWeekCardParts(events, range, { restOfWeek = false } = {}) {
+function buildWeekCardParts(events, range, { restOfWeek = false, tags = [] } = {}) {
   const open = events.filter((e) => !e.hasHost);
   const n = open.length;
 
@@ -1329,6 +1331,7 @@ function buildWeekCardParts(events, range, { restOfWeek = false } = {}) {
     'Отметьтесь, пожалуйста, ниже, нажав на:',
     '✅ - беру эфир - попадёте во вкладку эфира.',
     '❌ - не могу - будем знать, кто точно не может 🙏',
+    ...(tags.length > 0 ? ['', THANKS_HELP_LINES, mainTags(tags).map(formatCommunityTag).join(' ')] : []),
   ].join('\n');
 
   const cards = open.map((e, i) => ({
@@ -2067,6 +2070,7 @@ module.exports = {
   isExcludedProgramEvent,
   extraTagMessages,
   mainTags,
+  THANKS_HELP_LINES,
   EXTRA_TAGS_NOTE,
   loadConfig,
   loadCommunityTags,
