@@ -3796,6 +3796,8 @@ bot.on('callback_query', async (query) => {
   }
 });
 
+require('./ozon-form').init(bot);
+
 bot.on('polling_error', (err) => {
   console.error('Ошибка polling:', err.message);
 });
