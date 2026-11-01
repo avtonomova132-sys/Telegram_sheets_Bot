@@ -1496,13 +1496,25 @@ bot.onText(/^\/(check_assistants|чек_ассистенты)(?:@\S+)?$/, (msg) 
 // ли нужный час и проверяли ли мы уже сегодня"), что у воскресной
 // авторассылки /weekly и ежедневного изречения, а не точный cron на
 // минуту — единичный пропущенный тик не значит пропуск всего дня.
+// Решение «нужны ли хосты на программу»: кнопки под «Table update», команды, суточный шаг
+// (programNeeds.js, programRules.js). Только Елена.
+const programNeeds = require('./programNeeds');
+bot.on('callback_query', (query) => {
+  if (String(query.data || '').startsWith('prg:')) programNeeds.onCallback(bot, query).catch((err) => console.error('[program-needs] callback:', err.message));
+});
+bot.onText(/^\/program_no(?:@\S+)?(?:\s+(.+?))?\s*$/i, (msg, m) => programNeeds.handleCommand(bot, msg, 'program_no', m && m[1]));
+bot.onText(/^\/program_need(?:@\S+)?(?:\s+(.+?))?\s*$/i, (msg, m) => programNeeds.handleCommand(bot, msg, 'program_need', m && m[1]));
+bot.onText(/^\/programs(?:@\S+)?\s*$/i, (msg) => programNeeds.handleCommand(bot, msg, 'programs'));
+bot.onText(/^\/programs_scan(?:@\S+)?\s*$/i, (msg) => programNeeds.handleCommand(bot, msg, 'programs_scan'));
+cron.schedule('*/5 * * * *', () => programNeeds.step(bot).catch((err) => console.error('[program-needs] шаг:', err.message)));
+
 const PROGRAMS_WATCH_HOUR = Number(process.env.PROGRAMS_WATCH_HOUR) || 9;
 
 async function runProgramsWatchCheck(chatId, { announceNoChange = false } = {}) {
   const messages = await checkForNewPrograms();
   if (messages.length > 0) {
-    for (const msg of messages) {
-      await bot.sendMessage(chatId, msg, { parse_mode: 'HTML' });
+    for (const m of messages) {
+      await bot.sendMessage(chatId, m.text, { parse_mode: 'HTML', ...(m.keyboard ? { reply_markup: m.keyboard } : {}) });
     }
   } else if (announceNoChange) {
     await bot.sendMessage(chatId, 'Новых программ с прошлой проверки не найдено — тишина 🤫');

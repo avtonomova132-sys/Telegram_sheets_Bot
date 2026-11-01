@@ -8,7 +8,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const { loadConfig, csvUrl, fetchWithTimeout, parseCsv, normalize, escapeHtml } = require('./report');
+const { loadConfig, csvUrl, fetchWithTimeout, parseCsv, normalize, escapeHtml, isExcludedProgramEvent } = require('./report');
+const rules = require('./programRules');
 
 const PROGRAMS_TAB_GID = '873833331';
 const STATE_PATH = process.env.PROGRAMS_WATCH_STATE_PATH || '/data/programs_watch_state.json';
@@ -118,22 +119,45 @@ function programRowUrl(spreadsheetId, program) {
   return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit?gid=${PROGRAMS_TAB_GID}&range=A${program.sheetRow}#gid=${PROGRAMS_TAB_GID}`;
 }
 
-function buildProgramUpdateMessage(program, spreadsheetId) {
+// Нужны ли хосты WVP на эту программу: 'excluded' (уже в списке исключённых —
+// зашитые Pramana / Breakfast Club / ACI Inna & Bill или решения Елены), 'needed'
+// (Елена ответила «нужны») или 'unknown' (спросить Настю).
+function programHostStatus(program) {
+  const text = `${program.abbrev} ${program.name}`;
+  const teacher = (program.teacher || '').toLowerCase();
+  if (isExcludedProgramEvent(text, program.name)) return 'excluded';
+  if (/ivanina|mcmichael|lashaw/.test(teacher) || (/\binna\b/.test(teacher) && /\bbill\b/.test(teacher))) return 'excluded';
+  if (rules.findExcluded(program.name)) return 'excluded';
+  if (rules.findNeeded(program.name)) return 'needed';
+  return 'unknown';
+}
+
+// Строка для Насти: двуязычная, её удобно переслать вместе с сообщением.
+const ASK_NASTYA = 'Нужны ли от нас (WVP) хосты на эту программу? Да или нет? / Do we need to provide hosts for this program? Yes or no?';
+
+function buildProgramUpdateMessage(program, spreadsheetId, status = programHostStatus(program)) {
   const url = programRowUrl(spreadsheetId, program);
   const titleText = program.abbrev ? `${program.abbrev} — ${program.name}` : program.name;
   const producerLine = program.producer
     ? `Продюсер: ${escapeHtml(program.producer)}${program.producerContact ? ` (${escapeHtml(program.producerContact)})` : ''}`
     : 'Продюсер: —';
 
-  return [
+  const lines = [
     '⚠️ Table update / Обновление таблицы',
     '',
     `<a href="${url}">${escapeHtml(titleText)}</a>`,
     `Даты: ${escapeHtml(program.dates) || '—'}`,
     `Преподаватель: ${escapeHtml(program.teacher) || '—'}`,
     producerLine,
-  ].join('\n');
+  ];
+  if (status === 'excluded') lines.push('', '🚫 Хосты не нужны (исключена)');
+  else if (status === 'needed') lines.push('', '✅ Хосты нужны (программа активна)');
+  else lines.push('', ASK_NASTYA);
+  return lines.join('\n');
 }
+
+// Кнопки под сообщением (id = номер строки во вкладке; название и данные лежат в programRules.pending).
+const programKeyboard = (id) => ({ inline_keyboard: [[{ text: '✅ Нужны хосты', callback_data: `prg:need:${id}` }, { text: '🚫 Не нужны', callback_data: `prg:no:${id}` }]] });
 
 // Идентичность строки — её собственный номер в таблице (1-индексация),
 // не содержимое: Elena описала фичу как "появилась ли НОВАЯ строка", а
@@ -157,10 +181,22 @@ async function checkForNewPrograms() {
   for (const p of programs) nextRows[p.sheetRow] = { name: p.name, dates: p.dates };
   writeState({ ...state, rows: nextRows });
 
-  return newPrograms.map((p) => buildProgramUpdateMessage(p, spreadsheetId));
+  return newPrograms.map((p) => {
+    const status = programHostStatus(p);
+    const id = String(p.sheetRow);
+    if (status === 'unknown') {
+      rules.update((st) => {
+        st.pending[id] = { name: p.name, abbrev: p.abbrev, dates: p.dates, at: Date.now() };
+      });
+    }
+    return { text: buildProgramUpdateMessage(p, spreadsheetId, status), status, keyboard: status === 'unknown' ? programKeyboard(id) : null };
+  });
 }
 
 module.exports = {
+  programHostStatus,
+  programKeyboard,
+  ASK_NASTYA,
   fetchProgramRows,
   parseProgramRows,
   checkForNewPrograms,

@@ -2120,15 +2120,19 @@ function unrespondedForWeek(store, chatId, eventDate) {
 
 const urgentSignature = (e, tags) => JSON.stringify([eventKeyOf(e), tags.map(normUser).sort()]);
 
-function urgentTexts(e, tags, { test = false } = {}) {
+function urgentTexts(e, tags, { test = false, variant = null } = {}) {
   const label = sessionLabel(e.title);
   const what = `${escapeHtml(e.tabName)}${label ? ` — ${escapeHtml(label)}` : ''}`;
   const when = `AZ: ${ddmm(e.date)}, ${formatRange24h(e.azStartMin, e.azEndMin)} · MCK: ${ddmm(mskDate(e))}, ${formatRange24h(e.mskStartMin, e.mskEndMin)}`;
   const header = [
-    `${test ? '🧪 <i>ТЕСТ (тестовая группа)</i>\n' : ''}⏰ <b>Less than 24 hours left / Осталось меньше 24 часов</b>`,
+    `${test ? '🧪 <i>ТЕСТ (тестовая группа)</i>\n' : ''}${variant === 'new' ? '🆕 <b>New session needs a host / Новый эфир — нужен хост</b>' : '⏰ <b>Less than 24 hours left / Осталось меньше 24 часов</b>'}`,
     '',
-    `EN: Less than 24 hours until <b>${what}</b> (${when}). There is no host yet. Please tap ✅ if you can take it, or ❌ if you can't. 🙏`,
-    `RU: Осталось меньше 24 часов до эфира <b>${what}</b> (${when}). Хоста пока нет. Нажмите ✅, если сможете, или ❌, если не можете. 🙏`,
+    variant === 'new'
+      ? `EN: A new session was added to the schedule: <b>${what}</b> (${when}). There is no host yet. Please tap ✅ if you can take it, or ❌ if you can't. 🙏`
+      : `EN: Less than 24 hours until <b>${what}</b> (${when}). There is no host yet. Please tap ✅ if you can take it, or ❌ if you can't. 🙏`,
+    variant === 'new'
+      ? `RU: В расписание добавлен новый эфир: <b>${what}</b> (${when}). Хоста пока нет. Нажмите ✅, если сможете, или ❌, если не можете. 🙏`
+      : `RU: Осталось меньше 24 часов до эфира <b>${what}</b> (${when}). Хоста пока нет. Нажмите ✅, если сможете, или ❌, если не можете. 🙏`,
     '',
     mainTags(tags).map((t) => escapeHtml(formatCommunityTag(t))).join(' '),
   ].join('\n');
@@ -2144,8 +2148,8 @@ function urgentTexts(e, tags, { test = false } = {}) {
 }
 
 // Header (with the tags) and the single-session card, as an urgent batch.
-async function postUrgent(bot, chatId, e, tags, { test = false } = {}) {
-  const { header, card } = urgentTexts(e, tags, { test });
+async function postUrgent(bot, chatId, e, tags, { test = false, variant = null } = {}) {
+  const { header, card } = urgentTexts(e, tags, { test, variant });
   const h = await withRetry(() => bot.sendMessage(chatId, header, { parse_mode: 'HTML', disable_web_page_preview: true }));
   const sentAt = Date.now();
   await sleep(chatId < 0 ? GROUP_GAP_MS : PRIVATE_GAP_MS);
@@ -2164,9 +2168,9 @@ async function postUrgent(bot, chatId, e, tags, { test = false } = {}) {
   return { headerId: h.message_id, cardId: c.message_id };
 }
 
-async function createUrgentPreview(bot, { event: e, tags, chatId, now = Date.now(), prevNote = null }) {
+async function createUrgentPreview(bot, { event: e, tags, chatId, now = Date.now(), prevNote = null, variant = null }) {
   const elena = elenaChatId();
-  const { header, card } = urgentTexts(e, tags);
+  const { header, card } = urgentTexts(e, tags, { variant });
   const label = makeLabeler(elena, 2 + tagFollowUps(tags).length);
   const ph = await withRetry(() => bot.sendMessage(elena, label() + header, { parse_mode: 'HTML', disable_web_page_preview: true }));
   await sleep(PRIVATE_GAP_MS);
@@ -2176,7 +2180,9 @@ async function createUrgentPreview(bot, { event: e, tags, chatId, now = Date.now
   const id = `u${Math.abs(chatId)}_${createHash8(eventKeyOf(e))}`;
   const text = [
     prevNote,
-    `👆 <b>Превью срочного напоминания</b> — до эфира меньше 24 часов, хоста нет; отметиться не успели: ${tags.length}. В группу уйдёт ровно так (кнопки на карточке там будут рабочие). Отправить?`,
+    variant === 'new'
+      ? `👆 <b>Превью: добавить новый эфир в напоминание для группы</b> — хоста нет; не отметились: ${tags.length}. В группу уйдёт ровно так (кнопки на карточке там будут рабочие). Отправить?`
+      : `👆 <b>Превью срочного напоминания</b> — до эфира меньше 24 часов, хоста нет; отметиться не успели: ${tags.length}. В группу уйдёт ровно так (кнопки на карточке там будут рабочие). Отправить?`,
     HOW_TO_ANSWER,
   ]
     .filter(Boolean)
@@ -2188,6 +2194,7 @@ async function createUrgentPreview(bot, { event: e, tags, chatId, now = Date.now
     s.pending[id] = {
       id,
       kind: 'urgent',
+      variant,
       chatId,
       eventKey: eventKeyOf(e),
       eventLabel: `${e.tabName} ${ddmm(e.date)} ${formatRange24h(e.azStartMin, e.azEndMin)} AZ`,
@@ -2200,7 +2207,7 @@ async function createUrgentPreview(bot, { event: e, tags, chatId, now = Date.now
       expiresAt: startMsOf(e),
       status: 'pending',
     };
-    s.urgent[eventKeyOf(e)] = { status: 'preview', at: now, chatId };
+    if (variant !== 'new') s.urgent[eventKeyOf(e)] = { status: 'preview', at: now, chatId };
   });
   return { preview: true, id };
 }
@@ -2284,10 +2291,10 @@ async function urgentStep(bot, now, { windowMs = URGENT_WINDOW_MS, force = false
 async function withdrawUrgent(bot, p, why) {
   updateScheduler((s) => {
     if (s.pending[p.id]) s.pending[p.id].status = 'stale';
-    if (s.urgent[p.eventKey]) s.urgent[p.eventKey].status = 'closed';
+    if (p.variant !== 'new' && s.urgent[p.eventKey]) s.urgent[p.eventKey].status = 'closed';
   });
   await removeButtons(bot, p);
-  await sendToElena(bot, `ℹ️ Срочное напоминание по эфиру «${escapeHtml(p.eventLabel)}» отменено: ${escapeHtml(why)}.`);
+  await sendToElena(bot, `ℹ️ ${p.variant === 'new' ? 'Напоминание о новом эфире' : 'Срочное напоминание'} по эфиру «${escapeHtml(p.eventLabel)}» отменено: ${escapeHtml(why)}.`);
 }
 
 // A card just changed: a pending urgent preview for that session may be moot.
@@ -2308,7 +2315,7 @@ async function sendApprovedUrgent(bot, p, now) {
   if (!e || startMsOf(e) <= now || e.hasHost || reservationOnCards(store, p.chatId, e)) {
     updateScheduler((s) => {
       s.pending[p.id].status = 'stale';
-      if (s.urgent[p.eventKey]) s.urgent[p.eventKey].status = 'closed';
+      if (p.variant !== 'new' && s.urgent[p.eventKey]) s.urgent[p.eventKey].status = 'closed';
     });
     return sendToElena(bot, 'Эфир уже закрыт (или начался) — в группу ничего не отправляю.');
   }
@@ -2323,14 +2330,42 @@ async function sendApprovedUrgent(bot, p, now) {
       });
       return sendToElena(bot, `За это время все хосты ответили, но эфир «${escapeHtml(p.eventLabel)}» не закрыт — в группу ничего не отправляю. Нужно решить самой.`);
     }
-    return createUrgentPreview(bot, { event: e, tags, chatId: p.chatId, now, prevNote: '⚠️ <b>Список не отметившихся изменился с момента предыдущего превью</b> — в группу ничего не отправлено. Вот обновлённое превью:' });
+    return createUrgentPreview(bot, { event: e, tags, chatId: p.chatId, now, variant: p.variant || null, prevNote: '⚠️ <b>Список не отметившихся изменился с момента предыдущего превью</b> — в группу ничего не отправлено. Вот обновлённое превью:' });
   }
-  await postUrgent(bot, p.chatId, e, tags);
+  await postUrgent(bot, p.chatId, e, tags, { variant: p.variant || null });
   updateScheduler((s) => {
     s.pending[p.id].status = 'sent';
-    s.urgent[p.eventKey] = { status: 'sent', at: now, chatId: p.chatId };
+    if (p.variant !== 'new') s.urgent[p.eventKey] = { status: 'sent', at: now, chatId: p.chatId };
   });
   await sendToElena(bot, `✅ Срочное напоминание отправлено в группу: «${escapeHtml(p.eventLabel)}».`);
+}
+
+// A free session of a program Elena marked "hosts needed" appeared (programNeeds.js).
+// If the Announce of that week has already gone to the group: a preview "add the
+// session to the reminder for the group" (same rules as the 24h one: only hosts
+// who have not pressed ✅/❌, at most 5 tags per message). If that week's Announce
+// is still to come, the session simply goes into the Sunday Announce.
+// Returns 'preview' | 'in-announce' | 'closed' | 'all-answered'.
+function previewNewSession(bot, e, now = Date.now()) {
+  return runSerialStrict(async () => {
+    const chatId = WVP_GROUP_ID;
+    const store = readJson({ messages: {}, batches: [] });
+    if (e.hasHost || startMsOf(e) <= now || reservationOnCards(store, chatId, e)) return 'closed';
+    // Already has a card in an Announce of the group - it went out with that Announce.
+    for (const [key, r] of Object.entries(store.messages)) {
+      if (!r.mirrorOf && r.event && Number(key.split(':')[0]) === chatId && recordKeyOf(r) === eventKeyOf(e)) return 'in-announce';
+    }
+    const mondayIso = isoOf(baliMonday(e.date.getTime() + 12 * 3600 * 1000));
+    const hasBatch = (store.batches || []).some((b) => b.chatId === chatId && b.kind !== 'urgent' && isLiveBatch(b, now) && (() => { const r = weekRangeOfBatch(store, b); return r && isoOf(r.start) === mondayIso; })());
+    if (!hasBatch && mondayIso > isoOf(baliMonday(now))) return 'in-announce';
+    const tags = unrespondedForWeek(store, chatId, e.date);
+    if (tags.length === 0) {
+      await sendToElena(bot, `Новый эфир <b>${escapeHtml(e.tabName)}</b>, ${eventWhen(e)}, без хоста, но все хосты уже ответили по этой неделе. Нужно решить самой.`);
+      return 'all-answered';
+    }
+    await createUrgentPreview(bot, { event: e, tags, chatId, now, variant: 'new' });
+    return 'preview';
+  });
 }
 
 // /urgent_test — the same message into the TEST group «Дебаты» straight away
@@ -2382,6 +2417,8 @@ module.exports = {
   addCountedExtraForEvent,
   urgentStep,
   runUrgentTest,
+  previewNewSession,
+  eventKeyOf,
   noteHostSeen,
   learnHostIdsFromCards,
   reservationsOfHost,

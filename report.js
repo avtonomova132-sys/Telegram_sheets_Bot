@@ -5,7 +5,15 @@ const CONFIG_PATH = path.join(__dirname, 'tabs-config.json');
 const TAGS_PATH = path.join(__dirname, 'community-tags.json');
 
 function loadConfig() {
-  return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  // Tabs of programs Elena marked "hosts needed" (programRules.js) once the tab was found.
+  try {
+    const have = new Set(config.tabs.map((t) => String(t.gid)));
+    for (const t of require('./programRules').dynamicTabs()) if (!have.has(t.gid)) config.tabs.push(t);
+  } catch {
+    /* rules file unreadable - static tabs only */
+  }
+  return config;
 }
 
 // Per Elena: more than 5 @mentions in one Telegram message can fail to
@@ -140,11 +148,11 @@ function normalize(cell) {
   return (cell || '').replace(/\s+/g, ' ').trim();
 }
 
-async function fetchWithTimeout(url, ms) {
+async function fetchWithTimeout(url, ms, options = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
   try {
-    return await fetch(url, { signal: controller.signal });
+    return await fetch(url, { ...options, signal: controller.signal });
   } finally {
     clearTimeout(timer);
   }
@@ -598,6 +606,13 @@ function isExcludedProgramEvent(title, tabName = '') {
   const t = normProgramText(title);
   const l = normProgramText(tabName);
   const hasOwnProgramName = /\bwith\b/.test(t);
+
+  // Programs Elena marked "hosts not needed" (button / /program_no), see programRules.js.
+  try {
+    if (require('./programRules').isExcludedByRules(title, tabName)) return true;
+  } catch {
+    /* ignore */
+  }
 
   if (EXCLUDED_ALWAYS_BY_TITLE_OR_LABEL.some((m) => t.includes(m) || l.includes(m))) return true;
 
