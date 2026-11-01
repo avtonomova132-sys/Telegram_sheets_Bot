@@ -214,8 +214,8 @@ function cardKeyboard(record) {
 
 // titleLine/dateLine arrive as ready HTML strings; `event` identifies the
 // sheet row (tab + date + AZ start) so the periodic sync can find it again.
-async function sendCard(bot, chatId, { titleLine, dateLine, tabUrl = null, when = null, event = null, label = '', prefix = '', candidateTags = candidatesFor(chatId) }) {
-  const record = { titleLine, dateLine, tabUrl, when, event, label, candidateTags, refusers: [], reservedBy: null, hosted: null };
+async function sendCard(bot, chatId, { titleLine, dateLine, tabUrl = null, when = null, event = null, label = '', prefix = '', inherit = null, candidateTags = candidatesFor(chatId) }) {
+  const record = { titleLine, dateLine, tabUrl, when, event, label, candidateTags, refusers: (inherit && inherit.refusers) || [], reservedBy: (inherit && inherit.reservedBy) || null, hosted: null };
   const sent = await withRetry(() =>
     bot.sendMessage(chatId, prefix + cardText(record), {
       parse_mode: 'HTML',
@@ -257,7 +257,9 @@ function liveDoubts(e) {
 async function sendWeekCards(bot, chatId, { now = new Date(), requireComplete = false, range = getNextWeekRange(now), reviewChatId = null, sendChecklist = false, verify = null, only = null, restOfWeek = false, allowDoubts = false } = {}) {
   const collected = await collectWeekEvents(range);
   const failedTabs = collected.failedTabs;
-  let events = collected.events.filter((e) => e.hasHost || !isPastAzStart(e, now));
+  const storeNow = readJson({ messages: {}, batches: [] });
+  // Sessions already closed by a ✅ reservation on an earlier Announce card do not get a card again.
+  let events = collected.events.filter((e) => (e.hasHost || !isPastAzStart(e, now)) && (e.hasHost || !reservationOnCards(storeNow, WVP_GROUP_ID, e)));
   // `only`: the caller wants cards for just some of the sessions (mid-week
   // top-up for the ones that have no live card in the group yet).
   if (only) events = events.filter((e) => only(e));
@@ -373,6 +375,22 @@ async function sendTagFollowUps(bot, chatId, tags, replyToId, gapMs, label) {
   return list.length;
 }
 
+// A re-issued Announce (e.g. new programs added after the first one went out) must
+// not lose what hosts already pressed: the new card of a session inherits the ❌ marks
+// and the ✅ reservation from the existing card(s) of the same session in the group.
+function inheritFromGroupCards(store, card) {
+  if (!card.event) return null;
+  const k = `${card.event.tabUrl || ''}|${card.event.dateIso}|${card.event.azStartMin}`;
+  const refusers = [];
+  let reservedBy = null;
+  for (const [key, r] of Object.entries(store.messages)) {
+    if (r.mirrorOf || !r.event || r.hosted || Number(key.split(':')[0]) !== WVP_GROUP_ID || recordKeyOf(r) !== k) continue;
+    for (const u of r.refusers || []) if (!refusers.some((x) => x.id === u.id)) refusers.push(u);
+    if (r.reservedBy && !reservedBy) reservedBy = r.reservedBy;
+  }
+  return refusers.length > 0 || reservedBy ? { refusers, reservedBy } : null;
+}
+
 async function postWeekCards(bot, chatId, events, range, failedTabs = [], review = null, { restOfWeek = false } = {}) {
   const allTags = loadHostCandidates();
   const { header: baseHeader, cards, closing, openCount } = buildWeekCardParts(events, range, { restOfWeek, tags: allTags });
@@ -403,6 +421,7 @@ async function postWeekCards(bot, chatId, events, range, failedTabs = [], review
         event: card.event,
         label: card.label,
         prefix: label(),
+        inherit: inheritFromGroupCards(readJson({ messages: {} }), card),
       });
       cardKeys.push(`${chatId}:${cardMessage.message_id}`);
       sent++;
@@ -1652,7 +1671,8 @@ async function createAnnouncePreview(bot, { monday, now = Date.now(), prevItems 
   const key = `announce:${isoOf(monday)}`;
   const collected = await collectWeekEvents(range);
   if (collected.failedTabs.length > 0) throw new Error(`не загрузились вкладки таблицы: ${collected.failedTabs.join('; ')}`);
-  const events = collected.events.filter((e) => e.hasHost || !isPastAzStart(e, new Date(now)));
+  const storeNow = readJson({ messages: {}, batches: [] });
+  const events = collected.events.filter((e) => (e.hasHost || !isPastAzStart(e, new Date(now))) && (e.hasHost || !reservationOnCards(storeNow, WVP_GROUP_ID, e)));
   const openEvents = events.filter((e) => !e.hasHost);
 
   if (openEvents.length === 0) {
@@ -1867,6 +1887,28 @@ async function confirmPending(bot, id, approve) {
   }
 }
 
+// A second Announce of the same week replaced the first: the older batch(es) get no
+// Monday reminder / Tuesday note any more (the new one carries the same cards with the
+// presses copied over, and is the one the reminders follow).
+const weekRangeKey = (range) => isoOf(range.start);
+function supersedeOlderAnnounces(chatId, mondayIso, now) {
+  updateScheduler((s, store) => {
+    const same = (store.batches || [])
+      .filter((b) => b.chatId === chatId && b.kind !== 'urgent' && isLiveBatch(b, now))
+      .filter((b) => {
+        const r = weekRangeOfBatch(store, b);
+        return r && isoOf(r.start) === mondayIso;
+      })
+      .sort((a, b) => b.sentAt - a.sentAt);
+    for (const b of same.slice(1)) {
+      b.remindedAt = b.remindedAt || now;
+      b.tuesdayDoneAt = b.tuesdayDoneAt || now;
+      b.outcome = 'superseded';
+      b.superseded = true;
+    }
+  });
+}
+
 async function sendApprovedAnnounce(bot, p, now) {
   const monday = new Date(`${p.weekStart}T00:00:00.000Z`);
   const range = range7(monday);
@@ -1895,6 +1937,7 @@ async function sendApprovedAnnounce(bot, p, now) {
   updateScheduler((s) => {
     s.pending[p.id].status = 'sent';
   });
+  await supersedeOlderAnnounces(WVP_GROUP_ID, weekRangeKey(range), now);
   await sendToElena(bot, `✅ Отправлено в группу: Анонс на неделю ${weekLabel(range)}, эфиров без хоста — ${res.open}.`);
 }
 

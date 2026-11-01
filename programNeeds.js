@@ -135,6 +135,16 @@ async function handleCommand(bot, msg, command, arg = '') {
   const name = String(arg || '').replace(/^["«“]|["»”]$/g, '').trim();
   if (command === 'programs') return tell(bot, programsText());
   if (command === 'programs_scan') return scan(bot);
+  if (command === 'program_tab') {
+    const r = setTabManually(arg);
+    if (!r.ok) return tell(bot, r.reason === 'not-needed' ? 'Этой программы нет в списке «хосты нужны». Сначала /program_need «название».' : 'Формат: /program_tab «название вкладки» gid');
+    await tell(bot, `📑 Вкладка привязана к «${escapeHtml(r.program)}».`);
+    const seeded = await seedProgramsOnce(bot);
+    if (seeded && seeded.resolvedAll) {
+      await cards.reissueAnnouncePreview(bot, { monday: new Date(Date.UTC(2026, 10, 2)), once: 'announce-reissue-sanskrit-lamrim-2026-11-02' }).catch((err) => console.error('[program-needs]', err.message));
+    }
+    return null;
+  }
   if (!name) return tell(bot, `Формат: /${command} «название программы»`);
   if (command === 'program_no') {
     const r = rules.setExcluded(name);
@@ -174,8 +184,9 @@ async function step(bot, now = Date.now(), { force = false } = {}) {
     // 1) вкладка
     let tab = p.tab || null;
     if (!tab) {
-      const known = config.tabs.find((t) => rules.sameProgram(t.name, p.name));
-      const found = known || (tabs && findTabFor(p.name, tabs));
+      const names = [p.tabName, p.name].filter(Boolean);
+      const known = config.tabs.find((t) => names.some((n) => rules.sameProgram(t.name, n)));
+      const found = known || (tabs && names.map((n) => findTabFor(n, tabs)).find(Boolean));
       if (found) {
         tab = { name: found.name, gid: String(found.gid) };
         rules.update((s) => {
@@ -205,7 +216,7 @@ async function step(bot, now = Date.now(), { force = false } = {}) {
     if (collected.failedTabs.length > 0) {
       console.warn('[program-needs] часть вкладок не загрузилась:', collected.failedTabs.join('; '));
     }
-    const mine = collected.events.filter((e) => !e.hasHost && (rules.sameProgram(e.tabName, p.name) || rules.sameProgram(e.tabName, tab.name)) && !isExcludedProgramEvent(e.title, e.tabName));
+    const mine = collected.events.filter((e) => !e.hasHost && String(e.tabUrl || '').includes(`gid=${tab.gid}`) && !isExcludedProgramEvent(e.title, e.tabName));
     for (const e of mine) {
       const key = cards.eventKeyOf(e);
       if ((p.previewed || {})[key]) continue;
@@ -217,6 +228,100 @@ async function step(bot, now = Date.now(), { force = false } = {}) {
       });
     }
   }
+}
+
+
+// ---- Разовое подключение двух программ (Елена, 2026-11-02) ----
+const SEED_PROGRAMS = [
+  { name: 'The Sanskrit Mantra Pronunciation Workshop', tabName: 'Sanskrit with Christina Kasica' },
+  { name: 'Lam Rim with Timothy Lowenhaupt', tabName: 'Lam Rim with Timothy Lowenhaupt' },
+];
+const SEED_ID = '2026-11-02-sanskrit-lamrim';
+const ddmmOf = (d) => d.toISOString().slice(5, 10).split('-').reverse().join('.');
+
+async function seedProgramsOnce(bot) {
+  if ((rules.read().seeded || {})[SEED_ID]) return { skipped: true };
+  const warnedBefore = Boolean(rules.read().seedWarned);
+  const out = ['📚 <b>Подключаю две программы (хосты нужны)</b>'];
+  let tabs = null;
+  try {
+    tabs = await listSheetTabs();
+  } catch (err) {
+    out.push(`⚠️ ${escapeHtml(err.message)}`);
+  }
+  const config = loadConfig();
+  const week = { start: new Date(Date.UTC(2026, 10, 2)), end: new Date(Date.UTC(2026, 10, 8)) };
+  const wide = { start: new Date(Date.UTC(2026, 10, 1)), end: new Date(Date.UTC(2027, 0, 31)) };
+  const missing = [];
+  for (const sp of SEED_PROGRAMS) {
+    // убрать из исключённых всё, что относится к этой программе (по названию программы и вкладки)
+    rules.update((s) => {
+      s.excluded = s.excluded.filter((x) => !rules.sameProgram(x.name, sp.name) && !rules.sameProgram(x.name, sp.tabName));
+    });
+    rules.setNeeded(sp.name, { tabName: sp.tabName });
+    const found = config.tabs.find((t) => rules.sameProgram(t.name, sp.tabName)) || (tabs && findTabFor(sp.tabName, tabs));
+    rules.update((s) => {
+      const r = s.needed.find((x) => rules.sameProgram(x.name, sp.name));
+      if (r) {
+        r.tabName = sp.tabName;
+        if (found) r.tab = { name: found.name, gid: String(found.gid) };
+      }
+    });
+    if (!found) missing.push(sp);
+  }
+  if (missing.length > 0) {
+    out.push('', '❓ Не нашла вкладку (нет ни в проверке, ни в списке вкладок): ' + missing.map((m) => `«${escapeHtml(m.tabName)}»`).join(', '));
+    out.push('Если знаете gid (число после gid= в ссылке на вкладку): /program_tab «название вкладки» gid');
+  }
+
+  // что бот видит в этих вкладках
+  let collected = null;
+  try {
+    collected = await collectWeekEvents(wide);
+  } catch (err) {
+    out.push('', `⚠️ Не получилось прочитать вкладки: ${escapeHtml(err.message)}`);
+  }
+  const now = Date.now();
+  for (const sp of SEED_PROGRAMS) {
+    const rec = rules.read().needed.find((x) => rules.sameProgram(x.name, sp.name));
+    out.push('', `<b>${escapeHtml(sp.name)}</b> — вкладка «${escapeHtml(sp.tabName)}»: ${rec && rec.tab ? `видна (gid ${escapeHtml(rec.tab.gid)})` : 'НЕ видна боту'}`);
+    if (!rec || !rec.tab || !collected) continue;
+    if (collected.failedTabs.some((f) => f.includes(rec.tab.name))) out.push('⚠️ вкладка не загрузилась');
+    const mine = collected.events.filter((e) => String(e.tabUrl || '').includes(`gid=${rec.tab.gid}`));
+    const inWeek = mine.filter((e) => e.date >= week.start && e.date <= week.end);
+    out.push(`Эфиров в вкладке (до конца января): ${mine.length}; на 2–8.11: ${inWeek.length}`);
+    inWeek.forEach((e) => out.push(`• ${ddmmOf(e.date)} ${escapeHtml(e.title || e.tabName)} — ${e.hasHost ? `хост: ${escapeHtml(e.host)}` : 'хоста нет'}`));
+    // эти эфиры уйдут в новый Анонс - отдельное «новый эфир» по ним не нужно
+    rules.update((s) => {
+      const r = s.needed.find((x) => x.norm === rec.norm);
+      if (r) for (const e of inWeek) r.previewed = { ...(r.previewed || {}), [cards.eventKeyOf(e)]: now };
+    });
+  }
+  const resolvedAll = SEED_PROGRAMS.every((sp) => {
+    const rec = rules.read().needed.find((x) => rules.sameProgram(x.name, sp.name));
+    return rec && rec.tab;
+  });
+  rules.update((s) => {
+    if (resolvedAll) s.seeded = { ...(s.seeded || {}), [SEED_ID]: now };
+    else s.seedWarned = true;
+  });
+  // Not resolved yet: say it once (the seed re-runs at every start and after /program_tab until both tabs are seen).
+  if (resolvedAll || !warnedBefore) await tell(bot, out.join('\n'));
+  return { ok: true, resolvedAll };
+}
+
+// /program_tab «название вкладки» gid - вручную привязать вкладку к программе из списка «нужны хосты»
+function setTabManually(argText) {
+  const m = String(argText || '').match(/^(.*?)[\s]+(\d{3,})\s*$/);
+  if (!m) return { ok: false };
+  const name = m[1].replace(/^["«“]|["»”]$/g, '').trim();
+  const res = rules.update((s) => {
+    const r = s.needed.find((x) => rules.sameProgram(x.name, name) || (x.tabName && rules.sameProgram(x.tabName, name)));
+    if (!r) return { ok: false, reason: 'not-needed' };
+    r.tab = { name: r.tabName || name, gid: m[2] };
+    return { ok: true, program: r.name };
+  });
+  return res;
 }
 
 // ---- /programs_scan: что в таблице бот ещё не знает или не учитывает ----
@@ -267,4 +372,4 @@ async function scan(bot) {
   for (let i = 0; i < text.length; i += 3800) await tell(bot, text.slice(i, i + 3800));
 }
 
-module.exports = { onCallback, handleCommand, step, listSheetTabs, programsText, scan };
+module.exports = { seedProgramsOnce, onCallback, handleCommand, step, listSheetTabs, programsText, scan };

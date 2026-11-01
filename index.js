@@ -1504,6 +1504,7 @@ bot.on('callback_query', (query) => {
 });
 bot.onText(/^\/program_no(?:@\S+)?(?:\s+(.+?))?\s*$/i, (msg, m) => programNeeds.handleCommand(bot, msg, 'program_no', m && m[1]));
 bot.onText(/^\/program_need(?:@\S+)?(?:\s+(.+?))?\s*$/i, (msg, m) => programNeeds.handleCommand(bot, msg, 'program_need', m && m[1]));
+bot.onText(/^\/program_tab(?:@\S+)?(?:\s+(.+?))?\s*$/i, (msg, m) => programNeeds.handleCommand(bot, msg, 'program_tab', m && m[1]));
 bot.onText(/^\/programs(?:@\S+)?\s*$/i, (msg) => programNeeds.handleCommand(bot, msg, 'programs'));
 bot.onText(/^\/programs_scan(?:@\S+)?\s*$/i, (msg) => programNeeds.handleCommand(bot, msg, 'programs_scan'));
 cron.schedule('*/5 * * * *', () => programNeeds.step(bot).catch((err) => console.error('[program-needs] шаг:', err.message)));
@@ -2028,6 +2029,10 @@ setTimeout(async () => {
     await hostAdmin.rosterFixOnce(bot);
     const monday = new Date(Date.UTC(2026, 10, 2));
     await reissueAnnouncePreview(bot, { monday, once: 'announce-reissue-order-2026-11-01' });
+    // 2026-11-02: Sanskrit (Christina Kasica) и Lam Rim (Timothy Lowenhaupt) — хосты нужны; затем
+    // новое превью Анонса 2–8.11 со всеми свободными эфирами (старое превью отменяется).
+    const seeded = await require('./programNeeds').seedProgramsOnce(bot);
+    if (seeded && seeded.resolvedAll) await reissueAnnouncePreview(bot, { monday, once: 'announce-reissue-sanskrit-lamrim-2026-11-02' });
   } catch (err) {
     console.error('[roster-fix] ошибка:', err.message);
   }
