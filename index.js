@@ -907,7 +907,7 @@ async function handleReportCommand(chatId, label, generate) {
   try {
     await bot.sendMessage(chatId, `Собираю ${label}... 📊 Секунду.`);
 
-    const { text, totalEvents, failedTabs, debug } = await generate();
+    const { text, totalEvents, failedTabs, debug, extraTexts = [] } = await generate();
 
     // parse_mode: 'HTML' — report.js's buildCheckMessage/buildWeeklyMessage
     // bold the program name and link it to its tab whenever a host is still
@@ -916,6 +916,10 @@ async function handleReportCommand(chatId, label, generate) {
     // would show up as literal text instead of being rendered.
     for (const chunk of chunkMessage(text)) {
       await bot.sendMessage(chatId, chunk, { parse_mode: 'HTML' });
+    }
+    // More than 5 tags: the rest go in follow-up messages of 5 (Telegram notifies only 5 per message).
+    for (const extra of extraTexts) {
+      await bot.sendMessage(chatId, extra, { parse_mode: 'HTML' });
     }
 
     if (failedTabs.length > 0) {
@@ -2011,7 +2015,7 @@ setTimeout(async () => {
   try {
     await hostAdmin.rosterFixOnce(bot);
     const monday = new Date(Date.UTC(2026, 10, 2));
-    await reissueAnnouncePreview(bot, { monday, once: 'announce-reissue-pramana-2026-11-01' });
+    await reissueAnnouncePreview(bot, { monday, once: 'announce-reissue-tags5-2026-11-01' });
   } catch (err) {
     console.error('[roster-fix] ошибка:', err.message);
   }

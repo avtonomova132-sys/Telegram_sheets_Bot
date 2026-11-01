@@ -69,11 +69,15 @@ async function tell(bot, text, options = {}) {
 const personLabel = (p) => (p.username ? `@${p.username}` : p.name || nameOf(p) || `id ${p.id}`);
 
 // ---- list and edits ----
+// A pause with "until" this far away means "until Elena's /host_resume".
+const INDEFINITE_MS = Date.UTC(2099, 0, 1);
+const INDEFINITE_FROM = Date.UTC(2090, 0, 1);
 const dayLabel = (ms) => new Date(ms + 8 * 3600 * 1000).toISOString().slice(0, 10);
 
 function statusLabel(ctx, h, now = Date.now()) {
   const st = ctx.store.statusOf(h, now);
   if (st === 'hold') return 'на уточнении (не тегается, не считается в «из N»)';
+  if (st === 'paused' && h.pause.until >= INDEFINITE_FROM) return 'пауза бессрочно, до вашей команды /host_resume (не тегается, не считается в «из N»)';
   if (st === 'paused') return `пауза до ${dayLabel(h.pause.until)} (не тегается, не считается в «из N»)`;
   if (h.pause && now < h.pause.from) return `активен; пауза с ${dayLabel(h.pause.from)} до ${dayLabel(h.pause.until)}`;
   return 'активен';
@@ -444,6 +448,12 @@ async function tick(bot, now = Date.now()) {
 const ROSTER_FIX_ID = 'roster-pramana-2026-11-01';
 const PAUSE_UNTIL = Date.parse('2026-11-15T01:00:00Z'); // 15.11 09:00 Bali
 async function rosterFixOnce(bot) {
+  const first = await rosterFixFirst(bot);
+  const second = await rosterFixSecond(bot);
+  return { first, second };
+}
+
+async function rosterFixFirst(bot) {
   const store = realStore;
   const flag = store.read().oneShots || {};
   if (flag[ROSTER_FIX_ID]) return { skipped: true };
@@ -476,6 +486,48 @@ async function rosterFixOnce(bot) {
   ].join('\n');
   await tell(bot, text);
   return { ok: true, active, total: list.length };
+}
+
+// One-shot #2 (Elena, 2026-11-01): the active hosts are exactly the ten below;
+// @evgenygladkikh is on pause WITHOUT an end date (until /host_resume);
+// @anzhelikakarmolog stays on pause until 15.11. Hosts that are in the list but
+// not named here are NOT touched - Elena is told about them.
+const ROSTER_FIX_2_ID = 'roster-2-evgeny-2026-11-01';
+const ACTIVE_ROSTER = ['acketwell', 'KENTARO_MITSUHASHI', 'lethanhan', 'khomenko_anastasia', 'OLESYA_POZOVA', 'mih22', 'MyLan0608', 'lp129eric1', 'SmitAnin', 'Darya_Marchenko9'];
+async function rosterFixSecond(bot) {
+  const store = realStore;
+  if ((store.read().oneShots || {})[ROSTER_FIX_2_ID]) return { skipped: true };
+  const notes = [];
+  for (const u of ACTIVE_ROSTER) {
+    if (!store.entryForTag(u)) {
+      store.add(u, { source: 'roster' });
+      notes.push(`➕ добавлен @${u}`);
+    } else {
+      store.setStatus(u, 'active');
+      store.clearPause(u);
+    }
+  }
+  if (!store.entryForTag('evgenygladkikh')) store.add('evgenygladkikh', { source: 'roster' });
+  store.setPause('evgenygladkikh', Date.now(), INDEFINITE_MS);
+  if (store.entryForTag('anzhelikakarmolog')) store.setPause('anzhelikakarmolog', Date.now(), PAUSE_UNTIL);
+  const wanted = new Set(ACTIVE_ROSTER.map(normUser));
+  const extra = store.tags().filter((t) => !wanted.has(normUser(t)));
+  store.update((st) => {
+    st.oneShots = { ...(st.oneShots || {}), [ROSTER_FIX_2_ID]: Date.now() };
+  });
+  await cards.refreshCardsAfterHostListChange(bot).catch(() => {});
+  const text = [
+    '✅ <b>Список хостов обновлён</b>',
+    `Активных: <b>${store.tags().length}</b>. Пауза: @anzhelikakarmolog — до 15.11; @evgenygladkikh — бессрочно (вернуть: /host_resume @evgenygladkikh).`,
+    '',
+    hostsListText(CONTEXTS.p),
+    ...notes,
+    extra.length > 0 ? `❓ Активны, но не названы в вашем списке из 10 (я их не трогала): ${extra.map(esc).join(', ')}` : null,
+  ]
+    .filter((x) => x !== null)
+    .join('\n');
+  await tell(bot, text);
+  return { ok: true };
 }
 
 module.exports = {

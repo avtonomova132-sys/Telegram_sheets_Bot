@@ -13,6 +13,7 @@ const {
   reviveEvent,
   findHostReminderEvents,
   loadCommunityTags,
+  extraTagMessages,
 } = require('./report');
 const { baliDateString, baliHour } = require('./verse/progress');
 
@@ -61,6 +62,11 @@ async function sendHostReminder(bot, { chatId, events, tags, test = false }) {
     reply_markup: { inline_keyboard: buildHostReminderKeyboard(events) },
   });
   saveMessageRecord(chatId, sent.message_id, events, tags, test);
+  // Telegram notifies only 5 @-mentions per message: the rest of the tags follow
+  // as replies to this message, 5 at a time.
+  for (const extra of extraTagMessages(tags)) {
+    await bot.sendMessage(chatId, extra, { parse_mode: 'HTML', reply_to_message_id: sent.message_id, allow_sending_without_reply: true });
+  }
   return sent;
 }
 

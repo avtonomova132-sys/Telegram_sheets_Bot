@@ -34,7 +34,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { escapeHtml, formatCommunityTag, getNextWeekRange, collectWeekEvents, buildWeekCardParts, isPastAzStart, describeDoubt, formatRange24h, formatRange12h, formatMonthDayEn, formatMonthDayRu, mskDate, programLine, setReservationLookup, sessionLabel, sundayButtonWhen, weekCardDateLine } = require('./report');
+const { extraTagMessages, mainTags, escapeHtml, formatCommunityTag, getNextWeekRange, collectWeekEvents, buildWeekCardParts, isPastAzStart, describeDoubt, formatRange24h, formatRange12h, formatMonthDayEn, formatMonthDayRu, mskDate, programLine, setReservationLookup, sessionLabel, sundayButtonWhen, weekCardDateLine } = require('./report');
 
 // Telegram allows roughly 20 messages/minute into one group — a week is
 // ~25 cards, so group sends are paced ~3.2s apart (a burst gets HTTP 429).
@@ -350,6 +350,25 @@ function reviewNoteText({ doubts, blocked, preview = false }) {
 // (split out so a test can post a hand-adjusted list through the exact same
 // code path). `review` (private chats only): {doubts, blocked} — the odd
 // sessions are listed in a last message when there are any.
+// Telegram notifies only the first 5 @-mentions of a message. The main message
+// carries the first 5 tags; the rest follow as replies to it, 5 per message,
+// each with a short note (see report.js: extraTagMessages). In a private preview
+// every such message is labelled "сообщение k из N" so Elena sees what will go.
+const tagsHtml = (tags) => tags.map((t) => escapeHtml(formatCommunityTag(t))).join(' ');
+const previewTag = (chatId, k, n, what) => (chatId > 0 && n > 1 ? `📨 Сообщение ${k} из ${n} — ${what}\n` : '');
+
+async function sendExtraTagMessages(bot, chatId, tags, replyToId, gapMs) {
+  const extras = extraTagMessages(tags);
+  for (let i = 0; i < extras.length; i++) {
+    await sleep(gapMs);
+    const label = previewTag(chatId, i + 2, extras.length + 1, `ответом на основное (теги ${5 * (i + 1) + 1}–${Math.min(5 * (i + 2), tags.length)})`);
+    await withRetry(() =>
+      bot.sendMessage(chatId, label + extras[i], { parse_mode: 'HTML', reply_to_message_id: replyToId, allow_sending_without_reply: true })
+    );
+  }
+  return extras.length;
+}
+
 async function postWeekCards(bot, chatId, events, range, failedTabs = [], review = null, { restOfWeek = false } = {}) {
   const { header, cards, closing, openCount } = buildWeekCardParts(events, range, { restOfWeek });
   // Every event of the week already has a host — nothing to ask for.
@@ -390,11 +409,12 @@ async function postWeekCards(bot, chatId, events, range, failedTabs = [], review
     await sleep(gapMs);
     // Tags: always the real hosts only (the temporary "Elena is a host" test
     // mode counts her on the cards but must never end up in this line).
-    const tagLine = loadHostCandidates()
-      .map((t) => escapeHtml(formatCommunityTag(t)))
-      .join(' ');
+    const allTags = loadHostCandidates();
+    const nMsgs = 1 + extraTagMessages(allTags).length;
+    const tagLine = previewTag(chatId, 1, nMsgs, `основное (теги 1–${Math.min(5, allTags.length)})`) + tagsHtml(mainTags(allTags));
     await withRetry(() => bot.sendMessage(chatId, tagLine, { parse_mode: 'HTML' }));
     sent++;
+    sent += await sendExtraTagMessages(bot, chatId, allTags, headerMessage.message_id, gapMs);
     // Last: the odd sessions, in plain words — only when there are any.
     if (review) {
       await sleep(gapMs);
@@ -1341,7 +1361,7 @@ function reminderHeaderText(n, names) {
     `${ru} Пожалуйста, нажмите ✅ или ❌ ниже — это займёт пару секунд и очень поможет с планированием. 🙏`,
   ];
   if (names.length > 0) {
-    parts.push('', `<b>Haven't responded yet / Ещё не отметились:</b> ${names.map((t) => escapeHtml(formatCommunityTag(t))).join(', ')}`);
+    parts.push('', `<b>Haven't responded yet / Ещё не отметились:</b> ${mainTags(names).map((t) => escapeHtml(formatCommunityTag(t))).join(', ')}`);
   }
   return parts.join('\n');
 }
@@ -1349,7 +1369,8 @@ function reminderHeaderText(n, names) {
 function planReminder(store, batch, now = Date.now()) {
   const free = freeSessions(store, batch, now);
   if (free.length === 0) return { skip: 'no-free' };
-  return { free, text: reminderHeaderText(free.length, unrespondedHosts(store, batch)), tagged: unrespondedHosts(store, batch).length };
+  const names = unrespondedHosts(store, batch);
+  return { free, text: reminderHeaderText(free.length, names), tagged: names.length, names };
 }
 
 // Post the reminder: header (a reply to the announce's header), then one
@@ -1393,6 +1414,8 @@ async function postReminder(bot, batch, plan) {
     if (r) r.cardKeys = [...(r.cardKeys || []), mirrorKey];
     writeJsonAtomic(store);
   }
+  // More than 5 hosts to tag: the rest follow as replies to the reminder.
+  await sendExtraTagMessages(bot, batch.chatId, plan.names || [], header.message_id, gapMs);
 }
 
 // Re-render the header of every reminder of the batch (the real 24h one plus
@@ -1696,12 +1719,16 @@ async function createReminderPreview(bot, batchKey, { now = Date.now(), prevItem
 
   // The preview: the same header, then the same cards (their buttons do
   // nothing here — only the 8 hosts can use them, and only in the group).
-  await withRetry(() => bot.sendMessage(elena, plan.text, { parse_mode: 'HTML' }));
+  const nMsgs = 1 + extraTagMessages(plan.names || []).length;
+  const previewHeader = await withRetry(() =>
+    bot.sendMessage(elena, previewTag(elena, 1, nMsgs, `основное (теги 1–${Math.min(5, (plan.names || []).length)})`) + plan.text, { parse_mode: 'HTML' })
+  );
   for (const f of plan.free) {
     await sleep(PRIVATE_GAP_MS);
     const record = store.messages[f.key];
     await withRetry(() => bot.sendMessage(elena, cardText(record), { parse_mode: 'HTML', reply_markup: { inline_keyboard: cardKeyboard(record) } }));
   }
+  await sendExtraTagMessages(bot, elena, plan.names || [], previewHeader.message_id, PRIVATE_GAP_MS);
   const items = plan.free.map((f) => `${f.record.titleLine.replace(/<[^>]+>/g, '')} ${f.record.when || ''}`.trim()).sort();
   const id = `r${Math.abs(batch.chatId)}_${batch.headerMessageId}`;
   const range = weekRangeOfBatch(store, batch);
@@ -2100,7 +2127,7 @@ function urgentTexts(e, tags, { test = false } = {}) {
     `EN: Less than 24 hours until <b>${what}</b> (${when}). There is no host yet. Please tap ✅ if you can take it, or ❌ if you can't. 🙏`,
     `RU: Осталось меньше 24 часов до эфира <b>${what}</b> (${when}). Хоста пока нет. Нажмите ✅, если сможете, или ❌, если не можете. 🙏`,
     '',
-    tags.map((t) => escapeHtml(formatCommunityTag(t))).join(' '),
+    mainTags(tags).map((t) => escapeHtml(formatCommunityTag(t))).join(' '),
   ].join('\n');
   const card = {
     titleLine: `⏰ <b>${escapeHtml(e.tabName)}</b>`,
@@ -2121,6 +2148,7 @@ async function postUrgent(bot, chatId, e, tags, { test = false } = {}) {
   await sleep(chatId < 0 ? GROUP_GAP_MS : PRIVATE_GAP_MS);
   const c = await sendCard(bot, chatId, { ...card, candidateTags: candidatesFor(chatId) });
   recordBatch(chatId, h.message_id, [`${chatId}:${c.message_id}`], sentAt);
+  await sendExtraTagMessages(bot, chatId, tags, h.message_id, chatId < 0 ? GROUP_GAP_MS : PRIVATE_GAP_MS);
   updateScheduler((s, st) => {
     const b = (st.batches || []).find((x) => x.chatId === chatId && x.headerMessageId === h.message_id);
     if (b) {
@@ -2136,10 +2164,12 @@ async function postUrgent(bot, chatId, e, tags, { test = false } = {}) {
 async function createUrgentPreview(bot, { event: e, tags, chatId, now = Date.now(), prevNote = null }) {
   const elena = elenaChatId();
   const { header, card } = urgentTexts(e, tags);
-  await withRetry(() => bot.sendMessage(elena, header, { parse_mode: 'HTML', disable_web_page_preview: true }));
+  const nMsgs = 1 + extraTagMessages(tags).length;
+  const ph = await withRetry(() => bot.sendMessage(elena, previewTag(elena, 1, nMsgs, 'основное') + header, { parse_mode: 'HTML', disable_web_page_preview: true }));
   await sleep(PRIVATE_GAP_MS);
   const record = { ...card, candidateTags: candidatesFor(chatId), refusers: [], reservedBy: null, hosted: null };
   await withRetry(() => bot.sendMessage(elena, cardText(record), { parse_mode: 'HTML', reply_markup: { inline_keyboard: cardKeyboard(record) } }));
+  await sendExtraTagMessages(bot, elena, tags, ph.message_id, PRIVATE_GAP_MS);
   const id = `u${Math.abs(chatId)}_${createHash8(eventKeyOf(e))}`;
   const text = [
     prevNote,

@@ -46,6 +46,31 @@ function formatCommunityTag(tag) {
   return tag.startsWith('@') ? tag : `@${tag}`;
 }
 
+// Telegram notifies at most 5 @-mentions per message (the 6th and later get
+// nothing). So a tag line holds the first 5 people in the main message, and the
+// rest go in follow-up messages of 5, each with a short note (never bare tags),
+// sent as replies to the main message in the same "send to group" action.
+const TAGS_PER_MESSAGE = 5;
+const EXTRA_TAGS_NOTE = '👆 Пожалуйста, отметьтесь выше / Please mark above 🙏';
+
+// First message's tags (main message), order unchanged.
+const mainTags = (tags) => (tags || []).slice(0, TAGS_PER_MESSAGE);
+
+// Did the built text end with the main tag line? (Only then the follow-ups apply:
+// an all-clear message carries no tags at all.)
+const tagLineIsLast = (text, tags) =>
+  (tags || []).length > TAGS_PER_MESSAGE && String(text).trimEnd().endsWith(mainTags(tags).map((t) => escapeHtml(formatCommunityTag(t))).join(' '));
+
+// Texts (HTML) of the follow-up messages: groups of 5 from the 6th tag on.
+function extraTagMessages(tags) {
+  const rest = (tags || []).slice(TAGS_PER_MESSAGE);
+  const out = [];
+  for (let i = 0; i < rest.length; i += TAGS_PER_MESSAGE) {
+    out.push(`${EXTRA_TAGS_NOTE}\n\n${rest.slice(i, i + TAGS_PER_MESSAGE).map((t) => escapeHtml(formatCommunityTag(t))).join(' ')}`);
+  }
+  return out;
+}
+
 function csvUrl(spreadsheetId, gid) {
   return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv&gid=${gid}`;
 }
@@ -1146,7 +1171,7 @@ function buildCompactCheckBody(missing, range, tags, failedTabs, reservedLines =
   const parts = [enHead, ruHead, body];
   if (reservedLines.length > 0) parts.push(reservedLines.join('\n'));
   parts.push('🙏 Thank you / Спасибо 🌿');
-  if (tags && tags.length > 0) parts.push(tags.map((t) => escapeHtml(formatCommunityTag(t))).join(' '));
+  if (tags && tags.length > 0) parts.push(mainTags(tags).map((t) => escapeHtml(formatCommunityTag(t))).join(' '));
   return parts.join('\n\n');
 }
 
@@ -1236,7 +1261,7 @@ function buildCheckMessage(events, range, tags, failedTabs = [], now = new Date(
   // checkEventBlockEn/Ru → formatProgramNameHtml), which is more useful
   // than one shared link to the whole spreadsheet.
   const parts = [enBlock, ruBlock];
-  if (tags && tags.length > 0) parts.push(tags.map((t) => escapeHtml(formatCommunityTag(t))).join(' '));
+  if (tags && tags.length > 0) parts.push(mainTags(tags).map((t) => escapeHtml(formatCommunityTag(t))).join(' '));
 
   return parts.join('\n\n');
 }
@@ -1374,7 +1399,7 @@ function buildHostReminderMessage(events, { tags = [], refusals = [], test = fal
     if (counter) lines.push(counter);
     parts.push(lines.join('\n'));
   });
-  if (tags.length > 0) parts.push(tags.map((t) => escapeHtml(formatCommunityTag(t))).join(' '));
+  if (tags.length > 0) parts.push(mainTags(tags).map((t) => escapeHtml(formatCommunityTag(t))).join(' '));
   return parts.join('\n\n');
 }
 
@@ -1620,7 +1645,7 @@ function buildWeeklyMessage(events, range, { failedTabs = [], now = new Date(), 
 
   const parts = [enSection, '---', ruSection];
   if (missing.length > 0 && tags.length > 0) {
-    parts.push(tags.map((t) => escapeHtml(formatCommunityTag(t))).join(' '));
+    parts.push(mainTags(tags).map((t) => escapeHtml(formatCommunityTag(t))).join(' '));
   }
 
   return parts.join('\n\n');
@@ -1633,7 +1658,7 @@ async function generateWeeklyReport(now = new Date()) {
   const { events, failedTabs, debugCounts } = await collectWeekEvents(range);
   const tags = loadCommunityTags();
   const text = buildWeeklyMessage(events, range, { failedTabs, now, tags });
-  return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
+  return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range), extraTexts: tagLineIsLast(text, tags) ? extraTagMessages(tags) : [] };
 }
 
 // Tracks the Bali calendar date /weekly was last auto-sent on Sunday
@@ -1670,7 +1695,7 @@ async function generateCheckReport(now = new Date()) {
   const { events, failedTabs, debugCounts } = await collectWeekEvents(range);
   const tags = loadCommunityTags();
   const text = buildCheckMessage(events, range, tags, failedTabs, now, { compact: true, reservedOf: (e) => reservationLookup(e) });
-  return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range) };
+  return { text, range, totalEvents: events.length, failedTabs, debug: formatDebugCounts(debugCounts, range), extraTexts: tagLineIsLast(text, tags) ? extraTagMessages(tags) : [] };
 }
 
 // Same Bali-week logic as /check and /weekly (see getCurrentWeekRange
@@ -2040,6 +2065,9 @@ function chunkMessage(text, maxLen = 3500) {
 
 module.exports = {
   isExcludedProgramEvent,
+  extraTagMessages,
+  mainTags,
+  EXTRA_TAGS_NOTE,
   loadConfig,
   loadCommunityTags,
   parseCsv,
