@@ -218,6 +218,8 @@ bot.onText(/^\/передачи(?:@\S+)?(?:\s+(\S+))?$/, async (msg, match) => {
   }
 });
 
+require('./ozon-form').init(bot);
+
 bot.on('polling_error', (err) => {
   console.error('Ошибка polling:', err.message);
 });
