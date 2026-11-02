@@ -1,5 +1,5 @@
 // Еженедельное напоминание об обучении «Хочу быть хостом» (Елена, 2026-10-26).
-// Встреча каждый вторник 07:00 МСК = 12:00 Бали = понедельник 21:00 Аризона
+// Встреча каждый вторник 07:00 утра МСК = 12:00 Бали = понедельник 21:00 Аризона
 // (время зашито в тексте и командой не меняется). Бот без ИИ:
 //   понедельник 14:00 Бали → превью Елене в личку с кнопками «Отправить в группу /
 //   Не отправлять» (или «да»/«нет» ответом, /yes /no) → только после «да» — в группу
@@ -69,14 +69,14 @@ const MESSAGE = `🎓 Завтра состоится наша встреча-о
 
 Шаг за шагом разберём, что нужно, чтобы провести эфир в роли хоста. Приходите, если хотите попробовать свои силы или освежить знания.
 
-🕐 Вт 07:00 по Москве
+🕐 Вт 07:00 утра по Москве
 
 {LINK_LINE}
 
 Ждём вас! 🙏`;
 
 // No link yet → this line stands in; the warning "link not set" is only for Elena above the preview.
-const messageText = (link) => MESSAGE.replace('{LINK_LINE}', link ? `🔗 Zoom: ${link}` : '🔗 Ссылка на Zoom появится здесь завтра за 10 минут до начала, в 06:50 по Москве.');
+const messageText = (link) => MESSAGE.replace('{LINK_LINE}', link ? `🔗 Zoom: ${link}` : '🔗 Ссылка на Zoom появится здесь завтра за 10 минут до начала, в 06:50 утра по Москве.');
 
 function statusLine(s) {
   return [
@@ -116,7 +116,7 @@ async function createPreview(bot, { now = Date.now(), weekKey = baliMondayKey(no
   const id = `t${weekKey.replace(/-/g, '')}n${seq}`;
   const lines = [];
   if (note) lines.push(note, '');
-  if (!link) lines.push('⚠️ Ссылка на Zoom не задана — в тексте для группы стоит строка «ссылка появится завтра в 06:50 по Москве». Задать ссылку: /training_link ссылка (пришлю новое превью).', '');
+  if (!link) lines.push('⚠️ Ссылка на Zoom не задана — в тексте для группы стоит строка «ссылка появится завтра в 06:50 утра по Москве». Задать ссылку: /training_link ссылка (пришлю новое превью).', '');
   if (!isBaliMonday(now)) lines.push('ℹ️ Сегодня не понедельник — в тексте написано «завтра».', '');
   lines.push('👆 Превью напоминания об обучении «Хочу быть хостом» — вот что уйдёт в группу WorldView Productions (тема General), без кнопок и тегов:', '', '───────────', messageText(link), '───────────', '', HOW_TO_ANSWER);
   const sent = await tellElena(bot, lines.join('\n'), { reply_markup: { inline_keyboard: keyboard(id) } });
@@ -127,7 +127,12 @@ async function createPreview(bot, { now = Date.now(), weekKey = baliMondayKey(no
 }
 
 async function postToGroup(bot, chatId, link, prefix = '') {
-  return bot.sendMessage(chatId, `${prefix}${messageText(link)}`, { disable_web_page_preview: true });
+  const sent = await bot.sendMessage(chatId, `${prefix}${messageText(link)}`, { disable_web_page_preview: true });
+  // the id is kept so the post can be found and deleted later
+  update((st) => {
+    st.lastPost = { chatId, messageId: sent.message_id, at: Date.now() };
+  });
+  return sent;
 }
 
 // Elena's decision on the waiting preview.
@@ -277,6 +282,145 @@ function handleYesNo(bot, msg, command, otherNewestAt = 0) {
   return true;
 }
 
+// ---- One-off (2.11.2026): delete the earlier post (its message_id was not saved) and re-issue ----
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const errText = (err) => String((err && err.response && err.response.body && err.response.body.description) || (err && err.message) || err);
+const POST_START = '🎓 Завтра состоится наша встреча-обучение';
+const CARD_STATE_PATH = process.env.CARD_BUTTONS_STATE_PATH || '/data/card_buttons.json';
+
+// What kind of message is this id? Non-destructive: editing a caption of a TEXT message of
+// the bot itself fails with "no caption"; someone else's message "can't be edited"; an id
+// that does not exist "not found". (The bot posts no media into the groups.)
+async function probeKind(bot, chatId, messageId) {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      await bot.editMessageCaption('.', { chat_id: chatId, message_id: messageId });
+      return { kind: 'edited' };
+    } catch (err) {
+      const t = errText(err);
+      const retry = err && err.response && err.response.body && err.response.body.parameters && err.response.body.parameters.retry_after;
+      if (retry || /429|too many requests/i.test(t)) {
+        await sleep(((retry || 5) + 1) * 1000);
+        continue;
+      }
+      if (/no caption/i.test(t)) return { kind: 'bot-text' };
+      if (/not found|MESSAGE_ID_INVALID/i.test(t)) return { kind: 'missing' };
+      if (/can't be edited/i.test(t)) return { kind: 'other' };
+      return { kind: 'unknown', text: t };
+    }
+  }
+  return { kind: 'unknown', text: 'лимит Telegram' };
+}
+
+// The newest message id the bot recorded in the big group BEFORE `cutoff` (cards, headers,
+// reminders) — the post we look for was sent later, so its id is higher.
+function lowerBoundId(cutoff) {
+  let st;
+  try {
+    st = JSON.parse(fs.readFileSync(CARD_STATE_PATH, 'utf8'));
+  } catch {
+    return null;
+  }
+  let best = null;
+  const take = (id) => {
+    if (Number.isFinite(id) && (best === null || id > best)) best = id;
+  };
+  for (const [key, r] of Object.entries(st.messages || {})) {
+    const [chat, id] = key.split(':');
+    if (Number(chat) === WVP_GROUP_ID && (r.createdAt || 0) <= cutoff) take(Number(id));
+  }
+  for (const b of st.batches || []) {
+    if (b.chatId !== WVP_GROUP_ID) continue;
+    if ((b.sentAt || 0) <= cutoff) take(Number(b.headerMessageId));
+    for (const r of b.reminders || []) if ((r.sentAt || 0) <= cutoff) take(Number(r.messageId));
+  }
+  return best;
+}
+
+// Resumable (progress in the state file; a restart continues from `nextId`).
+async function findAndDeleteEarlierPost(bot, cutoff) {
+  const elena = elenaChatId();
+  let job = readState().cleanup;
+  if (job && job.status === 'done') return job;
+  if (!job) {
+    // calibration in the TEST group: the error texts must be the ones we rely on
+    const temp = await bot.sendMessage(TEST_GROUP_ID, '🧪 служебная проверка, сейчас удалю');
+    const mine = await probeKind(bot, TEST_GROUP_ID, temp.message_id);
+    const gone = await probeKind(bot, TEST_GROUP_ID, temp.message_id + 100000);
+    await bot.deleteMessage(TEST_GROUP_ID, temp.message_id).catch(() => {});
+    if (mine.kind !== 'bot-text' || gone.kind !== 'missing') {
+      job = { status: 'done', outcome: 'calibration-failed', detail: `${mine.kind} ${mine.text || ''} / ${gone.kind} ${gone.text || ''}` };
+      update((st) => { st.cleanup = job; });
+      return job;
+    }
+    const low = lowerBoundId(cutoff);
+    if (low === null) {
+      job = { status: 'done', outcome: 'no-anchor' };
+      update((st) => { st.cleanup = job; });
+      return job;
+    }
+    job = { status: 'scanning', lowerBound: low, nextId: low + 1, emptyRun: 0, found: [], scanned: 0 };
+    update((st) => { st.cleanup = job; });
+    await tellElena(bot, '🔎 Ищу в группе своё сообщение с напоминанием об обучении, чтобы удалить (это займёт несколько минут). Потом пришлю новое превью.');
+  }
+  while (job.emptyRun < 60 && job.scanned < 4000) {
+    const id = job.nextId;
+    const p = await probeKind(bot, WVP_GROUP_ID, id);
+    if (p.kind === 'missing') job.emptyRun += 1;
+    else job.emptyRun = 0;
+    if (p.kind === 'bot-text') {
+      try {
+        const fwd = await bot.forwardMessage(elena, WVP_GROUP_ID, id);
+        if (fwd && String(fwd.text || '').startsWith(POST_START)) job.found.push(id);
+        if (fwd && fwd.message_id) await bot.deleteMessage(elena, fwd.message_id).catch(() => {});
+      } catch (err) {
+        job.errors = [...(job.errors || []), `${id}: ${errText(err)}`].slice(-5);
+      }
+    } else if (p.kind === 'edited' || p.kind === 'unknown') {
+      job.errors = [...(job.errors || []), `${id}: ${p.kind} ${p.text || ''}`].slice(-5);
+    }
+    job.nextId = id + 1;
+    job.scanned += 1;
+    if (job.scanned % 10 === 0) update((st) => { st.cleanup = job; });
+    await sleep(700);
+  }
+  job.status = 'done';
+  job.outcome = job.found.length ? 'found' : 'not-found';
+  if (job.found.length) {
+    const target = job.found[job.found.length - 1];
+    try {
+      await bot.deleteMessage(WVP_GROUP_ID, target);
+      job.deleted = target;
+    } catch (err) {
+      job.deleteError = errText(err);
+    }
+  }
+  update((st) => { st.cleanup = job; });
+  return job;
+}
+
+// Delete the earlier post, then send a fresh preview (the weekly "once" flag is not touched).
+async function runReissue(bot, now = Date.now()) {
+  const elena = elenaChatId();
+  if (!elena) return;
+  if (readState().reissueDone) return;
+  const weekKey = baliMondayKey(now);
+  let job;
+  try {
+    job = await findAndDeleteEarlierPost(bot, dueAtOf(weekKey));
+  } catch (err) {
+    job = { outcome: 'error', detail: errText(err) };
+  }
+  let report;
+  if (job.deleted) report = `🗑 Удалила из группы своё сообщение с напоминанием об обучении (найдено ${job.found.length}, удалено последнее).`;
+  else if (job.outcome === 'not-found') report = '⚠️ Не нашла в группе своё сообщение с напоминанием об обучении — удалите, пожалуйста, сами (последнее сообщение бота «🎓 Завтра состоится наша встреча-обучение…»).';
+  else if (job.deleteError) report = `⚠️ Нашла сообщение (id ${job.found[job.found.length - 1]}), но Telegram отказал в удалении: ${job.deleteError}. Удалите, пожалуйста, сами.`;
+  else report = `⚠️ Не смогла найти сообщение автоматически (${job.outcome}${job.detail ? ': ' + job.detail : ''}) — удалите, пожалуйста, сами.`;
+  update((st) => { st.reissueDone = true; });
+  await tellElena(bot, report);
+  await serial(() => createPreview(bot, { now, weekKey, note: '🔄 Новое превью с исправленным текстом (время «утра по Москве»). В группу ничего не уйдёт, пока вы не нажмёте «Отправить в группу».' }));
+}
+
 // One-off (26.10.2026): the weekly slot of this week is already past → a new preview now (new text).
 async function runOneShot(bot, now = Date.now()) {
   const weekKey = baliMondayKey(now);
@@ -287,4 +431,4 @@ async function runOneShot(bot, now = Date.now()) {
   await serial(() => createPreview(bot, { now, weekKey, note: '🔄 Новое превью на завтрашнюю встречу (вт 27.10) с исправленным временем (только по Москве) — предыдущее заменено.' }));
 }
 
-module.exports = { tick, handleCommand, handleCallback, handleTextReply, handleYesNo, runOneShot, createPreview, messageText, baliMondayKey, dueAtOf, STATE_PATH };
+module.exports = { tick, handleCommand, handleCallback, handleTextReply, handleYesNo, runOneShot, runReissue, createPreview, messageText, baliMondayKey, dueAtOf, STATE_PATH };
