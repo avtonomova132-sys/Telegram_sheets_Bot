@@ -2138,6 +2138,11 @@ bot.onText(/^\/no(?:@\S+)?$/i, (msg) => {
 });
 // Напоминание об обучении: /training_on|off, /training_auto_on|off, /training_link ссылка,
 // /training_text, /training_now, /training_test (в «Дебаты»). Только Елене в личке.
+// Ответ Елены «удалить» на сообщение бота об обучении в группе → бот удаляет это сообщение.
+bot.on('message', (msg) => {
+  if (!msg.reply_to_message || msg.chat.type === 'private') return;
+  training.handleGroupReply(bot, msg).catch((err) => console.error('[training] удаление по ответу не удалось:', err.message));
+});
 bot.onText(/^\/training_(on|off|auto_on|auto_off|link|text|now|test)(?:@\S+)?(?:\s+(.+))?$/i, (msg, match) => {
   training.handleCommand(bot, msg, match[1].toLowerCase(), match[2]).catch((err) => reportProblem(bot, 'training-cmd', `Команда /training_${match[1]} не сработала: ${err.message}`, 0).catch(() => {}));
 });

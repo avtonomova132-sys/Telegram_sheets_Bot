@@ -399,6 +399,26 @@ async function findAndDeleteEarlierPost(bot, cutoff) {
   return job;
 }
 
+// Elena replies «удалить» to the bot's training post IN THE GROUP → the bot deletes exactly that
+// message (the reply carries its message_id). Only her, only the training text, only the two groups.
+async function handleGroupReply(bot, msg) {
+  const elena = elenaChatId();
+  const r = msg.reply_to_message;
+  if (!elena || !msg.from || msg.from.id !== elena || !r || !msg.text) return false;
+  if (msg.chat.id !== WVP_GROUP_ID && msg.chat.id !== TEST_GROUP_ID) return false;
+  if (!/^\/?(удали(ть)?|del(ete)?)(@\S+)?[.!\s]*$/i.test(msg.text.trim())) return false;
+  if (!r.from || !r.from.is_bot || !String(r.text || '').startsWith(POST_START)) return false;
+  try {
+    await bot.deleteMessage(msg.chat.id, r.message_id);
+  } catch (err) {
+    await tellElena(bot, `⚠️ Telegram не дал удалить сообщение: ${errText(err)}. Удалите, пожалуйста, сами.`);
+    return true;
+  }
+  await bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {}); // her own «удалить» (works only if the bot is an admin)
+  await tellElena(bot, '🗑 Удалила из группы сообщение с напоминанием об обучении.');
+  return true;
+}
+
 // Delete the earlier post, then send a fresh preview (the weekly "once" flag is not touched).
 async function runReissue(bot, now = Date.now()) {
   const elena = elenaChatId();
@@ -431,4 +451,4 @@ async function runOneShot(bot, now = Date.now()) {
   await serial(() => createPreview(bot, { now, weekKey, note: '🔄 Новое превью на завтрашнюю встречу (вт 27.10) с исправленным временем (только по Москве) — предыдущее заменено.' }));
 }
 
-module.exports = { tick, handleCommand, handleCallback, handleTextReply, handleYesNo, runOneShot, runReissue, createPreview, messageText, baliMondayKey, dueAtOf, STATE_PATH };
+module.exports = { tick, handleCommand, handleCallback, handleTextReply, handleYesNo, handleGroupReply, runOneShot, runReissue, createPreview, messageText, baliMondayKey, dueAtOf, STATE_PATH };
