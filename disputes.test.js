@@ -8,9 +8,7 @@ const d = require('./disputes');
 test('известные октябрьские случаи и сроки', () => {
   const s = d.getState();
   const c = d.candidatesFromWriteoffs(s.writeoffs, '2026-11-02');
-  const by = Object.fromEntries(c.map((x) => [x.article, x]));
-  assert.strictEqual(by['13162БиркаСадовая2000шт'].daysLeft, 16); // срок 18.11
-  assert.strictEqual(c.length, 1); // остальные моложе 14 дней
+  assert.strictEqual(c.length, 0); // бирки поданы, остальные моложе 14 дней
   const e = d.earlyWriteoffs(s.writeoffs, '2026-11-02');
   const eb = Object.fromEntries(e.map((x) => [x.article, x]));
   assert.strictEqual(eb['МОСКВА1ШТ'].daysLeft, 22); // срок 24.11
@@ -55,7 +53,7 @@ test('добавление списания и разбор даты', () => {
 });
 
 test('тексты: до 1000 символов, магазин, Client ID, тема, склад', () => {
-  const c = d.candidatesFromWriteoffs(d.getState().writeoffs, '2026-11-02')[0];
+  const c = d.candidatesFromWriteoffs([{ id: 'q', article: 'ART', sku: '5', posting: 'P-5', date: '2026-10-10', qty: 2, scheme: 'FBS', reason: 'по результатам проверки', compensation: '' }], '2026-11-02')[0];
   const t = d.supportText(c);
   assert.ok(t.length <= 1000);
   for (const w of ['Portretkina Beauty', '247027', c.article, 'Видео сборки']) assert.ok(t.includes(w), w);
@@ -65,4 +63,34 @@ test('тексты: до 1000 символов, магазин, Client ID, те�
   assert.match(msgs[0], /Видео сборки/);
   assert.match(msgs.at(-1), /подай обращение по/);
   assert.match(d.formatCandidates([c]), /Да \/ Нет \/ Позже/);
+});
+
+test('подано: бирки не напоминаем, номер отправления сохранён, блок «Уже подано»', () => {
+  const s = d.getState();
+  const b = s.writeoffs.find((w) => w.article === '13162БиркаСадовая2000шт');
+  assert.strictEqual(b.posting, '46145506-0435-1');
+  assert.strictEqual(b.filed.date, '2026-11-02');
+  assert.strictEqual(b.filed.claims, '1002115720–1002115723');
+  assert.ok(!d.candidatesFromWriteoffs(s.writeoffs, '2026-11-14').some((x) => x.article === b.article));
+  assert.match(d.formatFiled(s.writeoffs), /46145506-0435-1.*подано 02\.11\.2026, заявки 1002115720–1002115723/);
+  const r = d.markFiled({ writeoffs: [{ id: 'z', article: 'Z', date: '2026-10-01', compensation: '' }] }, 'z; 03.11.2026; 111; P-9');
+  assert.strictEqual(r.writeoffs[0].posting, 'P-9');
+});
+
+test('В: показываем реальные дни, не «60»', () => {
+  const mk = (days, left) => ({ group: 'V', article: 'A', sku: 1, ref: 'x', dateIso: '2026-08-01', days, daysLeft: left, price: 10 });
+  assert.match(d.formatCandidates([mk(53, 7)]), /прошло 53 дн\., до 60 осталось 7/);
+  assert.match(d.formatCandidates([mk(75, 0)]), /прошло 75 дн\. \(больше 60/);
+});
+
+test('нет дубля: возврат, уже стоящий в А, не показывается', () => {
+  const w = [{ id: 'a', article: 'X', posting: 'P-1', date: '2026-10-01', compensation: '' }];
+  const cands = [
+    { group: 'W', article: 'X', posting: 'P-1' },
+    { group: 'V', article: 'X', posting: 'P-1' },
+    { group: 'V', article: 'X', posting: '' },
+    { group: 'V', article: 'Y', posting: 'P-2' },
+  ];
+  const out = d.dropDuplicatesOfWriteoffs(cands, w);
+  assert.deepStrictEqual(out.map((c) => `${c.group}${c.article}${c.posting}`), ['WXP-1', 'VYP-2']);
 });

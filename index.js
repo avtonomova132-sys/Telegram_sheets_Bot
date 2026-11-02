@@ -1419,6 +1419,7 @@ async function collectDisputeCandidates(state, today) {
   if (returnsWatch.isConfigured()) {
     try { cands = cands.concat(disputes.candidatesFromReturns(await returnsWatch.listReturns(), Date.now())); }
     catch (err) { notes.push(`Возвраты не прочитались: ${err.message}`); }
+    cands = disputes.dropDuplicatesOfWriteoffs(cands, writeoffs);
   } else notes.push('Не заданы OZON_API_KEY / OZON_CLIENT_ID — возвраты не проверены.');
   return { cands, notes, apiAvailable };
 }
@@ -1481,7 +1482,7 @@ bot.onText(/^\/(споры_проверка|disputes_check)(?:@\w+)?$/i, async (
     const state = disputes.getState();
     const { cands, notes, apiAvailable } = await collectDisputeCandidates(state, baliDateString());
     if (!apiAvailable) notes.push(disputes.API_NOTICE);
-    const early = disputes.formatEarly(disputes.earlyWriteoffs(state.writeoffs || [], baliDateString()));
+    const early = disputes.formatEarly(disputes.earlyWriteoffs(state.writeoffs || [], baliDateString())) + disputes.formatFiled(state.writeoffs || []);
     if (!cands.length) {
       await bot.sendMessage(msg.chat.id, `✅ Сейчас обращений не требуется.${early}${notes.length ? `\n\n⚠️ ${notes.join('\n⚠️ ')}` : ''}`);
       return;
@@ -1530,6 +1531,14 @@ bot.onText(/^\/списание_добавить(?:@\w+)?\s+([\s\S]+)$/i, async 
   if (r.error) { await bot.sendMessage(msg.chat.id, r.error); return; }
   disputes.patchState({ writeoffs: r.writeoffs });
   await bot.sendMessage(msg.chat.id, `Добавил списание: ${r.added.article}, ${r.added.date}. Срок обращения — 30 дней.`);
+});
+
+bot.onText(/^\/списание_подано(?:@\w+)?\s+([\s\S]+)$/i, async (msg, m) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  const r = disputes.markFiled(disputes.getState(), m[1]);
+  if (r.error) { await bot.sendMessage(msg.chat.id, r.error); return; }
+  disputes.patchState({ writeoffs: r.writeoffs });
+  await bot.sendMessage(msg.chat.id, `Отметил «подано» (${r.count} шт.) — в группе А больше не напоминаю.`);
 });
 
 bot.onText(/^\/списание_компенсация(?:@\w+)?\s+(.+)$/i, async (msg, m) => {

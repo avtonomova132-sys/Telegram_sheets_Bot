@@ -63,6 +63,30 @@ function getState() {
     s.seeded = true;
     writeJsonAtomic(STATE_PATH, s);
   }
+  return applyFixes(s);
+}
+// Разовые правки реестра на уже существующем состоянии Railway (флаг в state.fixes).
+const FIXES = [
+  {
+    id: 'filed-13162-2026-11-02',
+    article: '13162БиркаСадовая2000шт',
+    apply: (w) => ({
+      ...w,
+      posting: '46145506-0435-1',
+      filed: { date: '2026-11-02', claims: '1002115720–1002115723' },
+    }),
+  },
+];
+function applyFixes(s) {
+  const done = new Set(s.fixes || []);
+  let changed = false;
+  for (const f of FIXES) {
+    if (done.has(f.id)) continue;
+    s.writeoffs = (s.writeoffs || []).map((w) => (w.article === f.article ? f.apply(w) : w));
+    done.add(f.id);
+    changed = true;
+  }
+  if (changed) { s.fixes = [...done]; writeJsonAtomic(STATE_PATH, s); }
   return s;
 }
 function patchState(patch) { writeJsonAtomic(STATE_PATH, { ...getState(), ...patch }); }
@@ -88,6 +112,7 @@ function msToIso(ms) { return new Date(ms + 8 * 3600000).toISOString().slice(0, 
 // ---------- реестр списаний ----------
 
 // «Компенсация» считается пришедшей, если там сумма или «Предварительная».
+function isFiled(w) { return Boolean(w.filed && w.filed.date); }
 function hasCompensation(w) { return Boolean(String(w.compensation || '').trim()); }
 
 function addWriteoff(state, raw) {
@@ -105,6 +130,21 @@ function addWriteoff(state, raw) {
     reason: 'по результатам проверки', compensation: '',
   };
   return { writeoffs: [...(state.writeoffs || []), w], added: w };
+}
+
+// Отметить «подано»: артикул; ДД.ММ.ГГГГ; заявки; отправление (необязательно).
+function markFiled(state, raw) {
+  const [article, dateStr, claims, posting] = String(raw).split(/[;|]/).map((x) => x.trim());
+  const date = parseRuDate(dateStr);
+  if (!article || !date) return { error: 'Формат: /списание_подано артикул; ДД.ММ.ГГГГ; заявки; отправление' };
+  const list = state.writeoffs || [];
+  const hit = list.filter((w) => w.article.toLowerCase() === article.toLowerCase() && !isFiled(w));
+  if (!hit.length) return { error: 'Не нашёл неподанное списание с таким артикулом.' };
+  return {
+    count: hit.length,
+    writeoffs: list.map((w) => (hit.includes(w)
+      ? { ...w, posting: posting || w.posting, filed: { date, claims: claims || '' } } : w)),
+  };
 }
 
 // Компенсация пришла → убираем из списка (ставим «Предварительная» или сумму).
@@ -154,7 +194,7 @@ async function fetchWriteoffsApi() {
 function candidatesFromWriteoffs(writeoffs, todayIso) {
   const out = [];
   for (const w of writeoffs) {
-    if (hasCompensation(w)) continue;
+    if (hasCompensation(w) || isFiled(w)) continue;
     const days = daysSince(w.date, todayIso);
     if (days < FIRST_DAY) continue;
     out.push({
@@ -171,7 +211,7 @@ function candidatesFromWriteoffs(writeoffs, todayIso) {
 function earlyWriteoffs(writeoffs, todayIso) {
   const out = [];
   for (const w of writeoffs) {
-    if (hasCompensation(w)) continue;
+    if (hasCompensation(w) || isFiled(w)) continue;
     const days = daysSince(w.date, todayIso);
     if (days >= FIRST_DAY || days < 0) continue;
     out.push({ group: 'W', article: w.article, sku: w.sku, ref: w.posting || '', dateIso: w.date, days,
@@ -185,9 +225,27 @@ function formatEarly(early) {
   return `\n\n🕓 Ещё рано (меньше ${FIRST_DAY} дн., сообщу на ${FIRST_DAY}-й день):\n${early.sort((a, b) => b.days - a.days).map(line).join('\n')}`;
 }
 
+function formatFiled(writeoffs) {
+  const rows = writeoffs.filter((w) => isFiled(w) && !hasCompensation(w));
+  if (!rows.length) return '';
+  const lines = rows.map((w) => `• ${w.article} · отпр. ${w.posting || '—'} · подано ${ruDate(w.filed.date)}${w.filed.claims ? `, заявки ${w.filed.claims}` : ''}`);
+  return `\n\n✅ Уже подано (не напоминаю):\n${lines.join('\n')}`;
+}
+
+// Позиция, которая уже есть в А (списание), во втором месте (возврат) не показывается:
+// совпадение по номеру отправления, а если его нет — по артикулу.
+function dropDuplicatesOfWriteoffs(cands, writeoffs) {
+  const live = writeoffs.filter((w) => !hasCompensation(w));
+  const norm = (x) => String(x || '').trim().toLowerCase();
+  return cands.filter((c) => {
+    if (c.group === 'W') return true;
+    return !live.some((w) => (c.posting && w.posting ? norm(c.posting) === norm(w.posting) : norm(c.article) === norm(w.article)));
+  });
+}
+
 function candidatesFromReturns(returns, now) {
   return rw.classify(returns, now).map((f) => ({
-    key: `R|${f.key}`, group: f.group, article: f.offerId, sku: f.sku,
+    key: `R|${f.key}`, group: f.group, article: f.offerId, sku: f.sku, posting: f.posting || '',
     ref: [f.claim && `заявка ${f.claim}`, f.posting && `отпр. ${f.posting}`].filter(Boolean).join(', '),
     dateIso: msToIso(f.ms), days: f.days,
     daysLeft: f.group === 'V' ? f.daysLeft : null,
@@ -223,7 +281,7 @@ const money = (n) => (n == null ? 'цена —' : `${Math.round(n).toLocaleStri
 function line(c) {
   const left = c.group === 'W'
     ? (c.daysLeft >= 0 ? `до срока ${c.daysLeft} дн.` : `срок вышел ${-c.daysLeft} дн. назад`)
-    : (c.group === 'V' ? (c.daysLeft > 0 ? `до 60 дн. осталось ${c.daysLeft}` : 'прошло 60 дн.') : `${c.days} дн.`);
+    : (c.group === 'V' ? (c.daysLeft > 0 ? `прошло ${c.days} дн., до 60 осталось ${c.daysLeft}` : `прошло ${c.days} дн. (больше 60, можно спор)`) : `${c.days} дн.`);
   const date = c.group === 'W' ? `списано ${ruDate(c.dateIso)}` : `статус с ${ruDate(c.dateIso)}`;
   const qty = c.qty ? ` ${c.qty} шт` : '';
   return `• ${c.article || '—'}${qty} · SKU ${c.sku || '—'} · ${c.ref || 'номер не указан'} · ${date} · ${left} · ${money(c.price)}`;
@@ -292,7 +350,7 @@ function splitMessage(text, max = 3800) { return rw.splitMessage(text, max); }
 
 module.exports = {
   getState, patchState, addWriteoff, setCompensation, fetchWriteoffsApi,
-  candidatesFromWriteoffs, earlyWriteoffs, formatEarly, candidatesFromReturns, pickNew, markSent,
+  candidatesFromWriteoffs, earlyWriteoffs, markFiled, formatFiled, dropDuplicatesOfWriteoffs, isFiled, formatEarly, candidatesFromReturns, pickNew, markSent,
   formatCandidates, approvalMessages, supportText, warehouseMessage, topicOf,
   splitMessage, parseRuDate, daysSince, msToIso, hasCompensation, API_NOTICE,
   FIRST_DAY, REMIND_DAY, DAY_MS,

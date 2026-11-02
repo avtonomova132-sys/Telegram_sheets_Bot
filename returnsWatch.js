@@ -173,7 +173,7 @@ function classify(returns, now = Date.now()) {
       if (days > WAY_WARN_DAYS) {
         group = 'V';
         daysLeft = Math.max(0, WAY_LIMIT_DAYS - days);
-        todo = days >= WAY_LIMIT_DAYS ? 'прошло 60 дней — открыть спор' : `до 60 дней осталось ${daysLeft}`;
+        todo = days >= WAY_LIMIT_DAYS ? '60 дней и больше — можно открывать спор' : `до 60 дней осталось ${daysLeft}`;
       }
     } else if (it.s.includes('не получена доставкой')) {
       group = 'G'; todo = GROUPS.G.todo;
