@@ -1326,6 +1326,74 @@ bot.onText(/^\/(списания|fees)(?:@\w+)?$/i, async (msg) => {
   }
 });
 
+// ===== Страж возвратов Ozon (см. returnsWatch.js) =====
+// Понедельник, с RETURNS_WATCH_HOUR (9:00 по Бали; catch-up раз в 5 мин) и по
+// /возвраты_контроль: потерянные возвраты и отмены — Елене коротким списком.
+// Одно и то же дважды не шлём (состояние на Volume). Бот ничего не нажимает.
+const returnsWatch = require('./returnsWatch');
+const RETURNS_WATCH_HOUR = Number(process.env.RETURNS_WATCH_HOUR) || 9;
+let returnsWatchRunning = false;
+
+async function checkReturnsWeekly() {
+  if (!returnsWatch.isConfigured() || !myChatId || returnsWatchRunning) return;
+  const state = returnsWatch.getState();
+  const today = baliDateString();
+  const weekday = new Date(Date.now() + 8 * 3600 * 1000).getUTCDay();
+  if (weekday !== 1 || baliHour() < RETURNS_WATCH_HOUR) return;
+  if (state.lastWeeklyDate === today) return;
+  if (state.lastErrorAt && Date.now() - state.lastErrorAt < 60 * 60 * 1000) return;
+  returnsWatchRunning = true;
+  try {
+    const found = returnsWatch.classify(await returnsWatch.listReturns());
+    const fresh = returnsWatch.pickNew(found, state.sent || {});
+    if (fresh.length) {
+      for (const part of returnsWatch.splitMessage(returnsWatch.formatReport(fresh))) await bot.sendMessage(myChatId, part);
+    }
+    returnsWatch.patchState({
+      lastWeeklyDate: today,
+      sent: returnsWatch.markSent(state.sent || {}, fresh),
+      errorNotified: false,
+      lastErrorAt: null,
+    });
+  } catch (err) {
+    console.error('[returns-watch] ошибка проверки:', err.message);
+    if (!state.errorNotified) {
+      try { await bot.sendMessage(myChatId, `Не получилось проверить возвраты Ozon 😔 ${err.message}\nПовторю через час.`); } catch { /* ignore */ }
+    }
+    returnsWatch.patchState({ errorNotified: true, lastErrorAt: Date.now() });
+  } finally {
+    returnsWatchRunning = false;
+  }
+}
+
+cron.schedule('*/5 * * * *', checkReturnsWeekly);
+
+// По команде — полная картина на сегодня; «уже сообщали» не трогает.
+bot.onText(/^\/(возвраты_контроль|returns_check)(?:@\w+)?$/i, async (msg) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  if (!returnsWatch.isConfigured()) {
+    await bot.sendMessage(msg.chat.id, 'Не заданы OZON_API_KEY / OZON_CLIENT_ID в Railway.');
+    return;
+  }
+  try {
+    await bot.sendMessage(msg.chat.id, 'Смотрю возвраты Ozon…');
+    const found = returnsWatch.classify(await returnsWatch.listReturns());
+    for (const part of returnsWatch.splitMessage(returnsWatch.formatReport(found))) await bot.sendMessage(msg.chat.id, part);
+  } catch (err) {
+    await bot.sendMessage(msg.chat.id, `Не получилось: ${err.message}`);
+  }
+});
+
+bot.onText(/^\/(возвраты_debug|returns_debug)(?:@\w+)?$/i, async (msg) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  try {
+    const text = JSON.stringify(await returnsWatch.debugSample(), null, 1);
+    for (let i = 0; i < text.length; i += 3500) await bot.sendMessage(msg.chat.id, text.slice(i, i + 3500));
+  } catch (err) {
+    await bot.sendMessage(msg.chat.id, `Не получилось: ${err.message}`);
+  }
+});
+
 // ===== Воскресная авторассылка =====
 // Каждое воскресенье в WEEKLY_ANNOUNCE_HOUR (по умолчанию 10:00) по Бали бот
 // сам отправляет расписание на следующую неделю карточками (шапка + одно
