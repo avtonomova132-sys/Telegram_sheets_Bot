@@ -1394,6 +1394,153 @@ bot.onText(/^\/(возвраты_debug|returns_debug)(?:@\w+)?$/i, async (msg) =
   }
 });
 
+// ===== Обращения в поддержку Ozon / «споры» (см. disputes.js) =====
+// Раз в 2 дня с DISPUTES_HOUR (8:00 по Бали; catch-up раз в 5 мин) и по
+// /споры_проверка: списано без компенсации (с 14-го дня; напоминание на 25-й),
+// возвраты «Ищем товар» / долгий путь / «Не получена доставкой». Вопрос
+// кнопками Да/Нет/Позже; по «Да» — тексты для склада и поддержки. Бот САМ
+// обращение не подаёт и в Озон ничего не пишет.
+const disputes = require('./disputes');
+const DISPUTES_HOUR = Number(process.env.DISPUTES_HOUR) || 8;
+let disputesRunning = false;
+
+async function collectDisputeCandidates(state, today) {
+  const notes = [];
+  let apiAvailable = false;
+  let writeoffs = [...(state.writeoffs || [])];
+  try {
+    const api = await disputes.fetchWriteoffsApi();
+    apiAvailable = api.available;
+    for (const w of api.items) {
+      if (!writeoffs.some((x) => x.article === w.article && x.date === w.date)) writeoffs.push(w);
+    }
+  } catch (err) { notes.push(`Списания по API не прочитались: ${err.message}`); }
+  let cands = disputes.candidatesFromWriteoffs(writeoffs, today);
+  if (returnsWatch.isConfigured()) {
+    try { cands = cands.concat(disputes.candidatesFromReturns(await returnsWatch.listReturns(), Date.now())); }
+    catch (err) { notes.push(`Возвраты не прочитались: ${err.message}`); }
+  } else notes.push('Не заданы OZON_API_KEY / OZON_CLIENT_ID — возвраты не проверены.');
+  return { cands, notes, apiAvailable };
+}
+
+async function sendDisputeOffer(chatId, state, cands, notes, extra = '') {
+  if (!cands.length && !notes.length) return state;
+  const batchId = Date.now().toString(36);
+  const text = disputes.formatCandidates(cands) + extra + (notes.length ? `\n\n⚠️ ${notes.join('\n⚠️ ')}` : '');
+  const parts = disputes.splitMessage(text);
+  for (let i = 0; i < parts.length; i++) {
+    const opts = (i === parts.length - 1 && cands.length)
+      ? { reply_markup: { inline_keyboard: [[
+        { text: '✅ Да', callback_data: `dsp:yes:${batchId}` },
+        { text: '❌ Нет', callback_data: `dsp:no:${batchId}` },
+        { text: '⏳ Позже', callback_data: `dsp:later:${batchId}` },
+      ]] } } : {};
+    await bot.sendMessage(chatId, parts[i], opts);
+  }
+  const pending = { ...(state.pending || {}) };
+  if (cands.length) pending[batchId] = { items: cands, at: Date.now() };
+  for (const [k, v] of Object.entries(pending)) if (Date.now() - v.at > 90 * 86400000) delete pending[k];
+  return { ...state, pending };
+}
+
+async function checkDisputesPeriodic() {
+  if (!myChatId || disputesRunning) return;
+  const today = baliDateString();
+  if (baliHour() < DISPUTES_HOUR) return;
+  let state = disputes.getState();
+  if (state.lastRunDate && disputes.daysSince(state.lastRunDate, today) < 2) return;
+  if (state.lastErrorAt && Date.now() - state.lastErrorAt < 60 * 60 * 1000) return;
+  disputesRunning = true;
+  try {
+    const { cands, notes, apiAvailable } = await collectDisputeCandidates(state, today);
+    if (!apiAvailable && !state.apiNoticeSent) {
+      await bot.sendMessage(myChatId, disputes.API_NOTICE);
+      state = { ...state, apiNoticeSent: true };
+    }
+    const fresh = disputes.pickNew(cands, state.sent || {});
+    state = await sendDisputeOffer(myChatId, state, fresh, notes);
+    disputes.patchState({
+      ...state, lastRunDate: today, sent: disputes.markSent(state.sent || {}, fresh),
+      lastErrorAt: null,
+    });
+  } catch (err) {
+    console.error('[disputes] ошибка проверки:', err.message);
+    disputes.patchState({ lastErrorAt: Date.now() });
+    try { await bot.sendMessage(myChatId, `Не получилось проверить обращения в поддержку 😔 ${err.message}\nПовторю через час.`); } catch { /* ignore */ }
+  } finally {
+    disputesRunning = false;
+  }
+}
+
+cron.schedule('*/5 * * * *', checkDisputesPeriodic);
+
+bot.onText(/^\/(споры_проверка|disputes_check)(?:@\w+)?$/i, async (msg) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  try {
+    await bot.sendMessage(msg.chat.id, 'Проверяю списания и возвраты…');
+    const state = disputes.getState();
+    const { cands, notes, apiAvailable } = await collectDisputeCandidates(state, baliDateString());
+    if (!apiAvailable) notes.push(disputes.API_NOTICE);
+    const early = disputes.formatEarly(disputes.earlyWriteoffs(state.writeoffs || [], baliDateString()));
+    if (!cands.length) {
+      await bot.sendMessage(msg.chat.id, `✅ Сейчас обращений не требуется.${early}${notes.length ? `\n\n⚠️ ${notes.join('\n⚠️ ')}` : ''}`);
+      return;
+    }
+    const next = await sendDisputeOffer(msg.chat.id, state, cands, notes, early);
+    disputes.patchState({ pending: next.pending }); // «уже сообщали» команда не трогает
+  } catch (err) {
+    await bot.sendMessage(msg.chat.id, `Не получилось: ${err.message}`);
+  }
+});
+
+bot.on('callback_query', async (query) => {
+  const data = query.data || '';
+  if (!data.startsWith('dsp:')) return;
+  const chatId = query.message?.chat.id;
+  if (!chatId || !isTrustedUser(chatId)) { await bot.answerCallbackQuery(query.id); return; }
+  const [, action, batchId] = data.split(':');
+  try {
+    const state = disputes.getState();
+    const batch = (state.pending || {})[batchId];
+    if (!batch) { await bot.answerCallbackQuery(query.id, { text: 'Список устарел, запустите /споры_проверка' }); return; }
+    await bot.answerCallbackQuery(query.id);
+    const pending = { ...state.pending };
+    delete pending[batchId];
+    if (action === 'yes') {
+      disputes.patchState({ pending, sent: disputes.markSent(state.sent || {}, batch.items) });
+      for (const m of disputes.approvalMessages(batch.items)) for (const part of disputes.splitMessage(m)) await bot.sendMessage(chatId, part);
+    } else if (action === 'no') {
+      disputes.patchState({ pending, sent: disputes.markSent(state.sent || {}, batch.items) });
+      await bot.sendMessage(chatId, 'Хорошо, по этим больше не напоминаю (на 25-й день и при смене группы — напомню).');
+    } else {
+      const sent = { ...(state.sent || {}) };
+      batch.items.forEach((c) => { delete sent[c.key]; });
+      disputes.patchState({ pending, sent });
+      await bot.sendMessage(chatId, 'Ок, спрошу снова при следующей проверке.');
+    }
+  } catch (err) {
+    console.error('[disputes] callback:', err.message);
+    try { await bot.sendMessage(chatId, `Не получилось: ${err.message}`); } catch { /* ignore */ }
+  }
+});
+
+bot.onText(/^\/списание_добавить(?:@\w+)?\s+([\s\S]+)$/i, async (msg, m) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  const r = disputes.addWriteoff(disputes.getState(), m[1]);
+  if (r.error) { await bot.sendMessage(msg.chat.id, r.error); return; }
+  disputes.patchState({ writeoffs: r.writeoffs });
+  await bot.sendMessage(msg.chat.id, `Добавил списание: ${r.added.article}, ${r.added.date}. Срок обращения — 30 дней.`);
+});
+
+bot.onText(/^\/списание_компенсация(?:@\w+)?\s+(.+)$/i, async (msg, m) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  const [article, ...rest] = m[1].split(/\s+/);
+  const r = disputes.setCompensation(disputes.getState(), article, rest.join(' '));
+  if (!r) { await bot.sendMessage(msg.chat.id, 'Не нашёл списание без компенсации с таким артикулом.'); return; }
+  disputes.patchState({ writeoffs: r.writeoffs });
+  await bot.sendMessage(msg.chat.id, `Отметил компенсацию (${r.count} шт.) — из списка убрал.`);
+});
+
 // ===== Воскресная авторассылка =====
 // Каждое воскресенье в WEEKLY_ANNOUNCE_HOUR (по умолчанию 10:00) по Бали бот
 // сам отправляет расписание на следующую неделю карточками (шапка + одно
