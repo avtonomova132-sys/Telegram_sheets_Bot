@@ -590,6 +590,22 @@ test('AB с названием поставщика (бирки/крафт): с�
   assert.strictEqual(res[2].family.members[0].article, '13162БиркаСадовая2000шт');
 });
 
+test('нет кода и AB пусто: ищем по «Наименованию» Номенклатуры (оксидант 6% 100 мл)', async () => {
+  const cat = ['9.0Оксидант6Fusion100', '9.0Оксидант3Fusion100', 'КремОгурец1'].map((a) => ({ article: a, name: a }));
+  const { families } = buildFamilies(cat);
+  supplier._setIndex([
+    { article: '9.0Оксидант6Fusion100', barcode: '', pieces: '1', supplier: '', name: 'Крем-оксидант 6% Fusion 100 мл' },
+    { article: '9.0Оксидант3Fusion100', barcode: '', pieces: '1', supplier: '', name: 'Крем-оксидант 3% Fusion 100 мл' },
+    { article: 'КремОгурец1', barcode: '', pieces: '1', supplier: '', name: 'Крем для депиляции огуречный' },
+  ]);
+  const r = await supplier.resolve({ name: 'Крем-оксидант 6%, 100мл Fusion', supplierCode: '' }, families);
+  assert.strictEqual(r.status, 'matched');
+  assert.strictEqual(r.family.members[0].article, '9.0Оксидант6Fusion100');
+  // другой процент не подходит
+  const r2 = await supplier.resolve({ name: 'Крем-оксидант 9%, 100мл Fusion', supplierCode: '' }, families);
+  assert.strictEqual(r2.status, 'none');
+});
+
 test('набор из 11 штук (Мама приехала 11ШТ, Мишка 11ШТ) входит в семью', () => {
   const cat = [1, 2, 4, 11].map((k) => ({ article: `200КОМамаПриехала${k}ШТ`, name: 'Мама приехала 200 г' }));
   const { families, skipped } = buildFamilies(cat);

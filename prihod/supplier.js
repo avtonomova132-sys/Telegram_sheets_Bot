@@ -30,6 +30,10 @@ const COLS = [
   { key: 'supplier', header: /артикул\s+поставщик/i, label: 'Артикул ПОСТАВЩИК (AB)' },
 ];
 
+// Необязательный столбец «Наименование» (A): по нему ищем строки накладной, у которых
+// нет кода поставщика и название не совпало с AB слово в слово («Крем-оксидант 6%, 100мл Fusion»).
+const NAME_COL = { key: 'name', header: /^наименование/i, label: 'Наименование (A)' };
+
 class SupplierAccessError extends Error {}
 
 // Запасной источник без Google: готовый срез Номенклатуры (только артикул,
@@ -147,22 +151,58 @@ async function fetchColumns() {
     if (i < 0) throw new Error(`в Номенклатуре нет столбца «${c.label}» — структура таблицы изменилась`);
     pos[c.key] = i;
   }
+  const cols4 = COLS.slice();
+  const ni = header.findIndex((h) => NAME_COL.header.test(clean(h)));
+  if (ni >= 0) { pos[NAME_COL.key] = ni; cols4.push(NAME_COL); }
 
   // 2) только нужные колонки отдельными диапазонами (цены не запрашиваются)
-  const q = COLS.map((c) => `ranges=${encodeURIComponent(`${tab}!${colLetter(pos[c.key])}2:${colLetter(pos[c.key])}`)}`).join('&');
+  const q = cols4.map((c) => `ranges=${encodeURIComponent(`${tab}!${colLetter(pos[c.key])}2:${colLetter(pos[c.key])}`)}`).join('&');
   const res = await fetchWithTimeout(`${base}/values:batchGet?${q}&majorDimension=COLUMNS&valueRenderOption=FORMATTED_VALUE`, auth);
   if (!res.ok) throw new Error(`Sheets API HTTP ${res.status}`);
   const ranges = (await res.json()).valueRanges || [];
   const cols = {};
-  COLS.forEach((c, k) => { cols[c.key] = (ranges[k] && ranges[k].values && ranges[k].values[0]) || []; });
+  cols4.forEach((c, k) => { cols[c.key] = (ranges[k] && ranges[k].values && ranges[k].values[0]) || []; });
   const n = Math.max(...Object.values(cols).map((a) => a.length));
   const rows = [];
   for (let r = 0; r < n; r += 1) {
     const article = clean(cols.article[r]);
     if (!article) continue;
-    rows.push({ article, barcode: clean(cols.barcode[r]), pieces: clean(cols.pieces[r]), supplier: clean(cols.supplier[r]) });
+    rows.push({ article, barcode: clean(cols.barcode[r]), pieces: clean(cols.pieces[r]), supplier: clean(cols.supplier[r]), name: clean((cols.name || [])[r]) });
   }
   return rows;
+}
+
+// ── Нечёткий поиск по названию из Номенклатуры (A) и названию поставщика (AB) ──
+// Слова режем до 5 букв (оксидант/оксиданта), числа и проценты сравниваем точно.
+const STOP = new Set(['для', 'и', 'в', 'с', 'на', 'шт', 'мл', 'г', 'гр', 'кг', 'мм', 'см', 'ml', 'g']);
+function fuzzyTokens(raw) {
+  const t = String(raw ?? '').toLowerCase().replace(/ё/g, 'е').replace(/(\d)\s*[xх×*]\s*(\d)/g, '$1x$2');
+  const words = new Set();
+  const nums = new Set();
+  for (const m of t.matchAll(/[a-zа-я]+|\d+(?:[.,]\d+)?x?\d*/g)) {
+    const w = m[0];
+    if (/^\d/.test(w)) nums.add(w.replace(',', '.'));
+    else if (w.length >= 3 && !STOP.has(w)) words.add(w.slice(0, 5));
+  }
+  return { words, nums };
+}
+
+// Лучшие артикулы по названию: [{entry, score}] (score 0..1 по словам; все числа
+// накладной обязаны быть в названии Номенклатуры, иначе строка не подходит).
+function fuzzyFind(rows, name) {
+  const q = fuzzyTokens(name);
+  if (q.words.size < 2) return [];
+  const out = [];
+  for (const r of rows) {
+    let hit = 0;
+    for (const w of q.words) if (r.tok.words.has(w)) hit += 1;
+    if (hit < 2) continue;
+    let numsOk = true;
+    for (const n of q.nums) if (!r.tok.nums.has(n)) { numsOk = false; break; }
+    if (!numsOk) continue;
+    out.push({ entry: r.entry, score: hit / q.words.size });
+  }
+  return out.sort((a, b) => b.score - a.score);
 }
 
 let source = 'sheet'; // 'sheet' | 'file' — откуда прочитан последний раз
@@ -174,6 +214,7 @@ function buildIndex(rows) {
   const textIndex = new Map(); // нормализованное название → [{article, pieces}]
   const tokenIndex = new Map(); // артикул внутри названия → [{article, pieces}]
   const barIndex = new Map(); // нормализованный штрихкод (столбец F) → [артикул]
+  const nameRows = []; // для нечёткого поиска: {entry, tok}
   let filled = 0;
   let codeForm = 0;
   for (const r of rows) {
@@ -181,6 +222,8 @@ function buildIndex(rows) {
     if (bc) { if (!barIndex.has(bc)) barIndex.set(bc, []); barIndex.get(bc).push(r.article); }
     if (r.supplier) filled += 1;
     const entry = { article: r.article, pieces: Number(String(r.pieces).replace(',', '.')) || null };
+    const fuzzyText = [r.name, supplierKey(r.supplier) ? '' : r.supplier].filter(Boolean).join(' ');
+    if (fuzzyText) nameRows.push({ entry, tok: fuzzyTokens(fuzzyText) });
     const k = supplierKey(r.supplier);
     if (!k) {
       for (const tok of nameTokens(r.supplier)) { if (!tokenIndex.has(tok)) tokenIndex.set(tok, []); tokenIndex.get(tok).push(entry); }
@@ -198,6 +241,7 @@ function buildIndex(rows) {
     textIndex,
     tokenIndex,
     barIndex,
+    nameRows,
     stats: { total, filled, empty: total - filled, codeForm, textOnly: filled - codeForm, codes: index.size, texts: textIndex.size },
   };
 }
@@ -205,8 +249,8 @@ function buildIndex(rows) {
 async function load({ force = false } = {}) {
   if (!force && cache && Date.now() - cache.at < CACHE_MS) return cache;
   try {
-    const { index, textIndex, tokenIndex, barIndex, stats } = buildIndex(await fetchColumns());
-    cache = { at: Date.now(), index, textIndex, tokenIndex, barIndex, stats };
+    const { index, textIndex, tokenIndex, barIndex, nameRows, stats } = buildIndex(await fetchColumns());
+    cache = { at: Date.now(), index, textIndex, tokenIndex, barIndex, nameRows, stats };
     lastError = null;
     return cache;
   } catch (err) {
@@ -218,7 +262,7 @@ async function load({ force = false } = {}) {
 // Семьи Озона по коду из накладной. status: 'matched' | 'ambiguous' | 'none'.
 // none = кода нет в AB или его артикулов нет в каталоге Озона → ищем по названию.
 async function resolve(line, families) {
-  const { index, textIndex, tokenIndex } = await load();
+  const { index, textIndex, tokenIndex, nameRows } = await load();
   const key = supplierKey(line.supplierCode);
   let entries = key ? index.get(key) : null;
   let how = key ? `код поставщика ${key}` : '';
@@ -232,6 +276,17 @@ async function resolve(line, families) {
     const found = [];
     for (const tok of nameTokens(line.name)) for (const e of tokenIndex.get(tok) || []) if (!found.includes(e)) found.push(e);
     if (found.length) { entries = found; how = 'артикул поставщика в названии'; }
+  }
+  if ((!entries || !entries.length) && nameRows && nameRows.length) {
+    // нет кода и точного названия: ищем похожее название в Номенклатуре (A и AB)
+    const found = fuzzyFind(nameRows, line.name);
+    if (found.length) {
+      const top = found[0].score;
+      if (top >= 0.6) {
+        entries = found.filter((f) => f.score >= top - 0.01).map((f) => f.entry);
+        how = 'название в Номенклатуре';
+      }
+    }
   }
   if (!entries || !entries.length) {
     return { status: 'none', why: key ? `код ${key} и название не найдены в Номенклатуре` : 'нет кода поставщика, название не найдено в AB' };
@@ -281,9 +336,9 @@ function status() {
 
 // Только для тестов: подставить готовый индекс вместо чтения таблицы.
 function _setIndex(rows) {
-  const { index, textIndex, tokenIndex, barIndex, stats } = buildIndex(rows);
-  cache = { at: Date.now(), index, textIndex, tokenIndex, barIndex, stats };
+  const { index, textIndex, tokenIndex, barIndex, nameRows, stats } = buildIndex(rows);
+  cache = { at: Date.now(), index, textIndex, tokenIndex, barIndex, nameRows, stats };
   lastError = null;
 }
 
-module.exports = { nameTokens, articlesByBarcode, accountEmail, _setIndex, supplierKey, resolve, coverage, status, load, buildIndex, colLetter, SupplierAccessError };
+module.exports = { fuzzyTokens, fuzzyFind, nameTokens, articlesByBarcode, accountEmail, _setIndex, supplierKey, resolve, coverage, status, load, buildIndex, colLetter, SupplierAccessError };
