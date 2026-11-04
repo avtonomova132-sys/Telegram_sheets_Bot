@@ -137,6 +137,10 @@ function parseDailyRows(all) {
   };
   const miss = Object.entries(c).filter(([, v]) => v < 0).map(([k]) => k);
   if (miss.length) throw new Error(`${NOT_REPORT_PREFIX}: ${miss.join(', ')}`);
+  // необязательные: SKU и объёмы (нужны для расчёта стоимости хранения в день)
+  const opt = {
+    sku: col(/^sku$/i), ml: col(/^суммарный объем/i), paidMl: col(/^платный объем/i),
+  };
   const rows = [];
   for (const r of all.slice(hi + 1)) {
     const article = String(r[c.article] ?? '').trim();
@@ -144,9 +148,100 @@ function parseDailyRows(all) {
     rows.push({
       date: toIsoDate(r[c.date]), article, warehouse: String(r[c.warehouse] ?? '').trim(),
       qty: num(r[c.qty]), paidQty: num(r[c.paidQty]), cost: num(r[c.cost]),
+      sku: opt.sku >= 0 ? String(r[opt.sku] ?? '').trim() : '',
+      ml: opt.ml >= 0 ? num(r[opt.ml]) : 0,
+      paidMl: opt.paidMl >= 0 ? num(r[opt.paidMl]) : 0,
     });
   }
   return rows;
+}
+
+// ---- Отчёт по поставкам (/v1/report/placement/by-supplies): прогноз «станет платным» ----
+// Строка поставки: SKU (может быть только в итоговой строке товара — переносим вниз),
+// склад поставки, «Дней до конца периода», дата окончания, затем колонки по дням.
+const DAILY_COL_RE = /^\d{1,2}\.[а-яё]{3,5}\.?$/;
+function parseSupplies(all) {
+  const hi = all.findIndex((r) => r.some((c) => clean(c).startsWith('дней до конца периода')));
+  if (hi < 0) throw new Error(`${NOT_REPORT_PREFIX}: «Дней до конца периода»`);
+  const h = all[hi].map(clean);
+  const col = (re) => h.findIndex((c) => re.test(c));
+  const c = {
+    sku: col(/^sku$/i), supply: col(/^номер поставки/i), warehouse: col(/^склад поставки/i),
+    days: col(/^дней до конца периода/i), end: col(/^дата окончания периода/i),
+  };
+  const miss = Object.entries(c).filter(([, v]) => v < 0).map(([k]) => k);
+  if (miss.length) throw new Error(`${NOT_REPORT_PREFIX}: ${miss.join(', ')}`);
+  let lastDaily = -1;
+  h.forEach((x, i) => { if (DAILY_COL_RE.test(x)) lastDaily = i; });
+  if (lastDaily < 0) throw new Error(`${NOT_REPORT_PREFIX}: колонки по дням`);
+  const out = [];
+  let sku = '';
+  for (const r of all.slice(hi + 1)) {
+    const s = String(r[c.sku] ?? '').trim();
+    if (s) sku = s;
+    const warehouse = String(r[c.warehouse] ?? '').trim();
+    const supply = String(r[c.supply] ?? '').trim();
+    const rawDays = r[c.days];
+    if (!sku || !warehouse || !supply || rawDays === '' || rawDays == null) continue;
+    const days = num(rawDays);
+    if (!Number.isFinite(days)) continue;
+    const qty = num(r[lastDaily]);
+    if (!(qty > 0)) continue; // закрытые поставки / пустой сегодняшний столбец
+    out.push({ sku, supply, warehouse, days, qty, endDate: toIsoDate(r[c.end]) });
+  }
+  return out;
+}
+
+const DEFAULT_TARIFF = 2.5; // ₽ за литр в день (выведено по данным отчёта)
+
+// Тариф ₽/л·день — медиана по платным строкам, иначе по умолчанию.
+function tariffFrom(prodRows) {
+  const v = prodRows.filter((r) => r.paidMl > 0 && r.cost > 0).map((r) => r.cost / (r.paidMl / 1000)).sort((a, b) => a - b);
+  return v.length ? v[Math.floor(v.length / 2)] : DEFAULT_TARIFF;
+}
+
+// Литров на одну штуку по SKU (последняя дата, где объём известен).
+function unitLitres(prodRows) {
+  const m = new Map();
+  for (const r of prodRows) {
+    if (!r.sku || !(r.qty > 0) || !(r.ml > 0)) continue;
+    m.set(r.sku, r.ml / r.qty / 1000);
+  }
+  return m;
+}
+
+// Сводка: накопительно — всё, что станет платным в ближайшие windowDays, + уже платное.
+// prodRows — parseDailyRows (по товарам), supplies — parseSupplies. Нечего сообщать → text:null.
+function buildDigest({ prodRows, supplies, windowDays = 28, todayIso = '' }) {
+  const artBySku = new Map();
+  for (const r of prodRows) if (r.sku && r.article) artBySku.set(r.sku, r.article);
+  const tariff = tariffFrom(prodRows);
+  const litres = unitLitres(prodRows);
+  const soon = supplies
+    .filter((s) => s.days >= 0 && s.days <= windowDays)
+    .map((s) => ({
+      ...s,
+      article: artBySku.get(s.sku) || `SKU ${s.sku}`,
+      perDay: (litres.get(s.sku) || 0) * s.qty * tariff,
+    }))
+    .sort((a, b) => a.days - b.days || a.article.localeCompare(b.article));
+  const paid = paidNow(prodRows);
+
+  if (!soon.length && !paid.list.length) return { text: null, soon, paid };
+  const out = [];
+  if (soon.length) {
+    out.push(`⏳ Скоро станет платным на FBO (в ближайшие ${windowDays} дн.):`);
+    for (const s of soon) {
+      const cost = s.perDay > 0 ? `, ~${rub(s.perDay)}/день после` : '';
+      out.push(`• ${s.article} — ${s.qty} шт, ${s.warehouse}, через ${s.days} дн. (${ruDate(s.endDate)})${cost}`);
+    }
+    out.push('\nЗаявку на вывоз создаёте вы сами; стоимость вывоза бот пока не считает.');
+  }
+  if (paid.list.length) {
+    out.push(`${soon.length ? '\n' : ''}💸 Уже платное (на ${ruDate(paid.last)}):`);
+    for (const g of paid.list) out.push(`• ${g.article} — ${g.paidQty} шт, ${g.warehouse}, ${rub(g.cost)}/день`);
+  }
+  return { text: out.join('\n'), soon, paid };
 }
 
 // Платное на последнюю дату отчёта, сгруппировано «артикул|склад».
@@ -192,4 +287,5 @@ function describeReport(rows, sampleCount = 3) {
 
 module.exports = {
   parseReport, buildSummary, parseDaily, parseDailyRows, buildPaidMessage, describeReport, NOT_REPORT_PREFIX,
+  parseSupplies, buildDigest, tariffFrom,
 };

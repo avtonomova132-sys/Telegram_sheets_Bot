@@ -2013,6 +2013,71 @@ async function checkAndRunFbo() {
 
 cron.schedule('*/5 * * * *', checkAndRunFbo);
 
+// ---- «Скоро станет платным» (платное размещение FBO) ----
+// Два отчёта Озона через API (ключ только на чтение): по товарам (что платно сейчас,
+// артикулы, объёмы) и по поставкам («дней до конца периода»). Сводка накопительная:
+// всё, что станет платным в ближайшие 28 дней, + уже платное. Расписание вт и пт
+// с 09:00 по Бали; по умолчанию ВЫКЛЮЧЕНО (включает Елена: /fbo_размещение_вкл).
+const PLACEMENT_HOUR = 9;
+const PLACEMENT_WINDOW_DAYS = Number(process.env.PLACEMENT_WINDOW_DAYS) || 28;
+
+async function placementDigest() {
+  const prodRows = fboPlacement.parseDaily(await fbo.fetchPlacementFile('by-products'));
+  const supplyRows = require('./miniXlsx').readFirstSheet(await fbo.fetchPlacementFile('by-supplies'));
+  const supplies = fboPlacement.parseSupplies(supplyRows);
+  return fboPlacement.buildDigest({ prodRows, supplies, windowDays: PLACEMENT_WINDOW_DAYS });
+}
+
+async function checkAndRunPlacement() {
+  if (!myChatId || !fbo.isConfigured()) return;
+  const st = fbo.readState();
+  if (!st.placementOn) return;
+  const weekday = new Date(Date.now() + 8 * 3600 * 1000).getUTCDay();
+  if (weekday !== 2 && weekday !== 5) return; // вторник, пятница
+  if (baliHour() < PLACEMENT_HOUR) return;
+  const today = baliDateString();
+  if (st.placementLastDate === today) return;
+  if (st.placementErrorAt && Date.now() - st.placementErrorAt < FBO_RETRY_MS) return;
+  try {
+    const { text } = await placementDigest();
+    if (text) await sendFbo(fboRecipients(), text); // нечего сообщать — молчим
+    fbo.patchState({ placementLastDate: today, placementErrorAt: null, placementErrNotified: false });
+  } catch (err) {
+    console.error('[fbo] платное размещение:', err.message);
+    const notify = !st.placementErrNotified;
+    fbo.patchState({ placementErrorAt: Date.now(), placementErrNotified: true });
+    if (notify) {
+      await sendFbo([String(myChatId)], `⚠️ Платное размещение: не получилось проверить — ${err.message}\nПовторю молча раз в час.`);
+    }
+  }
+}
+cron.schedule('*/5 * * * *', checkAndRunPlacement);
+
+// Тест/ручной запуск: показывает сообщение по текущим данным, расписание не трогает.
+bot.onText(/^\/(?:fbo_размещение|fbo_placement)(?:@\S+)?$/i, async (msg) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  try {
+    await bot.sendMessage(msg.chat.id, 'Запрашиваю у Озона два отчёта… до двух минут');
+    const { text } = await placementDigest();
+    await sendFbo([msg.chat.id], text || `✅ В ближайшие ${PLACEMENT_WINDOW_DAYS} дн. ничего не станет платным, и платного размещения сейчас нет.`);
+    await bot.sendMessage(msg.chat.id, `Автопроверка по вторникам и пятницам в 9:00 по Бали сейчас: ${fbo.readState().placementOn ? 'включена' : 'выключена'}.`);
+  } catch (err) {
+    await bot.sendMessage(msg.chat.id, `Ошибка: ${err.message}`);
+  }
+});
+
+bot.onText(/^\/(?:fbo_размещение_вкл|fbo_placement_on)(?:@\S+)?$/i, async (msg) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  fbo.patchState({ placementOn: true, placementErrorAt: null });
+  await bot.sendMessage(msg.chat.id, '✅ Включила: буду проверять по вторникам и пятницам в 9:00 по Бали. Если нечего сообщать — промолчу.');
+});
+
+bot.onText(/^\/(?:fbo_размещение_выкл|fbo_placement_off)(?:@\S+)?$/i, async (msg) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  fbo.patchState({ placementOn: false });
+  await bot.sendMessage(msg.chat.id, 'Выключила автопроверку платного размещения.');
+});
+
 // Ручная проверка: полная картина «сейчас», снимок «уже сообщал» не трогает.
 bot.onText(/^\/fbo(?:@\S+)?$/i, async (msg) => {
   if (!isTrustedUser(msg.chat.id)) return;

@@ -54,3 +54,44 @@ test('describeReport показывает ВСЕ колонки с номера�
   assert.match(out, /14\. Начисленная стоимость размещения/);
   assert.match(out, /Строк в отчёте: 6/);
 });
+
+// ---- by-supplies: структура как в живом отчёте (222 строки, колонки по дням) ----
+const SUP_HEADER = [
+  'SKU', 'Признак товара', 'Категория', 'Описательный тип', 'Остаток на складах на (04.11.2026)',
+  'Номер поставки', 'Склад поставки', 'Дней до конца периода', 'Дата окончания периода по поставкам',
+  '03.нояб', '04.нояб',
+];
+const sup = (sku, supply, wh, days, end, a, b) => [sku, '', '', '', '', supply, wh, days, end, a, b];
+const SUP = [
+  SUP_HEADER,
+  [396742554, '', '', '', 5, '', '', '', '', '', ''], // итоговая строка товара
+  sup('', '111', 'ХОРУГВИНО_РФЦ', 364, 46694, 5, 5),
+  [1544818529, '', '', '', 3, '', '', '', '', '', ''],
+  sup('', '222', 'НОВОРОССИЙСК_РФЦ', 20, 46350, 2, 2),
+  sup('', '223', 'НОВОРОССИЙСК_РФЦ', 10, 46340, 1, 0), // сегодня 0 — не считается
+  sup('', '224', 'НОВОРОССИЙСК_РФЦ', 40, 46370, 1, 1), // дальше окна
+];
+
+test('parseSupplies: SKU переносится вниз, пустые/закрытые отбрасываются', () => {
+  const s = require('./fboPlacement').parseSupplies(SUP);
+  assert.strictEqual(s.length, 3);
+  assert.strictEqual(s[0].sku, '396742554');
+  assert.strictEqual(s[0].days, 364);
+  assert.strictEqual(s[0].endDate, '2027-11-03');
+  assert.strictEqual(s[1].sku, '1544818529');
+  assert.strictEqual(s[1].qty, 2);
+});
+
+test('buildDigest: окно 28 дней + уже платное, артикул по SKU', () => {
+  const prod = fp.parseDailyRows(ROWS.map((r, i) => (i === 0 ? r : r))) ; // SKU в колонке 2
+  const d = fp.buildDigest({ prodRows: prod, supplies: fp.parseSupplies(SUP), windowDays: 28 });
+  assert.strictEqual(d.soon.length, 1);
+  assert.match(d.text, /КОРИЧ100200МЕДТЕСТ200ШТ — 2 шт, НОВОРОССИЙСК_РФЦ, через 20 дн\./);
+  assert.match(d.text, /Уже платное/);
+  assert.doesNotMatch(d.text, /через 364/);
+});
+
+test('buildDigest: нечего сообщать → text null', () => {
+  const d = fp.buildDigest({ prodRows: [], supplies: fp.parseSupplies(SUP).filter((s) => s.days > 28) });
+  assert.strictEqual(d.text, null);
+});
