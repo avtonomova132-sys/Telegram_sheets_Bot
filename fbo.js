@@ -75,7 +75,21 @@ function isConfigured() {
   return Boolean(process.env.OZON_API_KEY && process.env.OZON_CLIENT_ID);
 }
 
+// Озон отвечает 429 («лимит запросов в секунду»), если методов было много подряд
+// (так бывает сразу после /fbo_probe). Повторяем до 3 раз с паузой — вслепую не долбим.
 async function ozonPost(endpoint, body) {
+  const pauses = [1500, 3000, 6000];
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await ozonPostOnce(endpoint, body);
+    } catch (err) {
+      if (err.status !== 429 || attempt >= pauses.length) throw err;
+      await new Promise((r) => setTimeout(r, pauses[attempt]));
+    }
+  }
+}
+
+async function ozonPostOnce(endpoint, body) {
   if (!isConfigured()) {
     throw new Error('не заданы OZON_API_KEY / OZON_CLIENT_ID в Railway');
   }

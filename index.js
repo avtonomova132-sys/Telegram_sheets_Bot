@@ -1984,14 +1984,18 @@ async function checkAndRunFbo() {
   try {
     const { text } = await fbo.dailyMessage();
     if (text) await sendFbo(fboRecipients(), text);
-    try {
-      const rows = fboPlacement.parseDaily(await fbo.fetchPlacementFile('by-products'));
-      const prev = fbo.readState().paidAlerted || {};
-      const paid = fboPlacement.buildPaidMessage(rows, prev, true);
-      if (paid.text) await sendFbo(fboRecipients(), paid.text);
-      fbo.patchState({ paidAlerted: paid.state });
-    } catch (e) {
-      console.error('[fbo] платное размещение через API:', e.message);
+    // Ежедневное «платное размещение через API» выключено, пока Елена не согласует
+    // расписание «2 раза в неделю» (она просила не каждый день). Включение: FBO_PAID_API=1.
+    if (process.env.FBO_PAID_API === '1') {
+      try {
+        const rows = fboPlacement.parseDaily(await fbo.fetchPlacementFile('by-products'));
+        const prev = fbo.readState().paidAlerted || {};
+        const paid = fboPlacement.buildPaidMessage(rows, prev, true);
+        if (paid.text) await sendFbo(fboRecipients(), paid.text);
+        fbo.patchState({ paidAlerted: paid.state });
+      } catch (e) {
+        console.error('[fbo] платное размещение через API:', e.message);
+      }
     }
     fbo.patchState({ lastDate: today, errorNotified: false, lastErrorAt: null });
   } catch (err) {
@@ -2038,20 +2042,19 @@ bot.onText(/^\/fbo_report(?:@\S+)?(?:\s+(by-products|by-supplies))?$/i, async (m
   try {
     await bot.sendMessage(msg.chat.id, `Запрашиваю у Озона отчёт (${kind})… до минуты`);
     const buffer = await fbo.fetchPlacementFile(kind);
+    const sheetRows = require('./miniXlsx').readFirstSheet(buffer);
+    // Сначала всегда полный список колонок отчёта (диагностика), потом сводка.
+    await sendFbo([msg.chat.id], `📋 Отчёт ${kind}\n${fboPlacement.describeReport(sheetRows)}`);
     try {
       let text;
       try {
         text = fboPlacement.buildSummary(fboPlacement.parseReport(buffer), fbo.isFood);
       } catch (e0) {
-        text = fboPlacement.buildPaidMessage(fboPlacement.parseDaily(buffer)).text;
+        text = fboPlacement.buildPaidMessage(fboPlacement.parseDailyRows(sheetRows)).text;
       }
       await sendFbo([msg.chat.id], text);
     } catch (e) {
-      const rows = require('./miniXlsx').readFirstSheet(buffer);
-      const hi = rows.findIndex((r) => String(r[0]).trim() === 'SKU');
-      const pick = (r) => [...r.slice(0, 9), '…', ...r.slice(-4)].map((c) => String(c).slice(0, 30)).join(' | ');
-      const head = rows.slice(Math.max(hi, 0), Math.max(hi, 0) + 9).map(pick).join('\n');
-      await sendFbo([msg.chat.id], `Отчёт получен (${rows.length} строк), но колонки другие.\nПервые строки:\n${head}`);
+      await sendFbo([msg.chat.id], `Сводку по этому отчёту пока не строю: ${e.message}`);
     }
   } catch (err) {
     await bot.sendMessage(msg.chat.id, `Ошибка: ${err.message}`);

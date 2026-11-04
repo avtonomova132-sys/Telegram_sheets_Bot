@@ -120,8 +120,14 @@ const NOT_REPORT_PREFIX = 'в файле нет колонок';
 
 // ---- Отчёт из API (/v1/report/placement/by-products): строка = день × товар × склад ----
 function parseDaily(buffer) {
-  const all = readFirstSheet(buffer);
-  const hi = all.findIndex((r) => r.some((c) => clean(c) === 'Начисленная стоимость размещения'));
+  return parseDailyRows(readFirstSheet(buffer));
+}
+
+// Разбор уже прочитанных строк листа (отдельно от xlsx — чтобы тестировать без файла).
+// clean() приводит к нижнему регистру, поэтому и искомая строка — в нижнем
+// (раньше сравнение шло с заглавной «Начисленная…» и никогда не срабатывало).
+function parseDailyRows(all) {
+  const hi = all.findIndex((r) => r.some((c) => clean(c).startsWith('начисленная стоимость')));
   if (hi < 0) throw new Error(`${NOT_REPORT_PREFIX}: «Начисленная стоимость размещения»`);
   const h = all[hi].map(clean);
   const col = (re) => h.findIndex((c) => re.test(c));
@@ -173,4 +179,17 @@ function buildPaidMessage(rows, prev = {}, onlyNew = false) {
 }
 
 
-module.exports = { parseReport, buildSummary, parseDaily, buildPaidMessage, NOT_REPORT_PREFIX };
+// Диагностика незнакомого отчёта: ВСЕ заголовки колонок с номерами и несколько
+// первых строк целиком — чтобы увидеть скрытые середины (раньше показывались
+// только 9 первых и 4 последние колонки). Ничего не меняет.
+function describeReport(rows, sampleCount = 3) {
+  const hi = Math.max(0, rows.findIndex((r) => r.filter((c) => String(c ?? '').trim()).length >= 5));
+  const cut = (v) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, 40);
+  const headers = (rows[hi] || []).map((c, i) => `${i + 1}. ${cut(c)}`).join('\n');
+  const samples = rows.slice(hi + 1, hi + 1 + sampleCount).map((r) => r.map(cut).join(' | ')).join('\n');
+  return `Строк в отчёте: ${rows.length}\n\nКолонки:\n${headers}\n\nПервые строки:\n${samples}`;
+}
+
+module.exports = {
+  parseReport, buildSummary, parseDaily, parseDailyRows, buildPaidMessage, describeReport, NOT_REPORT_PREFIX,
+};
