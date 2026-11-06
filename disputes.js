@@ -76,6 +76,16 @@ const FIXES = [
       filed: { date: '2026-11-02', claims: '1002115720–1002115723' },
     }),
   },
+  {
+    id: 'filed-moskva-2026-11-06',
+    article: 'МОСКВА1ШТ',
+    apply: (w) => ({ ...w, filed: { date: '2026-11-06', claims: '1002097774–1002097776' } }),
+  },
+  {
+    id: 'filed-penal-2026-11-02',
+    article: 'ПеналЧерный1',
+    apply: (w) => ({ ...w, filed: { date: '2026-11-02', claims: '1001782331', approved: true } }),
+  },
 ];
 function applyFixes(s) {
   const done = new Set(s.fixes || []);
@@ -196,7 +206,7 @@ function candidatesFromWriteoffs(writeoffs, todayIso) {
   for (const w of writeoffs) {
     if (hasCompensation(w) || isFiled(w)) continue;
     const days = daysSince(w.date, todayIso);
-    if (days < FIRST_DAY) continue;
+    if (days < FIRST_DAY || days > DEADLINE_DAYS) continue;
     out.push({
       key: `W|${w.id}`, group: 'W', article: w.article, sku: w.sku, ref: w.posting || '',
       dateIso: w.date, days, daysLeft: DEADLINE_DAYS - days, price: w.price, qty: w.qty,
@@ -246,11 +256,93 @@ function dropDuplicatesOfWriteoffs(cands, writeoffs) {
 function candidatesFromReturns(returns, now) {
   return rw.classify(returns, now).map((f) => ({
     key: `R|${f.key}`, group: f.group, article: f.offerId, sku: f.sku, posting: f.posting || '',
+    claim: String(f.claim || ''), status: f.status || '',
     ref: [f.claim && `заявка ${f.claim}`, f.posting && `отпр. ${f.posting}`].filter(Boolean).join(', '),
     dateIso: msToIso(f.ms), days: f.days,
     daysLeft: f.group === 'V' ? f.daysLeft : null,
     price: f.price, qty: null, scheme: 'FBS', reason: `статус возврата «${f.status}»`,
   }));
+}
+
+// ---------- короткий отчёт «К спору» ----------
+
+const RETURN_DISPUTE_DAYS = 60; // «Ожидает отправки» / «Едет на склад Ozon» дольше 60 дней
+const RETURN_MAX_AGE_DAYS = 180; // статус старше 180 дней не показываем
+
+function addDaysIso(iso, n) { return new Date(isoToUtcDay(iso) + n * DAY_MS).toISOString().slice(0, 10); }
+function ruDM(iso) { const [, m, d] = iso.split('-'); return `${d}.${m}`; }
+
+// Номера заявок из строки вида «1002115720–1002115723» или «1001782331, 1002...» → массив строк.
+function expandClaims(str) {
+  const out = [];
+  const re = /(\d{7,})\s*[–—-]\s*(\d{7,})|(\d{7,})/g;
+  let m;
+  while ((m = re.exec(String(str || '')))) {
+    if (m[3]) out.push(m[3]);
+    else {
+      const a = Number(m[1]); const b = Number(m[2]);
+      if (b >= a && b - a <= 200) for (let n = a; n <= b; n++) out.push(String(n));
+      else out.push(m[1], m[2]);
+    }
+  }
+  return out;
+}
+function filedClaimSet(state) {
+  const set = new Set(expandClaims((state.filedClaims || []).join(' ')));
+  for (const w of state.writeoffs || []) if (isFiled(w)) expandClaims(w.filed.claims).forEach((c) => set.add(c));
+  return set;
+}
+function addFiledClaims(state, raw) {
+  const nums = expandClaims(raw);
+  if (!nums.length) return { error: 'Формат: /спор_подано 1002115720–1002115723 (или номера заявок через пробел)' };
+  return { filedClaims: [...new Set([...(state.filedClaims || []), ...nums])], count: nums.length };
+}
+
+// К спору: (1) возвраты «Ожидает отправки» / «Едет на склад Ozon» дольше 60 дней (не старше 180);
+// (2) списанные без компенсации в срок до 30 дней (с 14-го дня). «Едет к вам», «декомпенсация»,
+// «Ищем товар», «Не получена доставкой» — не показываем. Подано (по номеру заявки или в реестре) — убрано.
+// Скоро: списания младше 14 дней и возвраты 50–60 дней.
+function buildReport(state, returnCands, todayIso) {
+  const writeoffs = state.writeoffs || [];
+  const claims = filedClaimSet(state);
+  const toDispute = candidatesFromWriteoffs(writeoffs, todayIso);
+  const soon = earlyWriteoffs(writeoffs, todayIso)
+    .filter((w) => w.days >= 0)
+    .map((w) => ({ ...w, deadlineIso: addDaysIso(w.dateIso, DEADLINE_DAYS) }));
+  const okStatus = (st) => {
+    const n = String(st || '').toLowerCase().replace(/ё/g, 'е');
+    if (n.includes('декомпенсац') || n.includes('едет к вам')) return false;
+    return n.includes('ожидает отправки') || n.includes('едет на склад');
+  };
+  for (const c of dropDuplicatesOfWriteoffs(returnCands, writeoffs)) {
+    if (c.group !== 'V' || !okStatus(c.status)) continue;
+    if (c.claim && claims.has(c.claim)) continue;
+    if (c.days > RETURN_MAX_AGE_DAYS) continue;
+    if (c.days >= RETURN_DISPUTE_DAYS) toDispute.push(c);
+    else soon.push({ ...c, deadlineIso: addDaysIso(c.dateIso, RETURN_DISPUTE_DAYS) });
+  }
+  return { toDispute, soon };
+}
+
+function shortRef(c) {
+  if (c.claim) return `заявка ${c.claim}`;
+  if (c.posting) return `отпр. ${c.posting}`;
+  return '';
+}
+
+function formatShort({ toDispute, soon }, notes = []) {
+  const parts = [];
+  if (!toDispute.length) parts.push('✅ Сейчас подавать нечего');
+  else {
+    const rows = toDispute.map((c, i) => `\t${i + 1}.\t${[c.article || '—', shortRef(c)].filter(Boolean).join(' · ')}`);
+    parts.push(`⚖️ К спору: ${toDispute.length}\n${rows.join('\n')}\nОтветь «подавай» и перешли мне это сообщение.`);
+  }
+  if (soon.length) {
+    const nearest = soon.map((c) => c.deadlineIso).sort()[0];
+    parts.push(`Скоро: ${soon.length} поз., ближайший срок ${ruDM(nearest)}`);
+  }
+  if (notes.length) parts.push(notes.map((n) => `⚠️ ${n}`).join('\n'));
+  return parts.join('\n\n');
 }
 
 // Что слать при плановой проверке: новое, смена группы, либо напоминание на 25-й день (А).
@@ -350,7 +442,7 @@ function splitMessage(text, max = 3800) { return rw.splitMessage(text, max); }
 
 module.exports = {
   getState, patchState, addWriteoff, setCompensation, fetchWriteoffsApi,
-  candidatesFromWriteoffs, earlyWriteoffs, markFiled, formatFiled, dropDuplicatesOfWriteoffs, isFiled, formatEarly, candidatesFromReturns, pickNew, markSent,
+  buildReport, formatShort, addFiledClaims, filedClaimSet, expandClaims, candidatesFromWriteoffs, earlyWriteoffs, markFiled, formatFiled, dropDuplicatesOfWriteoffs, isFiled, formatEarly, candidatesFromReturns, pickNew, markSent,
   formatCandidates, approvalMessages, supportText, warehouseMessage, topicOf,
   splitMessage, parseRuDate, daysSince, msToIso, hasCompensation, API_NOTICE,
   FIRST_DAY, REMIND_DAY, DAY_MS,

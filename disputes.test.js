@@ -5,16 +5,13 @@ const path = require('path');
 process.env.DISPUTES_STATE_PATH = path.join(os.tmpdir(), `disputes_${process.pid}.json`);
 const d = require('./disputes');
 
-test('известные октябрьские случаи и сроки', () => {
+test('известные октябрьские случаи: поданные убраны, остаётся ПЛАМЯ в «Скоро»', () => {
   const s = d.getState();
-  const c = d.candidatesFromWriteoffs(s.writeoffs, '2026-11-02');
-  assert.strictEqual(c.length, 0); // бирки поданы, остальные моложе 14 дней
-  const e = d.earlyWriteoffs(s.writeoffs, '2026-11-02');
-  const eb = Object.fromEntries(e.map((x) => [x.article, x]));
-  assert.strictEqual(eb['МОСКВА1ШТ'].daysLeft, 22); // срок 24.11
-  assert.strictEqual(eb['ПеналЧерный1'].daysLeft, 27); // 29.11
-  assert.strictEqual(eb['025ПЛАМЯ025СИНП1ШТ'].daysLeft, 27);
-  assert.match(d.formatEarly(e), /Ещё рано/);
+  assert.strictEqual(d.candidatesFromWriteoffs(s.writeoffs, '2026-11-06').length, 0);
+  const r = d.buildReport(s, [], '2026-11-06');
+  assert.strictEqual(r.toDispute.length, 0);
+  assert.deepStrictEqual(r.soon.map((x) => x.article), ['025ПЛАМЯ025СИНП1ШТ']);
+  assert.strictEqual(r.soon[0].deadlineIso, '2026-11-29');
 });
 
 test('до 14-го дня не показываем, на 14-й показываем', () => {
@@ -93,4 +90,56 @@ test('нет дубля: возврат, уже стоящий в А, не по�
   ];
   const out = d.dropDuplicatesOfWriteoffs(cands, w);
   assert.deepStrictEqual(out.map((c) => `${c.group}${c.article}${c.posting}`), ['WXP-1', 'VYP-2']);
+});
+
+// ---- короткий отчёт «К спору» ----
+const ret = (claim, status, daysAgo, art = 'R') => ({
+  key: `R|${claim}`, group: 'V', article: `${art}${claim}`, claim: String(claim), posting: '',
+  status, days: daysAgo, dateIso: d.msToIso(Date.parse('2026-11-06T00:00:00Z') - daysAgo * 86400000),
+});
+
+test('К спору: только Ожидает отправки / Едет на склад >=60 дн., не старше 180', () => {
+  const st = { writeoffs: [] };
+  const r = d.buildReport(st, [
+    ret(1, 'Ожидает отправки', 70), ret(2, 'Едет на склад Ozon', 61), ret(3, 'Едет к вам', 90),
+    ret(4, 'Провели декомпенсацию', 100), ret(5, 'Ожидает отправки', 200), ret(6, 'Ожидает отправки', 55),
+    ret(7, 'Ищем товар', 40),
+  ], '2026-11-06');
+  assert.deepStrictEqual(r.toDispute.map((c) => c.claim).sort(), ['1', '2']);
+  assert.strictEqual(r.soon.length, 1); // 55 дней
+});
+
+test('Подано: заявки из реестра (диапазон) и бирки/москва/пенал не в «К спору»', () => {
+  const s = d.getState();
+  const r = d.buildReport({ ...s, filedClaims: ['1002200001-1002200002'] }, [
+    ret(1002115721, 'Ожидает отправки', 70), ret(1002200002, 'Ожидает отправки', 70), ret(1002097775, 'Едет на склад Ozon', 70),
+    ret(1001782331, 'Ожидает отправки', 70), ret(999, 'Ожидает отправки', 70),
+  ], '2026-11-06');
+  assert.deepStrictEqual(r.toDispute.map((c) => c.claim), ['999']);
+  assert.ok(d.filedClaimSet(s).has('1002097776'));
+  const names = d.candidatesFromWriteoffs(s.writeoffs, '2026-11-06').map((c) => c.article);
+  assert.ok(!names.some((n) => /БиркаСадовая|МОСКВА|ПеналЧерный/.test(n)));
+});
+
+test('Списания: с 14-го дня и не позже 30-го; младше 14 — «Скоро»', () => {
+  const st = { writeoffs: [
+    { id: 'a', article: 'A', date: '2026-10-20', compensation: '' }, // 17 дн.
+    { id: 'b', article: 'B', date: '2026-09-20', compensation: '' }, // 47 дн. — срок вышел
+    { id: 'c', article: 'C', date: '2026-10-30', compensation: '' }, // 7 дн.
+    { id: 'd', article: 'D', date: '2026-10-20', compensation: 'Предварительная' },
+  ] };
+  const r = d.buildReport(st, [], '2026-11-06');
+  assert.deepStrictEqual(r.toDispute.map((c) => c.article), ['A']);
+  assert.strictEqual(r.soon.length, 1);
+  assert.strictEqual(r.soon[0].deadlineIso, '2026-11-29');
+});
+
+test('Формат строго по образцу', () => {
+  const r = { toDispute: [{ article: 'ART1', claim: '1002000001' }, { article: 'ART2', posting: 'P-2' }],
+    soon: [{ deadlineIso: '2026-11-29' }, { deadlineIso: '2026-11-24' }] };
+  assert.strictEqual(d.formatShort(r),
+    '⚖️ К спору: 2\n\t1.\tART1 · заявка 1002000001\n\t2.\tART2 · отпр. P-2\nОтветь «подавай» и перешли мне это сообщение.\n\nСкоро: 2 поз., ближайший срок 24.11');
+  assert.strictEqual(d.formatShort({ toDispute: [], soon: [] }), '✅ Сейчас подавать нечего');
+  assert.strictEqual(d.formatShort({ toDispute: [], soon: [{ deadlineIso: '2026-11-24' }] }),
+    '✅ Сейчас подавать нечего\n\nСкоро: 1 поз., ближайший срок 24.11');
 });

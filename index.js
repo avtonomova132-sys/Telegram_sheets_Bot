@@ -1404,66 +1404,40 @@ const disputes = require('./disputes');
 const DISPUTES_HOUR = Number(process.env.DISPUTES_HOUR) || 8;
 let disputesRunning = false;
 
-async function collectDisputeCandidates(state, today) {
+async function collectDisputeReport(state, today) {
   const notes = [];
-  let apiAvailable = false;
-  let writeoffs = [...(state.writeoffs || [])];
+  const writeoffs = [...(state.writeoffs || [])];
   try {
     const api = await disputes.fetchWriteoffsApi();
-    apiAvailable = api.available;
     for (const w of api.items) {
       if (!writeoffs.some((x) => x.article === w.article && x.date === w.date)) writeoffs.push(w);
     }
-  } catch (err) { notes.push(`Списания по API не прочитались: ${err.message}`); }
-  let cands = disputes.candidatesFromWriteoffs(writeoffs, today);
+  } catch (err) { notes.push('Списания по API не прочитались'); }
+  let returnCands = [];
   if (returnsWatch.isConfigured()) {
-    try { cands = cands.concat(disputes.candidatesFromReturns(await returnsWatch.listReturns(), Date.now())); }
-    catch (err) { notes.push(`Возвраты не прочитались: ${err.message}`); }
-    cands = disputes.dropDuplicatesOfWriteoffs(cands, writeoffs);
-  } else notes.push('Не заданы OZON_API_KEY / OZON_CLIENT_ID — возвраты не проверены.');
-  return { cands, notes, apiAvailable };
+    try { returnCands = disputes.candidatesFromReturns(await returnsWatch.listReturns(), Date.now()); }
+    catch (err) { notes.push('Возвраты не прочитались'); console.error('[disputes] возвраты:', err.message); }
+  } else notes.push('Возвраты не проверены: нет ключей Ozon');
+  return { report: disputes.buildReport({ ...state, writeoffs }, returnCands, today), notes };
 }
 
-async function sendDisputeOffer(chatId, state, cands, notes, extra = '') {
-  if (!cands.length && !notes.length) return state;
-  const batchId = Date.now().toString(36);
-  const text = disputes.formatCandidates(cands) + extra + (notes.length ? `\n\n⚠️ ${notes.join('\n⚠️ ')}` : '');
-  const parts = disputes.splitMessage(text);
-  for (let i = 0; i < parts.length; i++) {
-    const opts = (i === parts.length - 1 && cands.length)
-      ? { reply_markup: { inline_keyboard: [[
-        { text: '✅ Да', callback_data: `dsp:yes:${batchId}` },
-        { text: '❌ Нет', callback_data: `dsp:no:${batchId}` },
-        { text: '⏳ Позже', callback_data: `dsp:later:${batchId}` },
-      ]] } } : {};
-    await bot.sendMessage(chatId, parts[i], opts);
-  }
-  const pending = { ...(state.pending || {}) };
-  if (cands.length) pending[batchId] = { items: cands, at: Date.now() };
-  for (const [k, v] of Object.entries(pending)) if (Date.now() - v.at > 90 * 86400000) delete pending[k];
-  return { ...state, pending };
+async function sendShortReport(chatId, report, notes) {
+  for (const part of disputes.splitMessage(disputes.formatShort(report, notes))) await bot.sendMessage(chatId, part);
 }
 
 async function checkDisputesPeriodic() {
   if (!myChatId || disputesRunning) return;
   const today = baliDateString();
   if (baliHour() < DISPUTES_HOUR) return;
-  let state = disputes.getState();
+  const state = disputes.getState();
   if (state.lastRunDate && disputes.daysSince(state.lastRunDate, today) < 2) return;
   if (state.lastErrorAt && Date.now() - state.lastErrorAt < 60 * 60 * 1000) return;
   disputesRunning = true;
   try {
-    const { cands, notes, apiAvailable } = await collectDisputeCandidates(state, today);
-    if (!apiAvailable && !state.apiNoticeSent) {
-      await bot.sendMessage(myChatId, disputes.API_NOTICE);
-      state = { ...state, apiNoticeSent: true };
-    }
-    const fresh = disputes.pickNew(cands, state.sent || {});
-    state = await sendDisputeOffer(myChatId, state, fresh, notes);
-    disputes.patchState({
-      ...state, lastRunDate: today, sent: disputes.markSent(state.sent || {}, fresh),
-      lastErrorAt: null,
-    });
+    const { report, notes } = await collectDisputeReport(state, today);
+    const fresh = disputes.pickNew(report.toDispute, state.sent || {});
+    if (fresh.length) await sendShortReport(myChatId, { toDispute: fresh, soon: report.soon }, notes);
+    disputes.patchState({ lastRunDate: today, sent: disputes.markSent(state.sent || {}, fresh), lastErrorAt: null });
   } catch (err) {
     console.error('[disputes] ошибка проверки:', err.message);
     disputes.patchState({ lastErrorAt: Date.now() });
@@ -1475,23 +1449,23 @@ async function checkDisputesPeriodic() {
 
 cron.schedule('*/5 * * * *', checkDisputesPeriodic);
 
+// По команде — вся картина сейчас; «уже сообщали» не трогает.
 bot.onText(/^\/(споры_проверка|disputes_check)(?:@\w+)?$/i, async (msg) => {
   if (!isTrustedUser(msg.chat.id)) return;
   try {
-    await bot.sendMessage(msg.chat.id, 'Проверяю списания и возвраты…');
-    const state = disputes.getState();
-    const { cands, notes, apiAvailable } = await collectDisputeCandidates(state, baliDateString());
-    if (!apiAvailable) notes.push(disputes.API_NOTICE);
-    const early = disputes.formatEarly(disputes.earlyWriteoffs(state.writeoffs || [], baliDateString())) + disputes.formatFiled(state.writeoffs || []);
-    if (!cands.length) {
-      await bot.sendMessage(msg.chat.id, `✅ Сейчас обращений не требуется.${early}${notes.length ? `\n\n⚠️ ${notes.join('\n⚠️ ')}` : ''}`);
-      return;
-    }
-    const next = await sendDisputeOffer(msg.chat.id, state, cands, notes, early);
-    disputes.patchState({ pending: next.pending }); // «уже сообщали» команда не трогает
+    const { report, notes } = await collectDisputeReport(disputes.getState(), baliDateString());
+    await sendShortReport(msg.chat.id, report, notes);
   } catch (err) {
     await bot.sendMessage(msg.chat.id, `Не получилось: ${err.message}`);
   }
+});
+
+bot.onText(/^\/спор_подано(?:@\w+)?\s+([\s\S]+)$/i, async (msg, m) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  const r = disputes.addFiledClaims(disputes.getState(), m[1]);
+  if (r.error) { await bot.sendMessage(msg.chat.id, r.error); return; }
+  disputes.patchState({ filedClaims: r.filedClaims });
+  await bot.sendMessage(msg.chat.id, `Запомнил заявки (${r.count} шт.) как поданные.`);
 });
 
 bot.on('callback_query', async (query) => {
