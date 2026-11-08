@@ -181,6 +181,8 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.get('/api/events', (req, res) => {
   res.json(readEvents());
 });
+// «Календарь помощников» — страница /helpers и её JSON (только чтение таблицы, без ИИ).
+require('./helpersApi').registerHelpers(app);
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`HTTP-сервер запущен на порту ${port}`));
 

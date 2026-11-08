@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Helpers Calendar · Календарь помощников</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#ffffff; --ink:#1b2a4a; --ink-soft:#52596b; --muted:#8b8f9c;
+    --accent:#c9a44c; --accent-soft:#f6ecd2; --accent-deep:#a97f2e; --line:rgba(27,42,74,0.12);
+    --red:#d64545; --red-bg:#fdecec; --orange:#e8892b; --orange-bg:#fff1e0; --green:#2f9e5b; --green-bg:#e6f5ec;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{background:var(--bg);font-family:'Inter',sans-serif;color:var(--ink);min-height:100vh;line-height:1.4;}
+  .wrap{max-width:720px;margin:0 auto;padding:0 12px 40px;}
+  header{padding:16px 4px 8px;}
+  h1{font-family:'Cormorant Garamond',serif;font-weight:600;font-size:26px;line-height:1.1;}
+  .sub{font-family:'Cormorant Garamond',serif;font-style:italic;color:var(--ink-soft);font-size:16px;}
+  .bar{position:sticky;top:0;z-index:5;background:var(--bg);padding:8px 0 6px;border-bottom:1px solid var(--line);}
+  .dates{display:flex;gap:8px;align-items:center;}
+  .dates button,.dates input{height:44px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--ink);font:inherit;font-size:16px;}
+  .dates button{width:44px;font-size:20px;cursor:pointer;}
+  .dates input{flex:1;min-width:0;padding:0 10px;text-align:center;}
+  .dayline{margin:6px 2px 0;color:var(--ink-soft);font-size:13px;display:flex;justify-content:space-between;align-items:center;gap:8px;}
+  .today{border:1px solid var(--line);border-radius:999px;background:#fff;color:var(--ink);font:inherit;font-size:13px;font-weight:500;padding:5px 12px;cursor:pointer;}
+  .chips{display:flex;gap:6px;overflow-x:auto;padding:8px 0 2px;scrollbar-width:none;}
+  .chips::-webkit-scrollbar{display:none;}
+  .chip{flex:none;border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:999px;padding:6px 12px;font:inherit;font-size:14px;cursor:pointer;}
+  .chip.on{background:var(--ink);color:#fff;border-color:var(--ink);}
+  .legend{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:12px;color:var(--ink-soft);margin:10px 2px 4px;}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-top:12px;}
+  .card.red{border-left:5px solid var(--red);} .card.orange{border-left:5px solid var(--orange);} .card.green{border-left:5px solid var(--green);}
+  .title{font-weight:600;font-size:16px;}
+  .prog{color:var(--ink-soft);font-size:13px;margin-top:2px;}
+  .times{margin-top:8px;font-size:14px;display:flex;flex-wrap:wrap;gap:2px 14px;}
+  .times b{font-weight:600;}
+  .host{margin-top:10px;padding:8px 10px;background:var(--accent-soft);border-radius:10px;font-size:14px;}
+  .host small{display:block;color:var(--ink-soft);font-size:12px;margin-top:2px;}
+  .sec{margin-top:12px;font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--accent-deep);}
+  .role{display:flex;gap:8px;align-items:flex-start;padding:7px 0;border-top:1px solid var(--line);font-size:14px;}
+  .role:first-of-type{border-top:0;}
+  .role .dot{flex:none;width:22px;text-align:center;}
+  .role .what{flex:1;min-width:0;}
+  .role .what small{display:block;color:var(--muted);font-size:12px;}
+  .role .who{margin-top:1px;word-break:break-word;}
+  .role .who.empty{color:var(--muted);}
+  .role.red .who.empty{color:var(--red);}
+  .info .who{color:var(--ink-soft);}
+  .cty{margin-top:8px;border:1px solid var(--line);border-radius:10px;padding:2px 10px;}
+  .cty.red{background:var(--red-bg);} .cty.orange{background:var(--orange-bg);}
+  .cty h3{font-size:13px;font-weight:600;padding-top:6px;}
+  .notice{margin-top:14px;padding:10px 12px;background:#fff6d6;border:1px solid #ecd48a;border-radius:10px;font-size:13px;}
+  .empty-day{margin-top:24px;text-align:center;color:var(--ink-soft);}
+  .foot{margin-top:18px;color:var(--muted);font-size:12px;text-align:center;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Helpers Calendar</h1>
+    <div class="sub">Календарь помощников · who is needed on each broadcast / кто нужен на каждом эфире</div>
+  </header>
+
+  <div class="bar">
+    <div class="dates">
+      <button id="prev" aria-label="Previous day / День назад">‹</button>
+      <input id="date" type="date" aria-label="Date / Дата">
+      <button id="next" aria-label="Next day / День вперёд">›</button>
+    </div>
+    <div class="dayline"><span id="dayline"></span> <button id="today" class="today">Today / Сегодня</button></div>
+    <div class="chips" id="chips"></div>
+  </div>
+
+  <div class="legend">
+    <span>🔴 Urgent: both places empty / Срочно: оба места пусты</span>
+    <span>🟠 Need a second person / Нужен второй</span>
+    <span>🟢 Covered / Закрыто</span>
+  </div>
+
+  <div id="list"></div>
+  <div id="failed"></div>
+  <div class="foot">Dates and times: Arizona (AZ) and Moscow (MSK) · Дата и время: Аризона (AZ) и Москва (МСК)</div>
+</div>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
+  var DOT = { red: '🔴', orange: '🟠', green: '🟢' };
+  var RANK = { red: 0, orange: 1, green: 2 };
+  var WEEKDAY = ['Sun / Вс', 'Mon / Пн', 'Tue / Вт', 'Wed / Ср', 'Thu / Чт', 'Fri / Пт', 'Sat / Сб'];
+
+  var state = { date: azToday(), country: 'ALL', data: null };
+
+  function azToday() {
+    try { return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' }); } catch (e) { return new Date().toISOString().slice(0, 10); }
+  }
+  function shift(dateStr, n) {
+    var d = new Date(dateStr + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10);
+  }
+  function hm(min) {
+    if (min == null) return '—';
+    var m = ((min % 1440) + 1440) % 1440; return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+  }
+  function dur(min) {
+    if (min == null) return '';
+    var h = Math.floor(min / 60), m = min % 60; return (h ? h + 'h ' : '') + (m ? m + 'm' : '') || '0m';
+  }
+  function status(places) { // both places empty → red, one → orange, two → green
+    var n = (places || []).filter(Boolean).length; return n === 0 ? 'red' : n === 1 ? 'orange' : 'green';
+  }
+  function names(places) { return (places || []).filter(Boolean); }
+
+  // roles that take part in colours/sorting for the chosen filter
+  function visibleRoles(e) {
+    var out = [];
+    if (e.class && e.class.mc) out.push({ kind: 'mc', country: null, places: e.class.mc });
+    Object.keys(e.countries || {}).forEach(function (code) {
+      if (state.country !== 'ALL' && code !== state.country) return;
+      var c = e.countries[code];
+      if (c.assistance) out.push({ kind: 'assistance', country: code, places: c.assistance });
+      if (c.rec) out.push({ kind: 'rec', country: code, places: c.rec });
+    });
+    return out;
+  }
+  function worst(roles) {
+    var w = 'green';
+    roles.forEach(function (r) { if (RANK[status(r.places)] < RANK[w]) w = status(r.places); });
+    return roles.length ? w : 'green';
+  }
+
+  var LABEL = {
+    mc: ['MC', 'Mic check', 'Проверка микрофона'],
+    assistance: ['Assistance', 'Relay', 'Ретрансляция'],
+    rec: ['REC & BK', 'Screen recording', 'Запись экрана'],
+    coHost: ['Co-Host', '', ''],
+    adminInt: ['Admin INT', '', '']
+  };
+
+  function roleHtml(kind, places, colored) {
+    var l = LABEL[kind], st = colored ? status(places) : '', ns = names(places);
+    var sub = l[1] ? '<small>' + esc(l[1]) + ' / ' + esc(l[2]) + '</small>' : '';
+    var who = ns.length ? esc(ns.join(' + ')) : (colored ? 'empty / пусто' : 'empty / пусто');
+    return '<div class="role ' + st + (colored ? '' : ' info') + '"><div class="dot">' + (colored ? DOT[st] : '•') + '</div>' +
+      '<div class="what"><b>' + esc(l[0]) + '</b>' + sub + '<div class="who' + (ns.length ? '' : ' empty') + '">' + who + '</div></div></div>';
+  }
+
+  function cardHtml(e) {
+    var roles = visibleRoles(e), w = worst(roles);
+    var h = '<div class="card ' + w + '">';
+    h += '<div class="title">' + esc(e.title) + '</div><div class="prog">' + esc(e.program) + '</div>';
+    h += '<div class="times"><span><b>AZ</b> ' + hm(e.azStartMin) + '–' + hm(e.azEndMin) + '</span>' +
+      '<span><b>MSK / МСК</b> ' + hm(e.mskStartMin) + '–' + hm(e.mskEndMin) + (e.mskDayOffset ? ' (+' + e.mskDayOffset + ' day / дн.)' : '') + '</span>' +
+      (e.durationMin != null ? '<span>⏱ ' + esc(dur(e.durationMin)) + '</span>' : '') + '</div>';
+    h += '<div class="host"><b>Host / Хост:</b> ' + (e.host ? esc(e.host) : '—') +
+      '<small>Questions about this session: ask this person / Вопросы по эфиру: к нему</small></div>';
+
+    h += '<div class="sec">Class / Общее</div>';
+    if (e.class && e.class.mc) h += roleHtml('mc', e.class.mc, true);
+    if (e.class && e.class.coHost) h += roleHtml('coHost', e.class.coHost, false);
+    if (e.class && e.class.adminInt) h += roleHtml('adminInt', e.class.adminInt, false);
+
+    var codes = Object.keys(e.countries || {}).filter(function (c) { return state.country === 'ALL' || c === state.country; });
+    codes.sort(function (a, b) {
+      var ra = RANK[worst(visibleRoles({ class: {}, countries: pick(e, a) }))], rb = RANK[worst(visibleRoles({ class: {}, countries: pick(e, b) }))];
+      return ra - rb || a.localeCompare(b);
+    });
+    codes.forEach(function (code) {
+      var c = e.countries[code];
+      var cw = worst(visibleRoles({ class: {}, countries: pick(e, code) }));
+      h += '<div class="cty ' + cw + '"><h3>' + esc(code) + '</h3>';
+      if (c.assistance) h += roleHtml('assistance', c.assistance, true);
+      if (c.rec) h += roleHtml('rec', c.rec, true);
+      h += '</div>';
+    });
+    return h + '</div>';
+  }
+  function pick(e, code) { var o = {}; o[code] = e.countries[code]; return o; }
+
+  function render() {
+    var d = state.data, list = $('list');
+    var dt = new Date(state.date + 'T00:00:00Z');
+    $('dayline').textContent = WEEKDAY[dt.getUTCDay()] + ' · ' + state.date + ' (AZ)';
+    $('date').value = state.date;
+    if (!d) { list.innerHTML = '<div class="empty-day">Loading… / Загрузка…</div>'; return; }
+
+    var chips = ['ALL'].concat(d.countries || []);
+    $('chips').innerHTML = chips.map(function (c) {
+      return '<button class="chip' + (c === state.country ? ' on' : '') + '" data-c="' + esc(c) + '">' + (c === 'ALL' ? 'All / Все' : esc(c)) + '</button>';
+    }).join('');
+
+    var evs = (d.events || []).slice().map(function (e) { return { e: e, w: worst(visibleRoles(e)) }; });
+    evs.sort(function (a, b) { return RANK[a.w] - RANK[b.w] || (a.e.azStartMin || 0) - (b.e.azStartMin || 0); });
+    list.innerHTML = evs.length ? evs.map(function (x) { return cardHtml(x.e); }).join('') :
+      '<div class="empty-day">No broadcasts on this day / В этот день эфиров нет</div>';
+    $('failed').innerHTML = (d.failedTabs && d.failedTabs.length) ?
+      '<div class="notice">⚠️ Could not read / Не удалось прочитать: ' + esc(d.failedTabs.map(function (t) { return String(t).split(':')[0]; }).join(', ')) + '</div>' : '';
+  }
+
+  var token = 0;
+  function load() {
+    var my = ++token; state.data = null; render();
+    fetch('/api/helpers/day?date=' + encodeURIComponent(state.date)).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status); return r.json();
+    }).then(function (j) { if (my === token) { state.data = j; render(); } })
+      .catch(function () {
+        if (my !== token) return;
+        $('list').innerHTML = '<div class="notice">⚠️ Could not load the schedule, try again in a minute / Не удалось загрузить расписание, попробуйте через минуту</div>';
+      });
+  }
+
+  $('prev').onclick = function () { state.date = shift(state.date, -1); load(); };
+  $('next').onclick = function () { state.date = shift(state.date, 1); load(); };
+  $('today').onclick = function () { state.date = azToday(); load(); };
+  $('date').onchange = function () { if (/^\d{4}-\d{2}-\d{2}$/.test(this.value)) { state.date = this.value; load(); } };
+  $('chips').onclick = function (ev) { var c = ev.target.getAttribute && ev.target.getAttribute('data-c'); if (c) { state.country = c; render(); } };
+  load();
+})();
+</script>
+</body>
+</html>

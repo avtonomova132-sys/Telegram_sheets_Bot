@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { extractRoles } = require('./helperRoles');
 
 const CONFIG_PATH = path.join(__dirname, 'tabs-config.json');
 const TAGS_PATH = path.join(__dirname, 'community-tags.json');
@@ -643,7 +644,9 @@ function rowMarkedOff(row) {
   });
 }
 
-function parseTabEvents(tabName, rows) {
+// opts.withRoles: also attach `roles` (helper places per role, see helperRoles.js) — used only by
+// the /helpers page; every other caller gets exactly the events it always got.
+function parseTabEvents(tabName, rows, opts = {}) {
   const segments = findHeaderSegments(rows, tabName);
   const events = [];
   const offEvents = [];
@@ -731,6 +734,7 @@ function parseTabEvents(tabName, rows) {
         mskEndMin: mskEnd.min,
         mskEndDayOffset: mskEnd.dayOffset,
       };
+      if (opts.withRoles) event.roles = extractRoles(rows, seg, r);
       if (rowMarkedOff(row)) offEvents.push(event);
       else events.push(event);
     }
@@ -739,13 +743,13 @@ function parseTabEvents(tabName, rows) {
   return events;
 }
 
-async function fetchTabEvents(spreadsheetId, tab) {
+async function fetchTabEvents(spreadsheetId, tab, opts = {}) {
   const url = csvUrl(spreadsheetId, tab.gid);
   const res = await fetchWithTimeout(url, 25000);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const text = await res.text();
   const rows = parseCsv(text);
-  const events = parseTabEvents(tab.name, rows);
+  const events = parseTabEvents(tab.name, rows, opts);
   // Deep link to the PHYSICAL tab this event was read from — attached here,
   // not looked up later from e.tabName, because a multi-program tab (e.g.
   // "DCC & GBOCS") reports several different programLabel values off one
@@ -754,7 +758,7 @@ async function fetchTabEvents(spreadsheetId, tab) {
   // straight to where its host would actually sign up, not the general
   // host-signup sheet.
   const tabUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit?gid=${tab.gid}#gid=${tab.gid}`;
-  const withUrl = events.map((e) => ({ ...e, tabUrl }));
+  const withUrl = events.map((e) => ({ ...e, tabUrl, ...(opts.withRoles ? { configTab: tab.name } : {}) }));
   withUrl.offEvents = (events.offEvents || []).map((e) => ({ ...e, tabUrl }));
   return withUrl;
 }
@@ -769,12 +773,12 @@ function sleep(ms) {
 // reproduced this reliably. staggerMs offsets each tab's first attempt so
 // they don't all land in the same instant, and up to 2 retries with a
 // short backoff absorb whatever's still transient after that.
-async function fetchTabEventsResilient(spreadsheetId, tab, staggerMs = 0) {
+async function fetchTabEventsResilient(spreadsheetId, tab, staggerMs = 0, opts = {}) {
   if (staggerMs) await sleep(staggerMs);
   let lastErr;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      return await fetchTabEvents(spreadsheetId, tab);
+      return await fetchTabEvents(spreadsheetId, tab, opts);
     } catch (err) {
       lastErr = err;
       if (attempt < 3) await sleep(attempt * 800);
@@ -788,12 +792,12 @@ async function fetchTabEventsResilient(spreadsheetId, tab, staggerMs = 0) {
 // runDailyHostDiffCheck so both get the same resilience against Google's
 // rate limiting. Returns one entry per tab; `error` is set instead of
 // `events` for a tab that never succeeded after retries.
-async function fetchAllTabEvents(spreadsheetId, tabs) {
+async function fetchAllTabEvents(spreadsheetId, tabs, opts = {}) {
   const results = [];
   await Promise.all(
     tabs.map(async (tab, i) => {
       try {
-        const events = await fetchTabEventsResilient(spreadsheetId, tab, i * 150);
+        const events = await fetchTabEventsResilient(spreadsheetId, tab, i * 150, opts);
         results.push({ tab, events });
       } catch (err) {
         results.push({ tab, error: err });
@@ -844,14 +848,14 @@ function inRange(date, start, end) {
   return date >= start && date <= end;
 }
 
-async function collectWeekEvents(range) {
+async function collectWeekEvents(range, opts = {}) {
   const config = loadConfig();
   const allEvents = [];
   const allOff = [];
   const failedTabs = [];
   const debugCounts = [];
 
-  const results = await fetchAllTabEvents(config.spreadsheetId, config.tabs);
+  const results = await fetchAllTabEvents(config.spreadsheetId, config.tabs, opts);
   for (const { tab, events, error } of results) {
     if (error) {
       debugCounts.push({ name: tab.name, total: 0, inRange: 0, error: error.message });
