@@ -1818,9 +1818,10 @@ async function rebuildReminderPreview(bot, now = Date.now()) {
 // Cancel the waiting announce preview(s) of a week and send a new one (same as
 // /announce) built from the current sheet rules and host list. Nothing goes to
 // the group. `once` makes it a one-shot: remembered in the scheduler state.
-async function reissueAnnouncePreview(bot, { monday, once = null, now = Date.now() }) {
+async function reissueAnnouncePreview(bot, { monday, once = null, now = Date.now(), before = null }) {
   return runSerialStrict(async () => {
     if (once && readJson({ messages: {}, batches: [] }).scheduler?.oneShots?.[once]) return { skipped: true };
+    if (before) await before();
     const weekStart = isoOf(monday);
     const olds = pendingList().filter((p) => p.kind === 'announce' && p.weekStart === weekStart);
     let prevItems = null;
@@ -1840,6 +1841,27 @@ async function reissueAnnouncePreview(bot, { monday, once = null, now = Date.now
     }
     return { ...res, cancelled: olds.length };
   });
+}
+
+// One short note to Elena before the new preview: how many sessions went in and how many were left
+// out as «Rebroadcast» (by program). Nothing goes to the group.
+async function rebroadcastNote(bot, monday, now = Date.now()) {
+  const range = range7(monday);
+  const collected = await collectWeekEvents(range);
+  const open = collected.events.filter((e) => !e.hasHost && !isPastAzStart(e, new Date(now)));
+  const temp = collected.tempExcluded || [];
+  const byProgram = {};
+  temp.forEach((t) => {
+    const k = t.tabName || '—';
+    byProgram[k] = (byProgram[k] || 0) + 1;
+  });
+  const progs = Object.keys(byProgram).map((k) => `${escapeHtml(k)} — ${byProgram[k]}`).join('; ');
+  const lines = [
+    `📋 Анонс ${weekLabel(range)}: в Анонс вошло эфиров без хоста — <b>${open.length}</b> (всего эфиров на неделе — ${collected.events.length}).`,
+    temp.length ? `Исключено «Rebroadcast» (временно): <b>${temp.length}</b>${progs ? ` — по программам: ${progs}` : ''}.` : 'Эфиров «Rebroadcast» на этой неделе не нашлось.',
+  ];
+  if (open.length === 0) lines.push('Свободных эфиров после исключения не осталось.');
+  await sendToElena(bot, lines.join('\n'));
 }
 
 // ---- The answer: button, "да"/"нет" reply, /yes, /no ----
@@ -2456,6 +2478,7 @@ module.exports = {
   runTuesdayPreview,
   rebuildReminderPreview,
   reissueAnnouncePreview,
+  rebroadcastNote,
   newestPendingAt: () => (pendingList()[0] || {}).createdAt || 0,
   addCountedExtraForEvent,
   urgentStep,

@@ -644,12 +644,21 @@ function rowMarkedOff(row) {
   });
 }
 
+const TEMP_EXCLUDE_TITLE_RE = /rebroadcast/i;
+
+// The long standing note some tabs put in front of the session title («Please note that only
+// volunteers listed in the table … Please take care of your seeds.») is not part of the title.
+function stripTitleNote(title) {
+  return String(title || '').replace(/^\s*please note\b[\s\S]*?\bseeds\.?\s*/i, '').trim();
+}
+
 // opts.withRoles: also attach `roles` (helper places per role, see helperRoles.js) — used only by
 // the /helpers page; every other caller gets exactly the events it always got.
 function parseTabEvents(tabName, rows, opts = {}) {
   const segments = findHeaderSegments(rows, tabName);
   const events = [];
   const offEvents = [];
+  const tempExcluded = [];
   let tabYear = null; // last year seen in an explicit Data date — base for year-less cells
 
   for (const seg of segments) {
@@ -657,7 +666,7 @@ function parseTabEvents(tabName, rows, opts = {}) {
 
     for (let r = seg.headerRowIndex + 1; r < seg.endRowIndex; r++) {
       const row = rows[r];
-      const title = normalize(row[seg.titleCol]);
+      const title = stripTitleNote(normalize(row[seg.titleCol]));
       const rawHost = normalize(row[seg.hostCol]);
       const azStartMin = parseTimeToMinutes(row[seg.azCol]);
       const azEndMin = parseTimeToMinutes(row[seg.azEndCol]);
@@ -690,15 +699,21 @@ function parseTabEvents(tabName, rows, opts = {}) {
         if (dateCell) doubts.push({ code: 'date-unreadable', note: `ячейку даты «${dateCell}» не удалось прочитать — взял дату предыдущей строки (${formatDDMM(date)})` });
       }
       if (!date || azStartMin === null || azEndMin === null) continue;
+      // PERMANENT RULE (Elena, 2026-11-08): a row whose start time equals its end time is not a
+      // broadcast (e.g. the «Break» row 17:30–17:30) — never an event anywhere.
+      if (azStartMin === azEndMin) continue;
       if (isExcludedProgramEvent(title, seg.programLabel)) continue;
-
-      const titleDate = parseDateFromText(title);
-      if (titleDate && titleDate.getTime() !== date.getTime()) {
-        doubts.push({
-          code: 'date-mismatch',
-          note: `в таблице эфир стоит на ${formatDDMM(date)}, а в названии написано ${formatDDMM(titleDate)} — я взял дату из таблицы`,
-        });
+      // TEMPORARY (Elena, 2026-11-08, until she says otherwise): «Rebroadcast …» sessions are left
+      // out of the Announce, reminders, summaries and counters. NOT part of the permanent excluded
+      // programs. The /helpers page (opts.withRoles) keeps showing them.
+      if (!opts.withRoles && TEMP_EXCLUDE_TITLE_RE.test(title)) {
+        tempExcluded.push({ title, tabName: seg.programLabel, date });
+        continue;
       }
+
+      // The date comes only from Data + AZ; a different date in the title is no longer a reason
+      // to hold the Announce (Elena, 2026-11-08) — kept as `titleDate` for the «strays» note only.
+      const titleDate = parseDateFromText(title);
       // A session may run past midnight (23:00–01:00), so the length is taken
       // modulo a day; zero or more than 10 hours means a typo in the times.
       const durationMin = (((azEndMin - azStartMin) % 1440) + 1440) % 1440;
@@ -740,6 +755,7 @@ function parseTabEvents(tabName, rows, opts = {}) {
     }
   }
   events.offEvents = offEvents;
+  events.tempExcluded = tempExcluded;
   return events;
 }
 
@@ -760,6 +776,7 @@ async function fetchTabEvents(spreadsheetId, tab, opts = {}) {
   const tabUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit?gid=${tab.gid}#gid=${tab.gid}`;
   const withUrl = events.map((e) => ({ ...e, tabUrl, ...(opts.withRoles ? { configTab: tab.name } : {}) }));
   withUrl.offEvents = (events.offEvents || []).map((e) => ({ ...e, tabUrl }));
+  withUrl.tempExcluded = events.tempExcluded || [];
   return withUrl;
 }
 
@@ -852,6 +869,7 @@ async function collectWeekEvents(range, opts = {}) {
   const config = loadConfig();
   const allEvents = [];
   const allOff = [];
+  const allTemp = [];
   const failedTabs = [];
   const debugCounts = [];
 
@@ -866,6 +884,7 @@ async function collectWeekEvents(range, opts = {}) {
     debugCounts.push({ name: tab.name, total: events.length, inRange: inRangeCount });
     allEvents.push(...events);
     allOff.push(...(events.offEvents || []));
+    allTemp.push(...(events.tempExcluded || []));
   }
 
   const events = allEvents
@@ -886,7 +905,8 @@ async function collectWeekEvents(range, opts = {}) {
     .filter((e) => inRange(e.date, range.start, range.end))
     .sort((a, b) => a.date - b.date || (a.azStartMin ?? 0) - (b.azStartMin ?? 0));
 
-  return { events, failedTabs, debugCounts, strays, skippedOff };
+  const tempExcluded = allTemp.filter((e) => inRange(e.date, range.start, range.end));
+  return { events, failedTabs, debugCounts, strays, skippedOff, tempExcluded };
 }
 
 // One "needs checking" entry as HTML: where the session is, what the sheet
