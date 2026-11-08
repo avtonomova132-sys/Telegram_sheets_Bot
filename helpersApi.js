@@ -28,6 +28,7 @@ function toJson(e) {
     day: e.date.toISOString().slice(0, 10),
     title: e.title,
     program: programName(e),
+    tab: e.configTab || '', // sheet tab name: the program filter on the page groups by it (tabs starting with «ACI» → one)
     azStartMin: e.azStartMin,
     azEndMin: e.azEndMin,
     mskStartMin: e.mskStartMin,

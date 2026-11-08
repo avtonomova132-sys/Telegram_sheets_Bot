@@ -29,6 +29,8 @@
   .chips::-webkit-scrollbar{display:none;}
   .chip{flex:none;border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:999px;padding:6px 12px;font:inherit;font-size:14px;cursor:pointer;}
   .chip.on{background:var(--ink);color:#fff;border-color:var(--ink);}
+  .lang{padding:6px 0 0;font-size:13px;color:var(--ink);}
+  .lang select{font:inherit;font-size:13px;padding:3px 6px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);}
   .legend{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:12px;color:var(--ink-soft);margin:10px 2px 4px;}
   .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-top:12px;}
   .card.red{border-left:5px solid var(--red);} .card.orange{border-left:5px solid var(--orange);} .card.green{border-left:5px solid var(--green);}
@@ -71,6 +73,7 @@
     </div>
     <div class="dayline"><span id="dayline"></span> <button id="today" class="today">Today / Сегодня</button></div>
     <div class="chips" id="chips"></div>
+    <div class="lang"><label for="lang">Language / Язык</label> <select id="lang"></select></div>
   </div>
 
   <div class="legend">
@@ -92,7 +95,9 @@
   var RANK = { red: 0, orange: 1, green: 2 };
   var WEEKDAY = ['Sun / Вс', 'Mon / Пн', 'Tue / Вт', 'Wed / Ср', 'Thu / Чт', 'Fri / Пт', 'Sat / Сб'];
 
-  var state = { date: azToday(), country: 'ALL', data: null };
+  var state = { date: azToday(), country: 'ALL', program: 'ALL', data: null };
+  // program filter key = sheet tab name; every tab starting with «ACI» is one program «ACI»
+  function progKey(e) { var t = String(e.tab || e.program || '').trim(); return /^aci/i.test(t) ? 'ACI' : (t || '—'); }
 
   function azToday() {
     try { return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' }); } catch (e) { return new Date().toISOString().slice(0, 10); }
@@ -186,12 +191,30 @@
     $('date').value = state.date;
     if (!d) { list.innerHTML = '<div class="empty-day">Loading… / Загрузка…</div>'; return; }
 
-    var chips = ['ALL'].concat(d.countries || []);
-    $('chips').innerHTML = chips.map(function (c) {
-      return '<button class="chip' + (c === state.country ? ' on' : '') + '" data-c="' + esc(c) + '">' + (c === 'ALL' ? 'All / Все' : esc(c)) + '</button>';
+    var all = d.events || [];
+    // programs present this day, red ones first
+    var progs = {};
+    all.forEach(function (e) {
+      var k = progKey(e), w = worst(visibleRoles(e));
+      if (!(k in progs) || RANK[w] < RANK[progs[k]]) progs[k] = w;
+    });
+    var keys = Object.keys(progs).sort(function (a, b) { return (progs[a] === 'red' ? 0 : 1) - (progs[b] === 'red' ? 0 : 1) || a.localeCompare(b); });
+    if (state.program !== 'ALL' && !(state.program in progs)) state.program = 'ALL';
+    $('chips').innerHTML = ['ALL'].concat(keys).map(function (k) {
+      return '<button class="chip' + (k === state.program ? ' on' : '') + '" data-p="' + esc(k) + '">' +
+        (k === 'ALL' ? 'All / Все' : (progs[k] === 'red' ? '🔴 ' : '') + esc(k)) + '</button>';
     }).join('');
 
-    var evs = (d.events || []).slice().map(function (e) { return { e: e, w: worst(visibleRoles(e)) }; });
+    var inProg = all.filter(function (e) { return state.program === 'ALL' || progKey(e) === state.program; });
+    var langs = {};
+    inProg.forEach(function (e) { Object.keys(e.countries || {}).forEach(function (c) { langs[c] = 1; }); });
+    var codes = Object.keys(langs).sort();
+    if (state.country !== 'ALL' && !langs[state.country]) state.country = 'ALL';
+    $('lang').innerHTML = ['ALL'].concat(codes).map(function (c) {
+      return '<option value="' + esc(c) + '"' + (c === state.country ? ' selected' : '') + '>' + (c === 'ALL' ? 'All / Все' : esc(c)) + '</option>';
+    }).join('');
+
+    var evs = inProg.map(function (e) { return { e: e, w: worst(visibleRoles(e)) }; });
     evs.sort(function (a, b) { return RANK[a.w] - RANK[b.w] || (a.e.azStartMin || 0) - (b.e.azStartMin || 0); });
     list.innerHTML = evs.length ? evs.map(function (x) { return cardHtml(x.e); }).join('') :
       '<div class="empty-day">No broadcasts on this day / В этот день эфиров нет</div>';
@@ -215,7 +238,8 @@
   $('next').onclick = function () { state.date = shift(state.date, 1); load(); };
   $('today').onclick = function () { state.date = azToday(); load(); };
   $('date').onchange = function () { if (/^\d{4}-\d{2}-\d{2}$/.test(this.value)) { state.date = this.value; load(); } };
-  $('chips').onclick = function (ev) { var c = ev.target.getAttribute && ev.target.getAttribute('data-c'); if (c) { state.country = c; render(); } };
+  $('chips').onclick = function (ev) { var p = ev.target.getAttribute && ev.target.getAttribute('data-p'); if (p) { state.program = p; render(); } };
+  $('lang').onchange = function () { state.country = this.value; render(); };
   load();
 })();
 </script>
