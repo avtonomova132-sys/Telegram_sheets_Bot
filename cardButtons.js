@@ -1821,7 +1821,7 @@ async function rebuildReminderPreview(bot, now = Date.now()) {
 async function reissueAnnouncePreview(bot, { monday, once = null, now = Date.now(), before = null }) {
   return runSerialStrict(async () => {
     if (once && readJson({ messages: {}, batches: [] }).scheduler?.oneShots?.[once]) return { skipped: true };
-    if (before) await before();
+    const pre = before ? await before() : null;
     const weekStart = isoOf(monday);
     const olds = pendingList().filter((p) => p.kind === 'announce' && p.weekStart === weekStart);
     let prevItems = null;
@@ -1831,6 +1831,16 @@ async function reissueAnnouncePreview(bot, { monday, once = null, now = Date.now
         s.pending[p.id].status = 'cancelled';
       });
       await removeButtons(bot, p);
+    }
+    if (pre && pre.stop) {
+      // Too many sessions left: no new preview, the old one is cancelled, nothing goes to the group.
+      if (once) {
+        updateScheduler((s) => {
+          s.oneShots = s.oneShots || {};
+          s.oneShots[once] = now;
+        });
+      }
+      return { stopped: true, cancelled: olds.length };
     }
     const res = await createAnnouncePreview(bot, { monday, now, prevItems, manual: true });
     if (once) {
@@ -1845,20 +1855,38 @@ async function reissueAnnouncePreview(bot, { monday, once = null, now = Date.now
 
 // One short note to Elena before the new preview: how many sessions went in and how many were left
 // out as «Rebroadcast» (by program). Nothing goes to the group.
+const MAX_LISTED_EVENTS = 6;
 async function rebroadcastNote(bot, monday, now = Date.now()) {
   const range = range7(monday);
   const collected = await collectWeekEvents(range);
-  const open = collected.events.filter((e) => !e.hasHost && !isPastAzStart(e, new Date(now)));
-  const byProgram = {};
-  open.forEach((e) => {
-    const k = String(e.tabName || '—').slice(0, 60);
-    byProgram[k] = (byProgram[k] || 0) + 1;
-  });
-  const progs = Object.keys(byProgram).map((k) => `${escapeHtml(k)} — ${byProgram[k]}`).join('; ');
-  const line = open.length
-    ? `📋 Анонс ${weekLabel(range)}: вошло эфиров без хоста — <b>${open.length}</b>. Программы: ${progs}. («Rebroadcast» и «Break» не учтены.)`
-    : `📋 Анонс ${weekLabel(range)}: свободных эфиров без хоста не осталось («Rebroadcast» и «Break» не учтены).`;
-  await sendToElena(bot, line);
+  const storeNow = readJson({ messages: {}, batches: [] });
+  // The same list the Announce preview is built from.
+  const open = collected.events
+    .filter((e) => (e.hasHost || !isPastAzStart(e, new Date(now))) && (e.hasHost || !reservationOnCards(storeNow, WVP_GROUP_ID, e)))
+    .filter((e) => !e.hasHost);
+  const untitled = (collected.untitled || []).filter((u) => !u.hasHost);
+  const lines = [];
+  if (untitled.length) {
+    lines.push(
+      '⚠️ Без названия (в Анонс не включены): ' +
+        untitled.map((u) => `${escapeHtml(u.sheetTab || u.tabName)}, строка ${u.row}, ${ddmm(u.date)} ${formatRange24h(u.azStartMin, u.azEndMin)} AZ`).join('; ')
+    );
+  }
+  if (open.length > MAX_LISTED_EVENTS) {
+    const byTab = {};
+    open.forEach((e) => {
+      const k = String(e.sheetTab || e.tabName || '—').slice(0, 60);
+      byTab[k] = (byTab[k] || 0) + 1;
+    });
+    await sendToElena(
+      bot,
+      [`📋 Анонс ${weekLabel(range)}: после исключений эфиров без хоста — <b>${open.length}</b> (больше ${MAX_LISTED_EVENTS}). Превью не присылаю, в группу ничего не отправлено.`, `Вкладки: ${Object.keys(byTab).map((k) => `${escapeHtml(k)} — ${byTab[k]}`).join('; ')}.`, ...lines].join('\n')
+    );
+    return { stop: true };
+  }
+  const list = open.map((e) => `• ${escapeHtml(e.sheetTab || e.tabName)} · стр. ${e.row} · ${escapeHtml(e.title || '—')} · ${ddmm(e.date)} ${formatRange24h(e.azStartMin, e.azEndMin)} AZ`);
+  await sendToElena(bot, [`📋 Анонс ${weekLabel(range)}: вошло эфиров без хоста — <b>${open.length}</b>${open.length ? ':' : '. Свободных эфиров не осталось.'}`, ...list, ...lines].join('\n'));
+  return { stop: false };
 }
 
 // ---- The answer: button, "да"/"нет" reply, /yes, /no ----

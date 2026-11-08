@@ -334,6 +334,8 @@ function findHeaderSegments(rows, fallbackLabel) {
       titleText &&
       looksLikeProgramTitle(titleText) &&
       !looksLikeNoHostNeededNote(titleText) &&
+      !/^\s*please note\b/i.test(titleText) && // the volunteers' note is never a program name
+
       hasNearbyZoomLink(rows, r + 1)
     ) {
       const cleaned = cleanProgramLabel(titleText);
@@ -645,6 +647,31 @@ function rowMarkedOff(row) {
 }
 
 const REBROADCAST_TITLE_RE = /rebroadcast/i;
+// One-off exclusion until 15.11.2026 (see parseTabEvents): the YSI tab and anything «USCA».
+const ONE_OFF_EXCLUDE_UNTIL = Date.UTC(2026, 10, 15);
+const ONE_OFF_TAB_RE = /^\s*ysi\b/i;
+const ONE_OFF_TEXT_RE = /usca/i;
+
+// The session title is empty (e.g. the cell held only the note): take it from another cell of the
+// same row, left of the Host column — nearest to the title column; text only (not times/dates/
+// names of one word), not the note, not a pause.
+function fallbackTitle(row, seg) {
+  const skip = new Set([seg.dateCol, seg.azCol, seg.azEndCol, seg.mskCol, seg.hostCol, seg.coHostCol, seg.titleCol]);
+  let best = '';
+  let bestDist = Infinity;
+  for (let c = 0; c < seg.hostCol; c++) {
+    if (skip.has(c)) continue;
+    const v = stripTitleNote(normalize(row[c]));
+    if (v.length < 10 || (v.match(/[A-Za-zА-Яа-я]/g) || []).length < 6) continue;
+    if (/\d{1,2}:\d{2}/.test(v) || /^#/.test(v) || BREAK_TITLE_RE.test(v) || /^https?:\/\//i.test(v)) continue;
+    const dist = Math.abs(c - seg.titleCol);
+    if (dist < bestDist) {
+      best = v;
+      bestDist = dist;
+    }
+  }
+  return best;
+}
 const BREAK_TITLE_RE = /^\s*(long\s+)?break\s*$/i;
 
 // The long standing note some tabs put in front of the session title («Please note that only
@@ -660,6 +687,7 @@ function parseTabEvents(tabName, rows, opts = {}) {
   const events = [];
   const offEvents = [];
   const tempExcluded = [];
+  const untitled = [];
   let tabYear = null; // last year seen in an explicit Data date — base for year-less cells
 
   for (const seg of segments) {
@@ -667,7 +695,8 @@ function parseTabEvents(tabName, rows, opts = {}) {
 
     for (let r = seg.headerRowIndex + 1; r < seg.endRowIndex; r++) {
       const row = rows[r];
-      const title = stripTitleNote(normalize(row[seg.titleCol]));
+      let title = stripTitleNote(normalize(row[seg.titleCol]));
+      if (!title) title = fallbackTitle(row, seg);
       const rawHost = normalize(row[seg.hostCol]);
       const azStartMin = parseTimeToMinutes(row[seg.azCol]);
       const azEndMin = parseTimeToMinutes(row[seg.azEndCol]);
@@ -712,6 +741,20 @@ function parseTabEvents(tabName, rows, opts = {}) {
       // reminders, summaries, «24 h» or counters. The /helpers page (opts.withRoles) still shows them.
       if (!opts.withRoles && REBROADCAST_TITLE_RE.test(title)) {
         tempExcluded.push({ title, tabName: seg.programLabel, date });
+        continue;
+      }
+      // ONE-OFF (Elena, 2026-11-08), only until 15.11 inclusive: the whole «YSI» tab and anything
+      // with «USCA» in the title/program is left out of the Announce, reminders, summaries, «24 h»
+      // and counters (USCA is running, the sheet is being edited, those hosts are their own). From
+      // 16.11 the tab is read like any other. NOT a permanent exclusion; /helpers is unaffected.
+      if (!opts.withRoles && date.getTime() <= ONE_OFF_EXCLUDE_UNTIL && (ONE_OFF_TAB_RE.test(tabName) || ONE_OFF_TEXT_RE.test(`${title} ${seg.programLabel} ${tabName}`))) {
+        tempExcluded.push({ title, tabName: seg.programLabel, date, oneOff: true });
+        continue;
+      }
+      // A card must carry the real session name: no title in the row (after cutting the note and
+      // looking at the neighbouring cells) → not an Announce event; reported to Elena separately.
+      if (!title && !opts.withRoles && !rowMarkedOff(row)) {
+        untitled.push({ tabName: seg.programLabel, sheetTab: tabName, row: r + 1, date, azStartMin, azEndMin, hasHost: rawHost.length > 0 });
         continue;
       }
 
@@ -760,6 +803,7 @@ function parseTabEvents(tabName, rows, opts = {}) {
   }
   events.offEvents = offEvents;
   events.tempExcluded = tempExcluded;
+  events.untitled = untitled;
   return events;
 }
 
@@ -778,7 +822,8 @@ async function fetchTabEvents(spreadsheetId, tab, opts = {}) {
   // straight to where its host would actually sign up, not the general
   // host-signup sheet.
   const tabUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit?gid=${tab.gid}#gid=${tab.gid}`;
-  const withUrl = events.map((e) => ({ ...e, tabUrl, ...(opts.withRoles ? { configTab: tab.name } : {}) }));
+  const withUrl = events.map((e) => ({ ...e, tabUrl, sheetTab: tab.name, ...(opts.withRoles ? { configTab: tab.name } : {}) }));
+  withUrl.untitled = events.untitled || [];
   withUrl.offEvents = (events.offEvents || []).map((e) => ({ ...e, tabUrl }));
   withUrl.tempExcluded = events.tempExcluded || [];
   return withUrl;
@@ -874,6 +919,7 @@ async function collectWeekEvents(range, opts = {}) {
   const allEvents = [];
   const allOff = [];
   const allTemp = [];
+  const allUntitled = [];
   const failedTabs = [];
   const debugCounts = [];
 
@@ -889,6 +935,7 @@ async function collectWeekEvents(range, opts = {}) {
     allEvents.push(...events);
     allOff.push(...(events.offEvents || []));
     allTemp.push(...(events.tempExcluded || []));
+    allUntitled.push(...(events.untitled || []));
   }
 
   const events = allEvents
@@ -910,7 +957,8 @@ async function collectWeekEvents(range, opts = {}) {
     .sort((a, b) => a.date - b.date || (a.azStartMin ?? 0) - (b.azStartMin ?? 0));
 
   const tempExcluded = allTemp.filter((e) => inRange(e.date, range.start, range.end));
-  return { events, failedTabs, debugCounts, strays, skippedOff, tempExcluded };
+  const untitled = allUntitled.filter((e) => inRange(e.date, range.start, range.end));
+  return { events, failedTabs, debugCounts, strays, skippedOff, tempExcluded, untitled };
 }
 
 // One "needs checking" entry as HTML: where the session is, what the sheet

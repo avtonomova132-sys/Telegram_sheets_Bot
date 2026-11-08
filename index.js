@@ -2326,7 +2326,7 @@ setTimeout(async () => {
     const monday = new Date(Date.UTC(2026, 10, 9));
     await reissueAnnouncePreview(bot, {
       monday,
-      once: 'announce-reissue-final-rules-2026-11-08',
+      once: 'announce-reissue-ysi-usca-2026-11-08',
       before: () => cardButtons.rebroadcastNote(bot, monday),
     });
   } catch (err) {
