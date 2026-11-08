@@ -644,7 +644,8 @@ function rowMarkedOff(row) {
   });
 }
 
-const TEMP_EXCLUDE_TITLE_RE = /rebroadcast/i;
+const REBROADCAST_TITLE_RE = /rebroadcast/i;
+const BREAK_TITLE_RE = /^\s*(long\s+)?break\s*$/i;
 
 // The long standing note some tabs put in front of the session title («Please note that only
 // volunteers listed in the table … Please take care of your seeds.») is not part of the title.
@@ -699,14 +700,17 @@ function parseTabEvents(tabName, rows, opts = {}) {
         if (dateCell) doubts.push({ code: 'date-unreadable', note: `ячейку даты «${dateCell}» не удалось прочитать — взял дату предыдущей строки (${formatDDMM(date)})` });
       }
       if (!date || azStartMin === null || azEndMin === null) continue;
-      // PERMANENT RULE (Elena, 2026-11-08): a row whose start time equals its end time is not a
-      // broadcast (e.g. the «Break» row 17:30–17:30) — never an event anywhere.
+      // PERMANENT RULES (Elena, 2026-11-08): (1) a row whose whole title is «Break» / «Long Break»
+      // (any case, whole title only — never a substring of a longer name) is a pause, not a
+      // broadcast: no host needed, never an event anywhere. (2) A row whose start time equals its
+      // end time is not a broadcast either.
+      if (BREAK_TITLE_RE.test(title)) continue;
       if (azStartMin === azEndMin) continue;
       if (isExcludedProgramEvent(title, seg.programLabel)) continue;
-      // TEMPORARY (Elena, 2026-11-08, until she says otherwise): «Rebroadcast …» sessions are left
-      // out of the Announce, reminders, summaries and counters. NOT part of the permanent excluded
-      // programs. The /helpers page (opts.withRoles) keeps showing them.
-      if (!opts.withRoles && TEMP_EXCLUDE_TITLE_RE.test(title)) {
+      // PERMANENT (Elena, 2026-11-08, Nastya answered): «Rebroadcast» anywhere in the title (any
+      // case) — Elena picks hosts for re-broadcasts herself, so they never reach the Announce,
+      // reminders, summaries, «24 h» or counters. The /helpers page (opts.withRoles) still shows them.
+      if (!opts.withRoles && REBROADCAST_TITLE_RE.test(title)) {
         tempExcluded.push({ title, tabName: seg.programLabel, date });
         continue;
       }

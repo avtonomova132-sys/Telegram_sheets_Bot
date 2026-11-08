@@ -1849,19 +1849,16 @@ async function rebroadcastNote(bot, monday, now = Date.now()) {
   const range = range7(monday);
   const collected = await collectWeekEvents(range);
   const open = collected.events.filter((e) => !e.hasHost && !isPastAzStart(e, new Date(now)));
-  const temp = collected.tempExcluded || [];
   const byProgram = {};
-  temp.forEach((t) => {
-    const k = t.tabName || '—';
+  open.forEach((e) => {
+    const k = String(e.tabName || '—').slice(0, 60);
     byProgram[k] = (byProgram[k] || 0) + 1;
   });
   const progs = Object.keys(byProgram).map((k) => `${escapeHtml(k)} — ${byProgram[k]}`).join('; ');
-  const lines = [
-    `📋 Анонс ${weekLabel(range)}: в Анонс вошло эфиров без хоста — <b>${open.length}</b> (всего эфиров на неделе — ${collected.events.length}).`,
-    temp.length ? `Исключено «Rebroadcast» (временно): <b>${temp.length}</b>${progs ? ` — по программам: ${progs}` : ''}.` : 'Эфиров «Rebroadcast» на этой неделе не нашлось.',
-  ];
-  if (open.length === 0) lines.push('Свободных эфиров после исключения не осталось.');
-  await sendToElena(bot, lines.join('\n'));
+  const line = open.length
+    ? `📋 Анонс ${weekLabel(range)}: вошло эфиров без хоста — <b>${open.length}</b>. Программы: ${progs}. («Rebroadcast» и «Break» не учтены.)`
+    : `📋 Анонс ${weekLabel(range)}: свободных эфиров без хоста не осталось («Rebroadcast» и «Break» не учтены).`;
+  await sendToElena(bot, line);
 }
 
 // ---- The answer: button, "да"/"нет" reply, /yes, /no ----

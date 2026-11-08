@@ -2318,7 +2318,7 @@ setTimeout(async () => {
   }
 }, 25 * 1000);
 
-// Разовая правка 2026-11-08 (Елена): «Rebroadcast» временно исключены, «Break» (начало = конец)
+// Разовая правка 2026-11-08 (Елена): «Rebroadcast» и «Break» исключены насовсем, «Break» (начало = конец)
 // и дата в названии больше не задерживают Анонс. Короткая сводка + НОВОЕ превью Анонса 9–15.11
 // в личку (в группу ничего без «да»; старое превью, если висит, отменяется).
 setTimeout(async () => {
@@ -2326,7 +2326,7 @@ setTimeout(async () => {
     const monday = new Date(Date.UTC(2026, 10, 9));
     await reissueAnnouncePreview(bot, {
       monday,
-      once: 'announce-reissue-rebroadcast-2026-11-08',
+      once: 'announce-reissue-final-rules-2026-11-08',
       before: () => cardButtons.rebroadcastNote(bot, monday),
     });
   } catch (err) {
