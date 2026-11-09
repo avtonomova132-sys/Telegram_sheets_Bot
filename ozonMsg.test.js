@@ -61,3 +61,11 @@ test('5 точек Елены добавлены, даты и Зачем на м
     assert.match(cp.format(p, '2026-11-09'), /^🛍️ Контрольная точка — Озон: .+\nЗачем: .+/);
   }
 });
+
+test('исправленный текст ctl-* доезжает до уже сохранённых точек', () => {
+  const d = JSON.parse(fs.readFileSync(process.env.CONTROL_POINTS_PATH, 'utf8'));
+  d.points.find((x) => x.id === 'ctl-1116-moskva').title = 'старый текст'; fs.writeFileSync(process.env.CONTROL_POINTS_PATH, JSON.stringify(d));
+  const p = cp.load().points.find((x) => x.id === 'ctl-1116-moskva');
+  assert.match(p.title, /обращения 2912054, 2912082, 2912092/); assert.match(p.title, /Ингосстрах/);
+  assert.match(cp.load().points.find((x) => x.id === 'ctl-1112-birki').title, /2864069, 2864084, 2864099, 2864111/);
+});
