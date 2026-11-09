@@ -3,6 +3,8 @@
 // Состояние — /data/control_points.json (атомарная запись, дата — по Бали).
 const fs = require('fs');
 const path = require('path');
+const ozonMsg = require('./ozonMsg');
+const accrualsReport = require('./accrualsReport');
 
 const PATH = process.env.CONTROL_POINTS_PATH || '/data/control_points.json';
 const REMIND_HOUR = Number(process.env.CONTROL_REMIND_HOUR) || 10;
@@ -40,6 +42,34 @@ const SEED = [
     what: 'Отчёт 01–14.11: сравним с октябрём, всё ли платное отключено и сколько сэкономили.' },
 ];
 
+const BRAND_PROMO_PROMPT = `ЗАЧЕМ ЭТО. Решаем, оставлять ли платную услугу «Продвижение бренда» (Озон берёт 1% с продаж включённых брендов, около 6–7 тыс. ₽ в месяц) или отключить везде. 30.10.2026 по «да» Елены провели тест: выключили «Продвигать товары» у брендов Принцесса, Concept и Рот Фронт (раньше у Milv). Контроль с включённым продвижением: Бабаевский, Красный Октябрь (и Milk). Надо понять, просели ли отключённые бренды сильнее контрольных.
+Проект Озон, магазин Portretkina Beauty, Елена, русский язык, коротко. Прочитай документы проекта «Ozon_зачем_напоминания_бота_и_итоги_начислений» и «Ozon_что_где_настроено_ЧИТАТЬ_ПЕРВЫМ». Нужен Chrome с расширением Claude на компьютере Елены. Только чтение.
+ЧТО СДЕЛАТЬ: кабинет Озон → Аналитика → Продажи моих товаров → группировка «По брендам», период 14 дней 31.10–13.11 против предыдущих 14 дней 17–30.10, «Показать ещё» до конца. По каждому бренду сравнить заказы, выручку, показы, посещения.
+ЗАМЕР «ДО» (на 29.10): Принцесса 28д 993 ₽ (−46%), 7д 0 ₽, показы в поиске 2195/457; Concept Fusion 28д 1094 ₽, 7д 1094 ₽, показы 701/182; Рот Фронт 28д 75 141 ₽ (+26%), 7д 15 963 ₽ (−15%), показы 136 019/38 578; Красный Октябрь 28д 389 959 ₽, 7д 53 071 ₽; Бабаевский 28д 65 656 ₽, 7д 21 308 ₽; Milv 28д 1 690 ₽; Milk 28д 0 ₽. Магазин 23–29.10: 636 заказов, 449 670 ₽.
+ВЫВОД: сравнить Рот Фронт, Принцессу и Concept «до/после» с Бабаевским, Красным Октябрём и всем магазином (сезон Нового года влияет на всех, нужна разница). Посчитать, сколько сэкономили или потеряли (комиссия около 1% продаж). Оговорить малую выборку. Критерий: если отключённые просели заметно сильнее контрольных, вернуть продвижение (включить можно только через 24 ч после отключения); если нет, предложить отключить везде. Настройки менять только после «да» Елены. Итог одним коротким сообщением.`;
+
+SEED.push({ id: 'brand-promo-1113', due: '2026-11-13', dueTime: '09:30', title: 'Продвижение бренда Озон',
+  why: 'решить, оставляем ли платную услугу «Продвижение бренда» (1% с продаж включённых брендов, около 6–7 тыс. ₽ в месяц).',
+  period: '31.10–13.11 против 17–30.10',
+  what: 'Скопируй промпт ниже и отправь в новую ветку проекта Озон.\nКогда сделано: /контроль_готово brand-promo-1113',
+  prompt: BRAND_PROMO_PROMPT });
+
+// «Зачем:» для точек, уже лежащих в /data без этого поля (SEED добавляется один раз).
+const SEED_WHY = {
+  'seed-stars': 'убедиться, что после отключения «Звёздных товаров» списания прекратились.',
+  'seed-ticket': 'получить от поддержки возврат за «Управление отзывами» и запрет автоподключения.',
+  'seed-reviews': 'проверить, что подписка «Управление отзывами» не переподключилась.',
+  'seed-premium': 'проверить, что Озон не включил Premium заново.',
+  'seed-decomp': 'найти декомпенсацию 237 ₽ (POSTING, 12–14.10) и вернуть деньги.',
+  'seed-promo-1021': 'убрать товары, которые Озон добавил в акции без нашего согласия, пока цена не упала.',
+  'seed-promo-1106': 'убрать товары, которые Озон добавил в акции без нашего согласия, пока цена не упала.',
+  'seed-month': 'сравнить с октябрём: всё ли платное отключено и сколько сэкономили.',
+};
+const whyOf = (p) => p.why || SEED_WHY[p.id] || String(p.what || p.title).split('\n')[0].replace(/\.$/, '') + '.';
+const seedOf = (p) => SEED.find((s) => s.id === p.id) || {};
+const periodOf = (p, today) => p.period || seedOf(p).period || (p.needsReport ? ozonMsg.periodLine(today, accrualsReport.lastReportTo()) : null);
+const promptOf = (p) => p.prompt || seedOf(p).prompt || null;
+
 function read() { try { return JSON.parse(fs.readFileSync(PATH, 'utf8')); } catch { return null; } }
 function write(d) {
   fs.mkdirSync(path.dirname(PATH), { recursive: true });
@@ -58,20 +88,32 @@ function load() {
 
 const fmtDate = (iso) => `${iso.slice(8, 10)}.${iso.slice(5, 7)}`;
 
-function dueNow(today, hour) {
-  if (hour < REMIND_HOUR) return [];
-  return load().points.filter((p) => !p.done && p.due <= today && p.lastRemind !== today && p.reminded < MAX_REMINDS);
+function dueNow(today, hour, minute = 0) {
+  const now = hour * 60 + minute;
+  return load().points.filter((p) => {
+    if (p.done || p.lastRemind === today || p.reminded >= MAX_REMINDS || p.due > today) return false;
+    const [h, m] = (p.dueTime || seedOf(p).dueTime || '').split(':').map(Number);
+    const at = Number.isFinite(h) ? h * 60 + (m || 0) : REMIND_HOUR * 60;
+    return now >= at;
+  });
 }
 function markReminded(ids, today) {
   const d = load();
   for (const p of d.points) if (ids.includes(p.id)) { p.reminded += 1; p.lastRemind = today; }
   write(d);
 }
-function format(p) {
-  return `🔔 Контрольная точка — ${p.title}\n\n${p.what}` +
+function format(p, today = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)) {
+  const body = p.what +
     (p.needsReport ? `\n\n${DETAIL_HOW}` : '') +
     (p.support ? '\n\nМожно проверить и через Chrome с расширением Claude: если ты у компьютера — открой Chrome, и Claude посмотрит сам. Если нет — через 2 часа пришлю готовый текст для техподдержки.' : '') +
-    `\n\nСделала — напиши /контроль_готово ${p.id}`;
+    (String(p.what).includes('/контроль_готово') ? '' : `\n\nСделала — напиши /контроль_готово ${p.id}`);
+  return ozonMsg.build({ title: `Контрольная точка — ${p.title}`, why: whyOf(p), period: periodOf(p, today), body });
+}
+// Полный набор сообщений точки: текст (по частям <4096) + промпт для Claude отдельным блоком кода.
+async function send(bot, chatId, p, today) {
+  await ozonMsg.sendParts(bot, chatId, format(p, today));
+  const pr = promptOf(p);
+  if (pr) await ozonMsg.sendCode(bot, chatId, pr);
 }
 const SUPPORT_DELAY_HOURS = 2;
 // Второй шаг: если точка не закрыта, через 2 часа после напоминания — готовый текст для поддержки (один раз).
@@ -81,14 +123,22 @@ function supportDue(today, hour) {
 function markSupportSent(ids) {
   const d = load(); for (const p of d.points) if (ids.includes(p.id)) p.supportSent = true; write(d);
 }
-function formatSupport(p) {
-  return `📨 По точке «${p.title}» ответа ещё нет. Скорее всего, Chrome был закрыт. Отправь в техподдержку (Помощь → чат, при ответе-шаблоне «Ответ мне не помог» → оператор):\n\n${p.support}\n\nОтправила — напиши /контроль_готово ${p.id}`;
+function formatSupport(p, today = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)) {
+  return ozonMsg.build({ title: `Ответа по точке «${p.title}» ещё нет`,
+    why: 'без ответа поддержки списания не вернут и не остановят.',
+    period: p.needsReport ? periodOf(p, today) : null,
+    body: `Скорее всего, Chrome был закрыт. Отправь в техподдержку (Помощь → чат, при ответе-шаблоне «Ответ мне не помог» → оператор):\n\n${p.support}\n\nОтправила — напиши /контроль_готово ${p.id}` });
 }
-function list() {
+function list(today = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)) {
   const pts = load().points.filter((p) => !p.done).sort((a, b) => a.due.localeCompare(b.due));
-  if (!pts.length) return 'Открытых контрольных точек нет.';
-  return 'Контрольные точки:\n' + pts.map((p) => `• ${fmtDate(p.due)} — ${p.title}  [${p.id}]`).join('\n') +
-    '\n\nДобавить: /контроль_добавить 25.10 что проверить\nЗакрыть: /контроль_готово <номер из скобок>';
+  const head = (body) => ozonMsg.build({ title: 'Контрольные точки', why: 'не забыть проверить платные списания и акции Озона вовремя.',
+    period: ozonMsg.periodLine(today, accrualsReport.lastReportTo()), body });
+  if (!pts.length) return head('Открытых контрольных точек нет.');
+  return head(pts.map((p) => `• ${fmtDate(p.due)} — ${p.title}  [${p.id}]\n   Зачем: ${whyOf(p)}`).join('\n') +
+    '\n\nДобавить: /контроль_добавить 25.10 что проверить\nЗакрыть: /контроль_готово <номер из скобок>');
+}
+function formatDone(p) {
+  return ozonMsg.build({ title: `Закрыл: ${p.title}`, why: whyOf(p) });
 }
 function done(id) {
   const d = load(); const p = d.points.find((x) => x.id === id);
@@ -110,4 +160,4 @@ function closeByReport(to) {
   return closed;
 }
 
-module.exports = { supportDue, markSupportSent, formatSupport, dueNow, markReminded, format, list, done, add, closeByReport, load };
+module.exports = { send, formatDone, whyOf, supportDue, markSupportSent, formatSupport, dueNow, markReminded, format, list, done, add, closeByReport, load };

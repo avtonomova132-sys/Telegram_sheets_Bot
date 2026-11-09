@@ -217,6 +217,7 @@ const bot = new TelegramBot(token, {
     },
   },
 });
+require('./ozonMsg').installMarker(bot); // 🛍️ первой строкой во всех личных сообщениях про Озон
 const openai = openaiKey ? new OpenAI({ apiKey: openaiKey, maxRetries: 0, timeout: 60000 }) : null;
 
 // /приход: фото накладной → xlsx остатков для Ozon (prihod/flow.js)
@@ -1170,16 +1171,17 @@ cron.schedule('*/5 * * * *', checkActionsPeriodic);
 // ===== Контрольные точки (controlPoints.js) + разбор «Детализации начислений» =====
 const controlPoints = require('./controlPoints');
 const accrualsReport = require('./accrualsReport');
+const ozonMsg = require('./ozonMsg');
 
 async function checkControlPoints() {
   if (!myChatId) return;
   try {
     const today = baliDateString();
-    const due = controlPoints.dueNow(today, baliHour());
-    for (const p of due) await bot.sendMessage(myChatId, controlPoints.format(p));
+    const due = controlPoints.dueNow(today, baliHour(), baliMinutesNow() % 60);
+    for (const p of due) await controlPoints.send(bot, myChatId, p, today);
     if (due.length) controlPoints.markReminded(due.map((p) => p.id), today);
     const sup = controlPoints.supportDue(today, baliHour());
-    for (const p of sup) await bot.sendMessage(myChatId, controlPoints.formatSupport(p));
+    for (const p of sup) await ozonMsg.sendParts(bot, myChatId, controlPoints.formatSupport(p, today));
     if (sup.length) controlPoints.markSupportSent(sup.map((p) => p.id));
   } catch (err) {
     console.error('[control] ошибка:', err.message);
@@ -1189,12 +1191,12 @@ cron.schedule('*/5 * * * *', checkControlPoints);
 
 bot.onText(/^\/контроль(?:@\S+)?$/, (msg) => {
   if (!isTrustedUser(msg.chat.id)) return;
-  bot.sendMessage(msg.chat.id, controlPoints.list());
+  ozonMsg.sendParts(bot, msg.chat.id, controlPoints.list(baliDateString()));
 });
 bot.onText(/^\/контроль_готово(?:@\S+)?\s+(\S+)/, (msg, m) => {
   if (!isTrustedUser(msg.chat.id)) return;
   const p = controlPoints.done(m[1]);
-  bot.sendMessage(msg.chat.id, p ? `Закрыл: ${p.title}` : 'Не нашёл такой точки. Список: /контроль');
+  bot.sendMessage(msg.chat.id, p ? controlPoints.formatDone(p) : 'Не нашёл такой точки. Список: /контроль');
 });
 bot.onText(/^\/контроль_добавить(?:@\S+)?\s+(\d{1,2}\.\d{1,2})\s+([\s\S]+)/, (msg, m) => {
   if (!isTrustedUser(msg.chat.id)) return;
@@ -1245,7 +1247,7 @@ cron.schedule('*/5 * * * *', async () => {
     const today = baliDateString();
     const weekday = new Date(Date.now() + 8 * 3600 * 1000).getUTCDay();
     if (!ozonMail.weeklyReminderDue(today, weekday, baliHour())) return;
-    await bot.sendMessage(myChatId, ozonMail.WEEKLY_TEXT);
+    await ozonMsg.sendParts(bot, myChatId, ozonMsg.build({ title: 'Понедельник — пришли отчёт «Детализация начислений»', why: 'ловим неожиданные списания и платные подписки.', period: ozonMsg.periodLine(today, accrualsReport.lastReportTo()), body: ozonMail.WEEKLY_TEXT.split('\n').slice(1).join('\n') }));
     ozonMail.markWeeklyReminder(today);
   } catch (err) {
     console.error('[ozon-weekly] ошибка:', err.message);
@@ -1286,7 +1288,7 @@ async function checkFeesPeriodic() {
     }
     const day = Number(today.slice(8, 10));
     if (day >= FEES_REMINDER_DAY && state.lastReminderMonth !== monthKey) {
-      await bot.sendMessage(myChatId, '🔔 Конец месяца. Проверьте, что отключены:\n\n' + ['premium', 'звёзд', 'бренд', 'отзыв'].map((w) => feesWatch.howTo(w)).join('\n\n') + '\n\nОзон может подключить их сам на следующий месяц (1-го числа он уже переподключал подписки).');
+      await bot.sendMessage(myChatId, ozonMsg.build({ title: 'Конец месяца — проверь, что платное отключено', why: 'Озон может сам подключить Premium, «Звёздные товары», бренд-программы и отзывы на новый месяц.', period: ozonMsg.periodLine(today, accrualsReport.lastReportTo()), body: '' }) + '\n\n' + ['premium', 'звёзд', 'бренд', 'отзыв'].map((w) => feesWatch.howTo(w)).join('\n\n') + '\n\nОзон может подключить их сам на следующий месяц (1-го числа он уже переподключал подписки).');
       patch.lastReminderMonth = monthKey;
     }
     feesWatch.patchState(patch);

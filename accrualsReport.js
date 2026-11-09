@@ -86,4 +86,10 @@ function process_(buffer) {
   return { text, to: rep.to };
 }
 
-module.exports = { process: process_, parse, buildMessage, NOT_REPORT_PREFIX };
+// Конец периода последнего присланного отчёта (ГГГГ-ММ-ДД) или null.
+function lastReportTo() {
+  const tos = readJson(SNAP_PATH, []).map((x) => x.to).filter(Boolean).sort();
+  return tos.length ? tos[tos.length - 1] : null;
+}
+
+module.exports = { lastReportTo, process: process_, parse, buildMessage, NOT_REPORT_PREFIX };
