@@ -78,6 +78,41 @@ const MESSAGE = `🎓 Завтра состоится наша встреча-о
 // No link yet → this line stands in; the warning "link not set" is only for Elena above the preview.
 const messageText = (link) => MESSAGE.replace('{LINK_LINE}', link ? `🔗 Zoom: ${link}` : '🔗 Ссылка на Zoom появится здесь завтра за 10 минут до начала, в 06:50 утра по Москве.');
 
+// ---- tags of the newcomers («теги для обучения») ----
+// Stored in /data/training.json (`tags`), changed with /training_tags_set; this is only the starting
+// value. Order is kept, cut by 5 (Telegram notifies at most 5 mentions per message). Elena herself
+// is never tagged.
+const DEFAULT_TAGS = ['@kseniya8k', '@katie_nuanu', '@NStamen', '@Bilokur_Kouch', '@Victoria_Danilko_Chelly', '@elispavlenk0', '@maiakni', '@SvetPort', '@AlisaZotovaCoach', '@JanePe'];
+const ELENA_TAG = '@elena_nangtong_bali';
+const TAGS_PER_MESSAGE = 5;
+
+function cleanTags(list) {
+  const seen = new Set();
+  const out = [];
+  for (const raw of list || []) {
+    const t = String(raw || '').trim();
+    if (!/^@[A-Za-z0-9_]{3,}$/.test(t)) continue;
+    const k = t.toLowerCase();
+    if (k === ELENA_TAG || seen.has(k)) continue;
+    seen.add(k);
+    out.push(t);
+  }
+  return out;
+}
+const getTags = (s) => cleanTags(Array.isArray(s.tags) ? s.tags : DEFAULT_TAGS);
+const chunk5 = (tags) => {
+  const out = [];
+  for (let i = 0; i < tags.length; i += TAGS_PER_MESSAGE) out.push(tags.slice(i, i + TAGS_PER_MESSAGE));
+  return out;
+};
+// Message 1 = the text + (at the very end, one line) the first 5 tags; the others — messages with ONLY tags.
+function groupMessages(link, tags) {
+  const parts = chunk5(tags);
+  const first = parts.length ? `${messageText(link)}\n\n${parts[0].join(' ')}` : messageText(link);
+  return { first, rest: parts.slice(1).map((p) => p.join(' ')) };
+}
+const mask = (t) => t.replace(/@/g, '@​'); // test group: show the tags without mentioning anybody
+
 function statusLine(s) {
   return [
     `Функция: ${s.enabled ? 'включена' : 'выключена (/training_on)'}`,
@@ -118,21 +153,42 @@ async function createPreview(bot, { now = Date.now(), weekKey = baliMondayKey(no
   if (note) lines.push(note, '');
   if (!link) lines.push('⚠️ Ссылка на Zoom не задана — в тексте для группы стоит строка «ссылка появится завтра в 06:50 утра по Москве». Задать ссылку: /training_link ссылка (пришлю новое превью).', '');
   if (!isBaliMonday(now)) lines.push('ℹ️ Сегодня не понедельник — в тексте написано «завтра».', '');
-  lines.push('👆 Превью напоминания об обучении «Хочу быть хостом» — вот что уйдёт в группу WorldView Productions (тема General), без кнопок и тегов:', '', '───────────', messageText(link), '───────────', '', HOW_TO_ANSWER);
-  const sent = await tellElena(bot, lines.join('\n'), { reply_markup: { inline_keyboard: keyboard(id) } });
+  const tags = getTags(s);
+  const msgs = groupMessages(link, tags);
+  const total = 1 + msgs.rest.length;
+  if (lines.length) await tellElena(bot, lines.join('\n').trim());
+  // the preview: every message exactly as it will go to the group (in this private chat the tags notify nobody)
+  await tellElena(bot, `Сообщение 1 из ${total}\n\n${msgs.first}`);
+  for (let i = 0; i < msgs.rest.length; i++) await tellElena(bot, `Сообщение ${i + 2} из ${total}\n\n${msgs.rest[i]}`);
+  const sent = await tellElena(bot, `👆 Превью напоминания об обучении «Хочу быть хостом»: ${total === 1 ? 'одно сообщение' : `${total} сообщения подряд`} — так они уйдут в группу WorldView Productions (тема General); сообщение 2 и далее — ответом на сообщение 1.\n\n${HOW_TO_ANSWER}`, { reply_markup: { inline_keyboard: keyboard(id) } });
   update((st) => {
-    st.pending = { id, weekKey, status: 'pending', link: link || null, controlMessageId: sent.message_id, createdAt: now };
+    st.pending = { id, weekKey, status: 'pending', link: link || null, tags, controlMessageId: sent.message_id, createdAt: now };
   });
   return { id, link: Boolean(link) };
 }
 
-async function postToGroup(bot, chatId, link, prefix = '') {
-  const sent = await bot.sendMessage(chatId, `${prefix}${messageText(link)}`, { disable_web_page_preview: true });
+// Sends message 1 (text + first 5 tags), then — each as a REPLY to message 1 — the messages with only
+// the remaining tags (5 per message), in order. Returns { sent, failed } — `failed` lists follow-ups
+// that did not go out (message 1 is already in the group then, so nothing is retried automatically).
+async function postToGroup(bot, chatId, link, prefix = '', { test = false } = {}) {
+  const tags = getTags(readState());
+  const msgs = groupMessages(link, tags);
+  const fmt = (t) => (test ? mask(t) : t);
+  const sent = await bot.sendMessage(chatId, `${prefix}${fmt(msgs.first)}`, { disable_web_page_preview: true });
   // the id is kept so the post can be found and deleted later
   update((st) => {
     st.lastPost = { chatId, messageId: sent.message_id, at: Date.now() };
   });
-  return sent;
+  const failed = [];
+  for (const text of msgs.rest) {
+    await new Promise((r) => setTimeout(r, 1500));
+    try {
+      await bot.sendMessage(chatId, fmt(text), { reply_to_message_id: sent.message_id, allow_sending_without_reply: true, disable_web_page_preview: true });
+    } catch (err) {
+      failed.push(errText(err));
+    }
+  }
+  return { sent, failed };
 }
 
 // Elena's decision on the waiting preview.
@@ -154,11 +210,16 @@ async function confirm(bot, id, approve) {
     await createPreview(bot, { weekKey: p.weekKey, note: '🔄 Ссылка изменилась с момента превью — вот обновлённый текст.' });
     return;
   }
+  if (JSON.stringify(p.tags || []) !== JSON.stringify(getTags(s))) {
+    await createPreview(bot, { weekKey: p.weekKey, note: '🔄 Список тегов изменился с момента превью — вот обновлённые сообщения.' });
+    return;
+  }
   update((st) => {
     st.pending.status = 'sending'; // marked BEFORE the send: a double tap cannot post twice
   });
+  let result;
   try {
-    await postToGroup(bot, WVP_GROUP_ID, s.link);
+    result = await postToGroup(bot, WVP_GROUP_ID, s.link);
   } catch (err) {
     update((st) => {
       st.pending.status = 'pending';
@@ -169,11 +230,17 @@ async function confirm(bot, id, approve) {
     st.pending.status = 'sent';
     st.pending.sentAt = Date.now();
   });
-  await tellElena(bot, '✅ Напоминание об обучении отправлено в группу.');
+  if (result.failed.length) await tellElena(bot, `⚠️ Сообщение 1 ушло в группу, но не все сообщения с тегами отправились (${result.failed.length}): ${result.failed.join('; ')}. Повторно сама ничего не отправляю.`);
+  else await tellElena(bot, '✅ Напоминание об обучении отправлено в группу.');
 }
 
 // ---- scheduler tick (every 5 minutes and once after a start) ----
-async function tick(bot, now = Date.now()) {
+// Serialised (cron and the start-up timer can overlap) and the weekly flag is set only AFTER the
+// preview really went out — a failed send is retried at the next tick (within the 3 h window).
+function tick(bot, now = Date.now()) {
+  return serial(() => tickInner(bot, now));
+}
+async function tickInner(bot, now = Date.now()) {
   const start = readState();
   if (!start.activatedAt) update((st) => { st.activatedAt = now; });
   if (!start.enabled) return;
@@ -191,16 +258,16 @@ async function tick(bot, now = Date.now()) {
   }
   if (start.auto) {
     update((st) => {
-      st.done[weekKey] = { at: now, outcome: 'auto-sent' };
+      st.done[weekKey] = { at: now, outcome: 'auto-sent' }; // before the send: never twice in the group
     });
-    await postToGroup(bot, WVP_GROUP_ID, start.link);
-    await tellElena(bot, 'Напоминание об обучении отправлено в группу');
+    const r = await postToGroup(bot, WVP_GROUP_ID, start.link);
+    await tellElena(bot, r.failed.length ? `Напоминание об обучении отправлено в группу, но сообщения с тегами отправились не все (${r.failed.length}): ${r.failed.join('; ')}` : 'Напоминание об обучении отправлено в группу');
     return;
   }
-  update((st) => {
-    st.done[weekKey] = { at: now, outcome: 'preview' };
-  });
   await createPreview(bot, { now, weekKey });
+  update((st) => {
+    st.done[weekKey] = { at: Date.now(), outcome: 'preview' };
+  });
 }
 
 // ---- Elena's commands (private chat, her only) ----
@@ -235,14 +302,31 @@ async function handleCommand(bot, msg, command, arg = '') {
     }
     case 'text': {
       const s = readState();
-      return tellElena(bot, `${statusLine(s)}\n\n───────────\n${messageText(s.link)}\n───────────`);
+      const m = groupMessages(s.link, getTags(s));
+      return tellElena(bot, `${statusLine(s)}\n\n───────────\n${[m.first, ...m.rest].join('\n───────────\n')}\n───────────`);
+    }
+    case 'tags': {
+      const tags = getTags(readState());
+      return tellElena(bot, tags.length ? `🏷 Теги для обучения (${tags.length}), порядок как в списке, по 5 в сообщении:\n${chunk5(tags).map((c, i) => `${i === 0 ? 'Сообщение 1 (в конце текста)' : `Сообщение ${i + 1} (reply)`}: ${c.join(' ')}`).join('\n')}\n\nЗаменить: /training_tags_set @имя1 @имя2 …` : 'Список тегов пуст. Задать: /training_tags_set @имя1 @имя2 …');
+    }
+    case 'tags_set': {
+      const tags = cleanTags(text.split(/[\s,;]+/));
+      if (tags.length === 0) return tellElena(bot, 'Формат: /training_tags_set @имя1 @имя2 … (через пробел, порядок сохраняется; себя не тегаю).');
+      update((st) => {
+        st.tags = tags;
+      });
+      await tellElena(bot, `🏷 Список «теги для обучения» заменён (${tags.length}).`);
+      // a preview is waiting -> show it again with the new tags
+      const p = readState().pending;
+      if (p && p.status === 'pending' && Date.now() - p.createdAt < 3 * DAY_MS) await serial(() => createPreview(bot, { weekKey: p.weekKey }));
+      return;
     }
     case 'now':
       return serial(() => createPreview(bot));
     case 'test': {
       // The same text, right away into the test group «Дебаты» (never the big group).
       const s = readState();
-      await postToGroup(bot, TEST_GROUP_ID, s.link, '🧪 [Дебаты, тест]\n\n');
+      await postToGroup(bot, TEST_GROUP_ID, s.link, '🧪 [Дебаты, тест]\n\n', { test: true });
       return tellElena(bot, '🧪 Тест отправлен в «Дебаты».');
     }
     default:
@@ -451,4 +535,24 @@ async function runOneShot(bot, now = Date.now()) {
   await serial(() => createPreview(bot, { now, weekKey, note: '🔄 Новое превью на завтрашнюю встречу (вт 27.10) с исправленным временем (только по Москве) — предыдущее заменено.' }));
 }
 
-module.exports = { tick, handleCommand, handleCallback, handleTextReply, handleYesNo, handleGroupReply, runOneShot, runReissue, createPreview, messageText, baliMondayKey, dueAtOf, STATE_PATH };
+const BOOT_AT = Date.now();
+
+// One-off on a deploy: a fresh preview right now (the 14:00 Bali preview of 9.11.2026 never came, the new
+// format has the tag messages). `key` makes it run once; if this process already sent today's preview
+// by itself (regular tick), nothing more is sent.
+async function runNowOnce(bot, key, note) {
+  if ((readState().oneShots || {})[key]) return;
+  const now = Date.now();
+  const weekKey = baliMondayKey(now);
+  await serial(async () => {
+    const s = readState();
+    const regular = s.done[weekKey] && s.done[weekKey].outcome === 'preview' && s.pending && s.pending.createdAt >= BOOT_AT;
+    if (!regular) await createPreview(bot, { now, weekKey, note });
+    update((st) => {
+      st.oneShots = { ...(st.oneShots || {}), [key]: now };
+      st.done[weekKey] = st.done[weekKey] || { at: now, outcome: 'one-shot' };
+    });
+  });
+}
+
+module.exports = { runNowOnce, tick, handleCommand, handleCallback, handleTextReply, handleYesNo, handleGroupReply, runOneShot, runReissue, createPreview, messageText, baliMondayKey, dueAtOf, STATE_PATH };

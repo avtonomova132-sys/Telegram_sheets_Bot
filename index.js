@@ -2356,7 +2356,11 @@ cron.schedule('*/5 * * * *', async () => {
   } catch (err) {
     console.error('[week-schedule] ошибка тика:', err.message);
   }
-  await trainingTick();
+});
+// Напоминание об обучении — СВОЁ расписание (раньше шло в хвосте тика Анонса и могло не дождаться: 9.11.2026
+// превью в 14:00 по Бали не пришло). Не ждёт никого и не блокирует других.
+cron.schedule('*/5 * * * *', () => {
+  trainingTick();
 });
 // И один раз после старта: если бот был выключен/перезапускался в момент
 // срабатывания (до 3 часов), то, что пропущено, делается сейчас — один раз.
@@ -2364,6 +2368,12 @@ setTimeout(() => {
   weekSchedulerTick(bot).catch((err) => console.error('[week-schedule] ошибка тика при старте:', err.message));
   trainingTick();
 }, 45 * 1000);
+// Разовое (2026-11-09): превью в 14:00 по Бали не пришло — прислать новое сейчас, уже в новом формате (с тегами).
+setTimeout(() => {
+  training
+    .runNowOnce(bot, 'now-tags-2026-11-09', '🔄 Превью напоминания об обучении в 14:00 по Бали не пришло — причину исправила. Новый формат: сообщение 1 (текст и 5 тегов) и сообщение 2 (только остальные теги, ответом на сообщение 1). В группу ничего не уйдёт, пока вы не нажмёте «Отправить в группу».')
+    .catch((err) => reportProblem(bot, 'training-now', `Превью напоминания об обучении не отправилось: ${err.message}`).catch(() => {}));
+}, 75 * 1000);
 
 // Понедельник 14:00 по Бали — напоминание об обучении «Хочу быть хостом» (отдельная
 // функция, см. training.js; не затрагивает Анонс/напоминание/сводку/«за 24 часа»).
@@ -2438,7 +2448,7 @@ bot.on('message', (msg) => {
   if (!msg.reply_to_message || msg.chat.type === 'private') return;
   training.handleGroupReply(bot, msg).catch((err) => console.error('[training] удаление по ответу не удалось:', err.message));
 });
-bot.onText(/^\/training_(on|off|auto_on|auto_off|link|text|now|test)(?:@\S+)?(?:\s+(.+))?$/i, (msg, match) => {
+bot.onText(/^\/training_(on|off|auto_on|auto_off|link|text|now|test|tags_set|tags)(?:@\S+)?(?:\s+(.+))?$/i, (msg, match) => {
   training.handleCommand(bot, msg, match[1].toLowerCase(), match[2]).catch((err) => reportProblem(bot, 'training-cmd', `Команда /training_${match[1]} не сработала: ${err.message}`, 0).catch(() => {}));
 });
 bot.onText(/^\/announce(?:@\S+)?(?:\s+(\S+))?\s*$/i, (msg, match) => handleWeekCommand(bot, msg, 'announce', match && match[1]));
