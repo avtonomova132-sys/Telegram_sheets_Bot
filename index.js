@@ -2334,7 +2334,7 @@ setTimeout(async () => {
     });
     await reissueAnnouncePreview(bot, {
       monday,
-      once: 'announce-reissue-whitelist-2026-11-09',
+      once: 'announce-reissue-notags-2026-11-09',
       cancelReminders: true,
       before: () => cardButtons.rebroadcastNote(bot, monday),
     });

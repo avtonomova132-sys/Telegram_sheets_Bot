@@ -391,8 +391,17 @@ function inheritFromGroupCards(store, card) {
   return refusers.length > 0 || reservedBy ? { refusers, reservedBy } : null;
 }
 
+// ONE-OFF (Elena, 2026-11-09): the Announce for 9–15.11 does NOT tag Erik and Darya (they already
+// answered the day before). Only the @-tags in the header / «Thank you» messages are dropped — Erik
+// stays an active host and is counted in «N of M»; every later Announce and every reminder is normal.
+const ONE_OFF_NO_TAG = { weekStart: '2026-11-09', users: ['lp129eric1', 'darya_marchenko9'] };
+function withoutOneOffTags(tags, range, restOfWeek) {
+  if (restOfWeek || !range || !range.start || range.start.toISOString().slice(0, 10) !== ONE_OFF_NO_TAG.weekStart) return tags;
+  return tags.filter((t) => !ONE_OFF_NO_TAG.users.includes(String(t).replace(/^@/, '').toLowerCase()));
+}
+
 async function postWeekCards(bot, chatId, events, range, failedTabs = [], review = null, { restOfWeek = false } = {}) {
-  const allTags = loadHostCandidates();
+  const allTags = withoutOneOffTags(loadHostCandidates(), range, restOfWeek);
   const { header: baseHeader, cards, closing, openCount } = buildWeekCardParts(events, range, { restOfWeek, tags: allTags });
   const label = makeLabeler(chatId, 1 + cards.length + 1 + tagFollowUps(allTags).length);
   const header = label() + baseHeader;
