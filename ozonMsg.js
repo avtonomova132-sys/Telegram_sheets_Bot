@@ -8,8 +8,21 @@
 const MARK = '🛍️';
 const OZON_RE = /ozon|озон|акци[июяй]|начислен|списани|подписк|габарит|остатк/i;
 const MAX = 4000;
+// WVP / Алмазный путь / хосты / обучение / дневник — не про Озон, не трогаем никогда.
+const NOT_OZON_RE = /хост|эфир|анонс|announce|zoom|wvp|алмазн|дневник|обучени|изречени|передач|курс\s?\d/i;
+// «Зачем:» по теме, если автор сообщения его не написал (порядок важен).
+const WHY_BY_TOPIC = [
+  [/акци/i, 'Озон сам добавляет товары в акции с огромной скидкой — их надо вовремя убирать.'],
+  [/возврат|спор/i, 'не потерять деньги за потерянные и списанные возвраты (срок обращения ограничен).'],
+  [/списани|подписк|начислен|premium|звёзд/i, 'ловим неожиданные списания и платные подписки.'],
+  [/габарит/i, 'неверные габариты Озон считает штрафом и поднимает логистику.'],
+  [/остатк|fbo|склад|размещени/i, 'товар на складе Озона не должен залежаться и стать платным.'],
+  [/цен|марж/i, 'цена на Озоне должна держать маржу.'],
+  [/письм|почт/i, 'не пропустить важное письмо Озона и его срок.'],
+];
+const whyByTopic = (t) => (WHY_BY_TOPIC.find(([re]) => re.test(t)) || [])[1] || null;
 
-const isOzonText = (t) => typeof t === 'string' && OZON_RE.test(t);
+const isOzonText = (t) => typeof t === 'string' && OZON_RE.test(t) && !NOT_OZON_RE.test(t);
 // Первой строкой 🛍️ — только если её ещё нет.
 function mark(text) {
   const t = String(text ?? '');
@@ -63,6 +76,15 @@ async function sendParts(bot, chatId, text) {
   for (const part of split(text)) await bot.sendMessage(chatId, part);
 }
 
+// Нет «Зачем:» — вставляем по теме второй строкой (ошибки и короткие ответы не трогаем).
+function withWhy(text) {
+  const t = String(text);
+  if (/(^|\n)Зачем:/.test(t) || t.length < 60 || /^(🛍️\s*)?(Не |Нет |Закрыл|Добавил|Отметил|Запомнил|Смотрю)/.test(t)) return t;
+  const why = whyByTopic(t); if (!why) return t;
+  const i = t.indexOf('\n');
+  return i < 0 ? `${t}\nЗачем: ${why}` : `${t.slice(0, i)}\nЗачем: ${why}${t.slice(i)}`;
+}
+
 // Обёртка bot.sendMessage: любое текстовое сообщение в личку про Озон получает 🛍️ первой строкой.
 // Группы (chatId < 0) и сообщения без ключевых слов не трогаем.
 function installMarker(bot) {
@@ -70,10 +92,10 @@ function installMarker(bot) {
   bot.sendMessage = (chatId, text, opts) => {
     try {
       const priv = !String(chatId).startsWith('-');
-      if (priv && !(opts && opts.parse_mode === 'HTML' && String(text).startsWith('<pre>')) && isOzonText(text)) text = mark(text);
+      if (priv && !(opts && opts.parse_mode === 'HTML' && String(text).startsWith('<pre>')) && isOzonText(text)) text = mark(withWhy(text));
     } catch { /* ignore */ }
     return orig(chatId, text, opts);
   };
 }
 
-module.exports = { MARK, isOzonText, mark, periodRange, periodLine, build, split, codeBlocks, sendCode, sendParts, installMarker };
+module.exports = { withWhy, MARK, isOzonText, mark, periodRange, periodLine, build, split, codeBlocks, sendCode, sendParts, installMarker };

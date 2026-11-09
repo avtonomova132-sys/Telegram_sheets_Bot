@@ -42,3 +42,13 @@ test('старые точки: Зачем/Период, /контроль и з�
   assert.match(cp.list('2026-11-09'), /^🛍️ Контрольные точки\nЗачем:/);
   assert.match(cp.formatDone(pts[0]), /^🛍️ Закрыл: /);
 });
+
+test('WVP/хосты не трогаем, у прочих Озон-алертов «Зачем:» по теме', async () => {
+  const b = fakeBot(); ozonMsg.installMarker(b);
+  await b.sendMessage(1, 'Анонс эфиров: остатки свободных мест, акции на курс');
+  await b.sendMessage(1, '⚖️ К спору: 2\nПГ123 · заявка 1002115720\nОтветь «подавай» и перешли мне это сообщение.');
+  await b.sendMessage(1, 'Не заданы OZON_API_KEY / OZON_CLIENT_ID в Railway.');
+  assert.equal(b.sent[0].t.startsWith('🛍️'), false);
+  assert.match(b.sent[1].t, /^🛍️ ⚖️ К спору: 2\nЗачем: не потерять деньги/);
+  assert.match(b.sent[2].t, /^🛍️ Не заданы/); assert.ok(!/Зачем/.test(b.sent[2].t));
+});
