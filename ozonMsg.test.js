@@ -52,3 +52,12 @@ test('WVP/хосты не трогаем, у прочих Озон-алерто�
   assert.match(b.sent[1].t, /^🛍️ ⚖️ К спору: 2\nЗачем: не потерять деньги/);
   assert.match(b.sent[2].t, /^🛍️ Не заданы/); assert.ok(!/Зачем/.test(b.sent[2].t));
 });
+
+test('5 точек Елены добавлены, даты и Зачем на месте', () => {
+  const ids = { 'ctl-1112-birki': '2026-11-12', 'ctl-1116-moskva': '2026-11-16', 'ctl-1130-ozhid': '2026-11-30', 'ctl-1207-penal': '2026-12-07', 'ctl-1212-dolgie': '2026-12-12' };
+  const pts = cp.load().points;
+  for (const [id, due] of Object.entries(ids)) {
+    const p = pts.find((x) => x.id === id); assert.ok(p, id); assert.equal(p.due, due);
+    assert.match(cp.format(p, '2026-11-09'), /^🛍️ Контрольная точка — Озон: .+\nЗачем: .+/);
+  }
+});
