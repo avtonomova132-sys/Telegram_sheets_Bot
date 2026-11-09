@@ -1818,7 +1818,7 @@ async function rebuildReminderPreview(bot, now = Date.now()) {
 // Cancel the waiting announce preview(s) of a week and send a new one (same as
 // /announce) built from the current sheet rules and host list. Nothing goes to
 // the group. `once` makes it a one-shot: remembered in the scheduler state.
-async function reissueAnnouncePreview(bot, { monday, once = null, now = Date.now(), before = null }) {
+async function reissueAnnouncePreview(bot, { monday, once = null, now = Date.now(), before = null, cancelReminders = false }) {
   return runSerialStrict(async () => {
     if (once && readJson({ messages: {}, batches: [] }).scheduler?.oneShots?.[once]) return { skipped: true };
     const pre = before ? await before() : null;
@@ -1831,6 +1831,15 @@ async function reissueAnnouncePreview(bot, { monday, once = null, now = Date.now
         s.pending[p.id].status = 'cancelled';
       });
       await removeButtons(bot, p);
+    }
+    // The Announce must go first: any waiting reminder preview is cancelled too.
+    if (cancelReminders) {
+      for (const p of pendingList().filter((x) => x.kind === 'reminder')) {
+        updateScheduler((s) => {
+          s.pending[p.id].status = 'cancelled';
+        });
+        await removeButtons(bot, p);
+      }
     }
     if (pre && pre.stop) {
       // Too many sessions left: no new preview, the old one is cancelled, nothing goes to the group.
@@ -1855,7 +1864,7 @@ async function reissueAnnouncePreview(bot, { monday, once = null, now = Date.now
 
 // One short note to Elena before the new preview: how many sessions went in and how many were left
 // out as «Rebroadcast» (by program). Nothing goes to the group.
-const MAX_LISTED_EVENTS = 6;
+const MAX_LISTED_EVENTS = 8;
 async function rebroadcastNote(bot, monday, now = Date.now()) {
   const range = range7(monday);
   const collected = await collectWeekEvents(range);

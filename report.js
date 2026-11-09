@@ -647,10 +647,14 @@ function rowMarkedOff(row) {
 }
 
 const REBROADCAST_TITLE_RE = /rebroadcast/i;
-// One-off exclusion until 15.11.2026 (see parseTabEvents): the YSI tab and anything «USCA».
-const ONE_OFF_EXCLUDE_UNTIL = Date.UTC(2026, 10, 15);
-const ONE_OFF_TAB_RE = /^\s*ysi\b/i;
-const ONE_OFF_TEXT_RE = /usca/i;
+// Is this tab (gid) one where hosts are looked for? (whitelist in programRules.js; no gid → yes)
+function isWhitelistedTab(gid) {
+  try {
+    return require('./programRules').isTabAllowed(gid);
+  } catch {
+    return true;
+  }
+}
 
 // The session title is empty (e.g. the cell held only the note): take it from another cell of the
 // same row, left of the Host column — nearest to the title column; text only (not times/dates/
@@ -688,6 +692,7 @@ function parseTabEvents(tabName, rows, opts = {}) {
   const offEvents = [];
   const tempExcluded = [];
   const untitled = [];
+  const tabAllowed = Boolean(opts.withRoles || opts.noWhitelist) || isWhitelistedTab(opts.gid);
   let tabYear = null; // last year seen in an explicit Data date — base for year-less cells
 
   for (const seg of segments) {
@@ -743,14 +748,10 @@ function parseTabEvents(tabName, rows, opts = {}) {
         tempExcluded.push({ title, tabName: seg.programLabel, date });
         continue;
       }
-      // ONE-OFF (Elena, 2026-11-08), only until 15.11 inclusive: the whole «YSI» tab and anything
-      // with «USCA» in the title/program is left out of the Announce, reminders, summaries, «24 h»
-      // and counters (USCA is running, the sheet is being edited, those hosts are their own). From
-      // 16.11 the tab is read like any other. NOT a permanent exclusion; /helpers is unaffected.
-      if (!opts.withRoles && date.getTime() <= ONE_OFF_EXCLUDE_UNTIL && (ONE_OFF_TAB_RE.test(tabName) || ONE_OFF_TEXT_RE.test(`${title} ${seg.programLabel} ${tabName}`))) {
-        tempExcluded.push({ title, tabName: seg.programLabel, date, oneOff: true });
-        continue;
-      }
+      // PERMANENT (Elena, 2026-11-09): hosts are looked for ONLY in whitelisted tabs (programRules.js:
+      // tabs.whitelist, stored on the volume). Events of any other tab never reach the Announce,
+      // reminders, summaries, «24 h» or counters. /helpers (opts.withRoles) is unaffected.
+      if (!tabAllowed) continue;
       // A card must carry the real session name: no title in the row (after cutting the note and
       // looking at the neighbouring cells) → not an Announce event; reported to Elena separately.
       if (!title && !opts.withRoles && !rowMarkedOff(row)) {
@@ -813,7 +814,7 @@ async function fetchTabEvents(spreadsheetId, tab, opts = {}) {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const text = await res.text();
   const rows = parseCsv(text);
-  const events = parseTabEvents(tab.name, rows, opts);
+  const events = parseTabEvents(tab.name, rows, { ...opts, gid: String(tab.gid) });
   // Deep link to the PHYSICAL tab this event was read from — attached here,
   // not looked up later from e.tabName, because a multi-program tab (e.g.
   // "DCC & GBOCS") reports several different programLabel values off one

@@ -23,6 +23,51 @@ const norm = (s) =>
 // Названия короче этого не сопоставляются «по вхождению» (слишком много случайных совпадений).
 const MIN_MATCH_LEN = 6;
 
+// ---- Белый список вкладок (Елена, 2026-11-09, ПОСТОЯННОЕ правило) ----
+// Хосты ищем ТОЛЬКО в этих вкладках таблицы (ключ — gid вкладки; названия — настоящие названия
+// вкладок). Все остальные вкладки в Анонс, напоминания, сводки, «за 24 ч» и счётчик не входят.
+// Список и ответы хранятся в этом файле на томе, не в коде (код лишь задаёт стартовое значение).
+// known — вкладки, которые уже были в таблице на 2026-11-09 и в список не попали (про них не
+// спрашиваем); asked — новые вкладки, по которым Елене уже ушёл вопрос; blocked = known с ответом «Нет».
+function defaultTabs() {
+  const wl = (name, gid) => ({ name, gid, at: Date.now() });
+  return {
+    whitelist: [
+      wl("Xuanzang's Tower", '1411715457'),
+      wl('ACI with Timothy Lowenhaupt (в т.ч. ACI 18)', '1540568700'),
+      wl('Blue Sky Friends', '1388395363'),
+      wl('ACI with Ven. Utpala', '1658984487'),
+      wl('DCC & GBOCS', '104338179'),
+      wl('ACI with V. Sumati', '1999892677'),
+      wl('ACI | V Houses SERIES (в т.ч. ACI | V Houses)', '24119706'),
+      wl('Sanskrit with Christina Kasica', '1460426350'),
+      wl('Lam Rim with Timothy Lowenhaupt', '771008913'),
+    ],
+    known: {
+      1271742444: 'Info',
+      873833331: '2026 Programs',
+      1263125290: '2026 Calendar',
+      271942327: 'volunteers_database',
+      1068508921: 'YSI',
+      1370395210: 'ACI with Inna & Bill',
+      967646074: 'Harmony for Health',
+      1575241358: 'Prayers for The People',
+      1153396063: 'Sarahni Stumpf',
+      738844155: 'Prosperity Lab',
+      675522741: 'Continuing Education',
+      106994159: 'V Houses Live EVENTS',
+      563159906: 'Ven. Gyelse',
+      1081463745: 'PTWN',
+      258885724: 'ACI Teacher Training',
+      161127458: 'ACI with T.Sofia Arellano (SPA)',
+      1109067689: 'ACI program',
+      718166373: 'New UTC',
+      181247: 'UTC',
+    },
+    asked: {},
+  };
+}
+
 let cache = null;
 let cacheStamp = 0;
 
@@ -43,6 +88,9 @@ function read() {
   s.excluded = Array.isArray(s.excluded) ? s.excluded : [];
   s.needed = Array.isArray(s.needed) ? s.needed : [];
   s.pending = s.pending && typeof s.pending === 'object' ? s.pending : {};
+  if (!s.tabs || !Array.isArray(s.tabs.whitelist)) s.tabs = defaultTabs();
+  s.tabs.known = s.tabs.known && typeof s.tabs.known === 'object' ? s.tabs.known : {};
+  s.tabs.asked = s.tabs.asked && typeof s.tabs.asked === 'object' ? s.tabs.asked : {};
   cache = s;
   cacheStamp = stamp;
   return s;
@@ -82,6 +130,9 @@ function isExcludedByRules(title, label = '') {
   if (list.length === 0) return false;
   const t = norm(title);
   const l = norm(label);
+  // ACI with Ven. Utpala is never excluded by a short «ACI N» decision made for Inna & Bill's
+  // program (Elena, 2026-11-09: «ACI 9 - Class 5 with Ven Utpala» must stay in the Announce).
+  if (t.includes('utpala') || l.includes('utpala')) return false;
   return list.some((p) => (t.length > 0 && t.includes(p.norm)) || (l.length > 0 && (l.includes(p.norm) || (l.length >= MIN_MATCH_LEN && p.norm.includes(l)))));
 }
 
@@ -113,7 +164,39 @@ function setNeeded(name, extra = {}) {
   });
 }
 
+// ---- белый список вкладок: API для report.js / бота ----
+const tabs = () => read().tabs;
+// Вкладка с этим gid в белом списке? Без gid (старые вызовы) — пропускаем, чтобы ничего не терять.
+const isTabAllowed = (gid) => gid === undefined || gid === null || tabs().whitelist.some((t) => String(t.gid) === String(gid));
+const isTabKnown = (gid) => isTabAllowed(gid) || Object.prototype.hasOwnProperty.call(tabs().known, String(gid)) || Object.prototype.hasOwnProperty.call(tabs().asked, String(gid));
+
+function addWhitelistTab(gid, name) {
+  return update((s) => {
+    const id = String(gid);
+    if (!s.tabs.whitelist.some((t) => String(t.gid) === id)) s.tabs.whitelist.push({ name: String(name || id), gid: id, at: Date.now() });
+    delete s.tabs.known[id];
+    s.tabs.asked[id] = { name: String(name || id), answer: 'yes', at: Date.now() };
+    return { ok: true };
+  });
+}
+
+function blockTab(gid, name) {
+  return update((s) => {
+    const id = String(gid);
+    s.tabs.whitelist = s.tabs.whitelist.filter((t) => String(t.gid) !== id);
+    s.tabs.known[id] = String(name || id);
+    s.tabs.asked[id] = { name: String(name || id), answer: 'no', at: Date.now() };
+    return { ok: true };
+  });
+}
+
+function markTabAsked(gid, name) {
+  return update((s) => {
+    s.tabs.asked[String(gid)] = { name: String(name || gid), answer: null, at: Date.now() };
+  });
+}
+
 // Tabs found for "needed" programs - merged into the tab list of report.js: loadConfig.
 const dynamicTabs = () => read().needed.filter((p) => p.tab && p.tab.gid).map((p) => ({ name: p.tab.name || p.name, gid: String(p.tab.gid) }));
 
-module.exports = { norm, read, update, sameProgram, isExcludedByRules, findExcluded, findNeeded, setExcluded, setNeeded, dynamicTabs, MIN_MATCH_LEN };
+module.exports = { tabs, isTabAllowed, isTabKnown, addWhitelistTab, blockTab, markTabAsked, norm, read, update, sameProgram, isExcludedByRules, findExcluded, findNeeded, setExcluded, setNeeded, dynamicTabs, MIN_MATCH_LEN };

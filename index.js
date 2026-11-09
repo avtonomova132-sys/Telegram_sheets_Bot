@@ -1713,6 +1713,7 @@ bot.onText(/^\/(check_assistants|чек_ассистенты)(?:@\S+)?$/, (msg) 
 const programNeeds = require('./programNeeds');
 bot.on('callback_query', (query) => {
   if (String(query.data || '').startsWith('prg:')) programNeeds.onCallback(bot, query).catch((err) => console.error('[program-needs] callback:', err.message));
+  if (String(query.data || '').startsWith('tab:')) programNeeds.onTabCallback(bot, query).catch((err) => console.error('[tabs-gate] callback:', err.message));
 });
 bot.onText(/^\/program_no(?:@\S+)?(?:\s+(.+?))?\s*$/i, (msg, m) => programNeeds.handleCommand(bot, msg, 'program_no', m && m[1]));
 bot.onText(/^\/program_need(?:@\S+)?(?:\s+(.+?))?\s*$/i, (msg, m) => programNeeds.handleCommand(bot, msg, 'program_need', m && m[1]));
@@ -1720,6 +1721,8 @@ bot.onText(/^\/program_tab(?:@\S+)?(?:\s+(.+?))?\s*$/i, (msg, m) => programNeeds
 bot.onText(/^\/programs(?:@\S+)?\s*$/i, (msg) => programNeeds.handleCommand(bot, msg, 'programs'));
 bot.onText(/^\/programs_scan(?:@\S+)?\s*$/i, (msg) => programNeeds.handleCommand(bot, msg, 'programs_scan'));
 cron.schedule('*/5 * * * *', () => programNeeds.step(bot).catch((err) => console.error('[program-needs] шаг:', err.message)));
+// Новые вкладки таблицы (раз в 3 часа): спросить Елену «нужны ли хосты?» — только про вкладки со свободными эфирами.
+cron.schedule('*/5 * * * *', () => programNeeds.newTabsStep(bot).catch((err) => console.error('[tabs-gate] шаг:', err.message)));
 
 const PROGRAMS_WATCH_HOUR = Number(process.env.PROGRAMS_WATCH_HOUR) || 9;
 
@@ -2324,9 +2327,15 @@ setTimeout(async () => {
 setTimeout(async () => {
   try {
     const monday = new Date(Date.UTC(2026, 10, 9));
+    // 2026-11-09: белый список вкладок (programRules.js) сохраняется в /data; короткое правило
+    // «ACI N» (для Inna & Bill) не должно исключать Ven. Utpala — такие записи из исключённых убираем.
+    require('./programRules').update((s) => {
+      s.excluded = s.excluded.filter((p) => !/^aci\s*\d+$/i.test(String(p.name || '').trim()));
+    });
     await reissueAnnouncePreview(bot, {
       monday,
-      once: 'announce-reissue-ysi-usca-2026-11-08',
+      once: 'announce-reissue-whitelist-2026-11-09',
+      cancelReminders: true,
       before: () => cardButtons.rebroadcastNote(bot, monday),
     });
   } catch (err) {

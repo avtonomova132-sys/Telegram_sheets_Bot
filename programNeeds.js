@@ -115,7 +115,9 @@ const dayStr = (ms) => (ms ? new Date(ms + 8 * 3600 * 1000).toISOString().slice(
 
 function programsText() {
   const s = rules.read();
-  const lines = ['📚 <b>Программы и хосты</b>', '', '<b>Исключены (хосты не нужны):</b>'];
+  const lines = ['📚 <b>Программы и хосты</b>', '', '<b>✅ Белый список вкладок (хосты ищем ТОЛЬКО здесь):</b>'];
+  s.tabs.whitelist.forEach((t) => lines.push(`• ${escapeHtml(t.name)}`));
+  lines.push('Все остальные вкладки в Анонс, напоминания, сводки, «за 24 ч» и счётчик не входят. Новая вкладка со свободными эфирами — спрошу кнопками «Да / Нет».', '', '<b>Исключены (хосты не нужны):</b>');
   STATIC_EXCLUDED.forEach((n) => lines.push(`• ${escapeHtml(n)} (зашито)`));
   s.excluded.forEach((p) => lines.push(`• ${escapeHtml(p.name)} (с ${dayStr(p.at)})`));
   lines.push('', '<b>Хосты нужны (активные):</b>');
@@ -372,4 +374,67 @@ async function scan(bot) {
   for (let i = 0; i < text.length; i += 3800) await tell(bot, text.slice(i, i + 3800));
 }
 
-module.exports = { seedProgramsOnce, onCallback, handleCommand, step, listSheetTabs, programsText, scan };
+// ---- новые вкладки таблицы (Елена, 2026-11-09) ----
+// Хосты ищем только во вкладках белого списка (programRules.js: tabs). Появилась вкладка, которой
+// нет ни в белом списке, ни среди уже известных, и в ней есть свободный эфир (без хоста, не
+// раньше сегодняшнего дня по Аризоне) → Елене ОДНО короткое сообщение с кнопками «Да / Нет».
+// «Да» = вкладка в белый список; «Нет» = больше не спрашивать. В группу ничего не уходит.
+const TAB_CHECK_EVERY_MS = 3 * 3600 * 1000;
+let lastTabCheck = 0;
+
+async function newTabsStep(bot, now = Date.now()) {
+  if (now - lastTabCheck < TAB_CHECK_EVERY_MS) return;
+  lastTabCheck = now;
+  let list;
+  try {
+    list = await listSheetTabs();
+  } catch (err) {
+    console.error('[tabs-gate] список вкладок:', err.message);
+    return;
+  }
+  const config = loadConfig();
+  const { csvUrl, parseCsv, parseTabEvents } = require('./report');
+  const azToday = new Date(now - 7 * 3600 * 1000);
+  const todayUtcMidnight = Date.UTC(azToday.getUTCFullYear(), azToday.getUTCMonth(), azToday.getUTCDate());
+  for (const tab of list) {
+    if (rules.isTabKnown(tab.gid)) continue;
+    let free = [];
+    try {
+      const res = await fetchWithTimeout(csvUrl(config.spreadsheetId, tab.gid), 25000);
+      if (!res.ok) continue;
+      const events = parseTabEvents(tab.name.trim(), parseCsv(await res.text()), { gid: String(tab.gid), noWhitelist: true });
+      free = events.filter((e) => !e.hasHost && e.date.getTime() >= todayUtcMidnight);
+    } catch (err) {
+      console.error('[tabs-gate] вкладка', tab.name, err.message);
+      continue;
+    }
+    if (free.length === 0) continue; // нет свободных эфиров — не спрашиваем, посмотрим при следующей проверке
+    rules.markTabAsked(tab.gid, tab.name.trim());
+    await tell(bot, `🆕 Новая вкладка: <b>${escapeHtml(tab.name.trim())}</b>. Нужны ли хосты? Да / Нет`, {
+      reply_markup: { inline_keyboard: [[{ text: '✅ Да', callback_data: `tab:yes:${tab.gid}` }, { text: '🚫 Нет', callback_data: `tab:no:${tab.gid}` }]] },
+    });
+  }
+}
+
+async function onTabCallback(bot, query) {
+  const m = String(query.data || '').match(/^tab:(yes|no):(\d+)$/);
+  if (!m) return false;
+  const answer = (text) => bot.answerCallbackQuery(query.id, text ? { text } : {}).catch(() => {});
+  if (!query.from || query.from.id !== elenaId()) {
+    await answer();
+    return true;
+  }
+  const [, action, gid] = m;
+  const asked = rules.tabs().asked[gid];
+  const name = (asked && asked.name) || gid;
+  if (action === 'yes') rules.addWhitelistTab(gid, name);
+  else rules.blockTab(gid, name);
+  await answer(action === 'yes' ? 'Добавлено в белый список' : 'Хорошо, больше не спрашиваю');
+  if (query.message) {
+    await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: query.message.chat.id, message_id: query.message.message_id }).catch(() => {});
+  }
+  await tell(bot, action === 'yes' ? `✅ Вкладка «${escapeHtml(name)}» добавлена в белый список: её эфиры теперь входят в Анонс, напоминания, сводки и «за 24 ч». Список: /programs` : `🚫 Вкладку «${escapeHtml(name)}» не учитываю и больше про неё не спрашиваю.`);
+  return true;
+}
+
+module.exports = { seedProgramsOnce, onCallback, onTabCallback, newTabsStep, handleCommand, step, listSheetTabs, programsText, scan };
