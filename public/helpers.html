@@ -19,25 +19,32 @@
   h1{font-family:'Cormorant Garamond',serif;font-weight:600;font-size:26px;line-height:1.1;}
   .sub{font-family:'Cormorant Garamond',serif;font-style:italic;color:var(--ink-soft);font-size:16px;}
   .bar{position:sticky;top:0;z-index:5;background:var(--bg);padding:8px 0 6px;border-bottom:1px solid var(--line);}
+  .tools{display:flex;gap:8px;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;}
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:999px;overflow:hidden;background:#fff;}
+  .seg button{border:0;background:transparent;color:var(--ink);font:inherit;font-size:13px;font-weight:500;padding:6px 12px;cursor:pointer;}
+  .seg button.on{background:var(--ink);color:#fff;}
   .dates{display:flex;gap:8px;align-items:center;}
   .dates button,.dates input{height:44px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--ink);font:inherit;font-size:16px;}
   .dates button{width:44px;font-size:20px;cursor:pointer;}
   .dates input{flex:1;min-width:0;padding:0 10px;text-align:center;}
-  .dayline{margin:6px 2px 0;color:var(--ink-soft);font-size:13px;display:flex;justify-content:space-between;align-items:center;gap:8px;}
-  .today{border:1px solid var(--line);border-radius:999px;background:#fff;color:var(--ink);font:inherit;font-size:13px;font-weight:500;padding:5px 12px;cursor:pointer;}
+  .dates button.today{width:auto;padding:0 12px;font-size:13px;font-weight:500;border-radius:999px;height:44px;}
   .chips{display:flex;gap:6px;overflow-x:auto;padding:8px 0 2px;scrollbar-width:none;}
   .chips::-webkit-scrollbar{display:none;}
   .chip{flex:none;border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:999px;padding:6px 12px;font:inherit;font-size:14px;cursor:pointer;}
   .chip.on{background:var(--ink);color:#fff;border-color:var(--ink);}
   .lang{padding:6px 0 0;font-size:13px;color:var(--ink);}
   .lang select{font:inherit;font-size:13px;padding:3px 6px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);}
+  .dayhead{margin:14px 2px 0;}
+  .dayhead .tz{font-size:20px;font-weight:700;line-height:1.2;}
+  .dayhead .dt{font-size:16px;font-weight:700;color:var(--ink-soft);margin-top:2px;}
   .legend{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:12px;color:var(--ink-soft);margin:10px 2px 4px;}
   .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-top:12px;}
   .card.red{border-left:5px solid var(--red);} .card.orange{border-left:5px solid var(--orange);} .card.green{border-left:5px solid var(--green);}
   .title{font-weight:600;font-size:16px;}
   .prog{color:var(--ink-soft);font-size:13px;margin-top:2px;}
-  .times{margin-top:8px;font-size:14px;display:flex;flex-wrap:wrap;gap:2px 14px;}
-  .times b{font-weight:600;}
+  .times{margin-top:8px;font-size:14px;display:flex;flex-wrap:wrap;gap:2px 14px;align-items:baseline;}
+  .times .main{font-size:16px;font-weight:700;}
+  .times .other{font-size:12px;color:var(--muted);}
   .host{margin-top:10px;padding:8px 10px;background:var(--accent-soft);border-radius:10px;font-size:14px;}
   .host small{display:block;color:var(--ink-soft);font-size:12px;margin-top:2px;}
   .sec{margin-top:12px;font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--accent-deep);}
@@ -61,30 +68,32 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>Helpers Calendar</h1>
-    <div class="sub">Календарь помощников · who is needed on each broadcast / кто нужен на каждом эфире</div>
+    <h1 id="h1"></h1>
+    <div class="sub" id="sub"></div>
   </header>
 
   <div class="bar">
-    <div class="dates">
-      <button id="prev" aria-label="Previous day / День назад">‹</button>
-      <input id="date" type="date" aria-label="Date / Дата">
-      <button id="next" aria-label="Next day / День вперёд">›</button>
+    <div class="tools">
+      <div class="seg" id="langSeg"><button data-l="en">EN</button><button data-l="ru">RU</button></div>
+      <div class="seg" id="tzSeg"><button data-z="msk" id="tzMsk"></button><button data-z="az" id="tzAz"></button></div>
     </div>
-    <div class="dayline"><span id="dayline"></span> <button id="today" class="today">Today / Сегодня</button></div>
+    <div class="dates">
+      <button id="prev">‹</button>
+      <input id="date" type="date">
+      <button id="next">›</button>
+      <button id="today" class="today"></button>
+    </div>
     <div class="chips" id="chips"></div>
-    <div class="lang"><label for="lang">Language / Язык</label> <select id="lang"></select></div>
+    <div class="lang"><label for="lang" id="langLbl"></label> <select id="lang"></select></div>
   </div>
 
-  <div class="legend">
-    <span>🔴 Urgent: both places empty / Срочно: оба места пусты</span>
-    <span>🟠 Need a second person / Нужен второй</span>
-    <span>🟢 Covered / Закрыто</span>
-  </div>
+  <div class="dayhead"><div class="tz" id="dayTz"></div><div class="dt" id="dayDt"></div></div>
+
+  <div class="legend" id="legend"></div>
 
   <div id="list"></div>
   <div id="failed"></div>
-  <div class="foot">Dates and times: Arizona (AZ) and Moscow (MSK) · Дата и время: Аризона (AZ) и Москва (МСК)</div>
+  <div class="foot" id="foot"></div>
 </div>
 
 <script>
@@ -93,32 +102,77 @@
   var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
   var DOT = { red: '🔴', orange: '🟠', green: '🟢' };
   var RANK = { red: 0, orange: 1, green: 2 };
-  var WEEKDAY = ['Sun / Вс', 'Mon / Пн', 'Tue / Вт', 'Wed / Ср', 'Thu / Чт', 'Fri / Пт', 'Sat / Сб'];
 
-  var state = { date: azToday(), country: 'ALL', program: 'ALL', data: null };
+  // One language at a time (EN / RU). Role names stay in English; Russian is only an explanation next to them.
+  var STR = {
+    en: {
+      title: 'Helpers Calendar', sub: 'Who is needed on each broadcast', today: 'Today', all: 'All', language: 'Language',
+      tzMsk: 'Moscow (MSK)', tzAz: 'Arizona (MST)', headMsk: 'Moscow time (MSK)', headAz: 'Arizona time (MST)',
+      legRed: '🔴 Urgent: both places empty', legOrange: '🟠 Need a second person',
+      noOpen: 'No open spots on this day', loading: 'Loading…', fail: 'Could not load the schedule, try again in a minute',
+      unread: 'Could not read', host: 'Host', hostWord: '', hostNote: 'Questions about this session: ask this person',
+      cls: 'Class', empty: 'empty', prev: 'Previous day', next: 'Next day', date: 'Date',
+      prevDay: '(previous day)', nextDay: '(+1 day)', mc: 'Mic check', assistance: 'Relay', rec: 'Screen recording',
+      wd: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
+      h: 'h', m: 'm',
+      foot: 'Times follow the sheet (Arizona, MST); Moscow = Arizona + 10 hours. No daylight saving.'
+    },
+    ru: {
+      title: 'Календарь помощников', sub: 'Кто нужен на каждом эфире', today: 'Сегодня', all: 'Все', language: 'Язык',
+      tzMsk: 'Москва (МСК)', tzAz: 'Аризона (MST)', headMsk: 'Время по Москве (МСК)', headAz: 'Время по Аризоне (MST)',
+      legRed: '🔴 Срочно: оба места пусты', legOrange: '🟠 Нужен второй',
+      noOpen: 'В этот день открытых мест нет', loading: 'Загрузка…', fail: 'Не удалось загрузить расписание, попробуйте через минуту',
+      unread: 'Не удалось прочитать', host: 'Host', hostWord: 'хост', hostNote: 'Вопросы по эфиру: к нему',
+      cls: 'Общее', empty: 'пусто', prev: 'День назад', next: 'День вперёд', date: 'Дата',
+      prevDay: '(накануне)', nextDay: '(+1 день)', mc: 'Проверка микрофона', assistance: 'Ретрансляция', rec: 'Запись экрана',
+      wd: ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'],
+      h: 'ч', m: 'мин',
+      foot: 'Время берётся из таблицы (Аризона, MST); Москва = Аризона + 10 часов. Перехода на летнее время нет.'
+    }
+  };
+  // fixed shifts from Arizona time, minutes (no daylight saving on either side)
+  var SHIFT = { az: 0, msk: 600 };
+  var UTC_OFF = { az: -7, msk: 3 };
+
+  function store(key, val) { try { if (val === undefined) return window.localStorage.getItem(key); window.localStorage.setItem(key, val); } catch (e) { /* private mode */ } return null; }
+  var browserRu = /^ru/i.test((navigator.language || (navigator.languages && navigator.languages[0]) || ''));
+  var savedLang = store('hc_lang'), savedTz = store('hc_tz');
+  var state = {
+    lang: savedLang === 'ru' || savedLang === 'en' ? savedLang : (browserRu ? 'ru' : 'en'),
+    tzPicked: savedTz === 'msk' || savedTz === 'az' ? savedTz : null,
+    country: 'ALL', program: 'ALL', data: null
+  };
+  function tz() { return state.tzPicked || (state.lang === 'ru' ? 'msk' : 'az'); }
+  function S() { return STR[state.lang]; }
+  function todayIn(z) { return new Date(Date.now() + UTC_OFF[z] * 3600000).toISOString().slice(0, 10); }
+  state.date = todayIn(tz());
+
   // program filter key = sheet tab name; every tab starting with «ACI» is one program «ACI»
   function progKey(e) { var t = String(e.tab || e.program || '').trim(); return /^aci/i.test(t) ? 'ACI' : (t || '—'); }
-
-  function azToday() {
-    try { return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Phoenix' }); } catch (e) { return new Date().toISOString().slice(0, 10); }
-  }
-  function shift(dateStr, n) {
-    var d = new Date(dateStr + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10);
-  }
-  function hm(min) {
-    if (min == null) return '—';
-    var m = ((min % 1440) + 1440) % 1440; return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
-  }
+  function addDays(dateStr, n) { var d = new Date(dateStr + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+  function hm(min) { var m = ((min % 1440) + 1440) % 1440; return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'); }
   function dur(min) {
-    if (min == null) return '';
-    var h = Math.floor(min / 60), m = min % 60; return (h ? h + 'h ' : '') + (m ? m + 'm' : '') || '0m';
+    var s = S(), h = Math.floor(min / 60), m = min % 60;
+    return ((h ? h + ' ' + s.h + ' ' : '') + (m ? m + ' ' + s.m : '')).trim() || ('0 ' + s.m);
   }
-  function status(places) { // both places empty → red, one → orange, two → green
-    var n = (places || []).filter(Boolean).length; return n === 0 ? 'red' : n === 1 ? 'orange' : 'green';
+
+  // Event start (minutes from midnight of the sheet's Arizona day) in a zone; day offset 0 or 1.
+  function startIn(e, z) { return e.azStartMin + SHIFT[z]; }
+  function dayIn(e, z) { return addDays(e.day, Math.floor(startIn(e, z) / 1440)); }
+  function lenOf(e) {
+    if (e.durationMin != null) return e.durationMin;
+    if (e.azEndMin != null) return (((e.azEndMin - e.azStartMin) % 1440) + 1440) % 1440;
+    return null;
   }
+  function span(e, z) {
+    var st = startIn(e, z), L = lenOf(e);
+    return hm(st) + (L != null ? '–' + hm(st + L) : '');
+  }
+
+  function status(places) { var n = (places || []).filter(Boolean).length; return n === 0 ? 'red' : n === 1 ? 'orange' : 'green'; }
   function names(places) { return (places || []).filter(Boolean); }
 
-  // roles that take part in colours/sorting for the chosen filter
+  // MC, Assistance, REC & BK within the chosen language/country filter
   function visibleRoles(e) {
     var out = [];
     if (e.class && e.class.mc) out.push({ kind: 'mc', country: null, places: e.class.mc });
@@ -130,116 +184,166 @@
     });
     return out;
   }
+  // only roles with a free place (🔴 / 🟠) — the calendar shows open spots only
+  function openRoles(e) { return visibleRoles(e).filter(function (r) { return status(r.places) !== 'green'; }); }
   function worst(roles) {
     var w = 'green';
     roles.forEach(function (r) { if (RANK[status(r.places)] < RANK[w]) w = status(r.places); });
     return roles.length ? w : 'green';
   }
 
-  var LABEL = {
-    mc: ['MC', 'Mic check', 'Проверка микрофона'],
-    assistance: ['Assistance', 'Relay', 'Ретрансляция'],
-    rec: ['REC & BK', 'Screen recording', 'Запись экрана'],
-    coHost: ['Co-Host', '', ''],
-    adminInt: ['Admin INT', '', '']
-  };
-
   function roleHtml(kind, places, colored) {
-    var l = LABEL[kind], st = colored ? status(places) : '', ns = names(places);
-    var sub = l[1] ? '<small>' + esc(l[1]) + ' / ' + esc(l[2]) + '</small>' : '';
-    var who = ns.length ? esc(ns.join(' + ')) : (colored ? 'empty / пусто' : 'empty / пусто');
+    var s = S(), st = colored ? status(places) : '', ns = names(places);
+    var NAME = { mc: 'MC', assistance: 'Assistance', rec: 'REC & BK', coHost: 'Co-Host', adminInt: 'Admin INT' }[kind];
+    var note = { mc: s.mc, assistance: s.assistance, rec: s.rec }[kind];
+    var sub = note ? '<small>' + esc(note) + '</small>' : '';
+    var who = ns.length ? esc(ns.join(' + ')) : esc(s.empty);
     return '<div class="role ' + st + (colored ? '' : ' info') + '"><div class="dot">' + (colored ? DOT[st] : '•') + '</div>' +
-      '<div class="what"><b>' + esc(l[0]) + '</b>' + sub + '<div class="who' + (ns.length ? '' : ' empty') + '">' + who + '</div></div></div>';
+      '<div class="what"><b>' + NAME + '</b>' + sub + '<div class="who' + (ns.length ? '' : ' empty') + '">' + who + '</div></div></div>';
   }
 
   function cardHtml(e) {
-    var roles = visibleRoles(e), w = worst(roles);
+    var s = S(), z = tz(), other = z === 'msk' ? 'az' : 'msk';
+    var open = openRoles(e), w = worst(open);
     var h = '<div class="card ' + w + '">';
     h += '<div class="title">' + esc(e.title) + '</div><div class="prog">' + esc(e.program) + '</div>';
-    h += '<div class="times"><span><b>AZ</b> ' + hm(e.azStartMin) + '–' + hm(e.azEndMin) + '</span>' +
-      '<span><b>MSK / МСК</b> ' + hm(e.mskStartMin) + '–' + hm(e.mskEndMin) + (e.mskDayOffset ? ' (+' + e.mskDayOffset + ' day / дн.)' : '') + '</span>' +
-      (e.durationMin != null ? '<span>⏱ ' + esc(dur(e.durationMin)) + '</span>' : '') + '</div>';
-    h += '<div class="host"><b>Host / Хост:</b> ' + (e.host ? esc(e.host) : '—') +
-      '<small>Questions about this session: ask this person / Вопросы по эфиру: к нему</small></div>';
 
-    h += '<div class="sec">Class / Общее</div>';
-    if (e.class && e.class.mc) h += roleHtml('mc', e.class.mc, true);
-    if (e.class && e.class.coHost) h += roleHtml('coHost', e.class.coHost, false);
-    if (e.class && e.class.adminInt) h += roleHtml('adminInt', e.class.adminInt, false);
+    var otherDiff = Math.floor(startIn(e, other) / 1440) - Math.floor(startIn(e, z) / 1440);
+    var otherNote = otherDiff > 0 ? ' ' + s.nextDay : otherDiff < 0 ? ' ' + s.prevDay : '';
+    h += '<div class="times"><span class="main">' + span(e, z) + ' ' + (z === 'msk' ? (state.lang === 'ru' ? 'МСК' : 'MSK') : 'MST') + '</span>' +
+      '<span class="other">' + (other === 'msk' ? (state.lang === 'ru' ? 'МСК' : 'MSK') : 'MST') + ' ' + span(e, other) + otherNote + '</span>' +
+      (lenOf(e) != null ? '<span class="other">⏱ ' + esc(dur(lenOf(e))) + '</span>' : '') + '</div>';
+
+    h += '<div class="host"><b>' + s.host + '</b>' + (s.hostWord ? ' (' + s.hostWord + ')' : '') + ': ' + (e.host ? esc(e.host) : '—') +
+      '<small>' + esc(s.hostNote) + '</small></div>';
+
+    var mcOpen = open.filter(function (r) { return r.kind === 'mc'; });
+    var info = '';
+    if (e.class && e.class.mc && mcOpen.length) info += roleHtml('mc', e.class.mc, true);
+    if (e.class && e.class.coHost) info += roleHtml('coHost', e.class.coHost, false);
+    if (e.class && e.class.adminInt) info += roleHtml('adminInt', e.class.adminInt, false);
+    if (info) h += '<div class="sec">' + esc(s.cls) + '</div>' + info;
 
     var codes = Object.keys(e.countries || {}).filter(function (c) { return state.country === 'ALL' || c === state.country; });
     codes.sort(function (a, b) {
-      var ra = RANK[worst(visibleRoles({ class: {}, countries: pick(e, a) }))], rb = RANK[worst(visibleRoles({ class: {}, countries: pick(e, b) }))];
+      var ra = RANK[worst(openIn(e, a))], rb = RANK[worst(openIn(e, b))];
       return ra - rb || a.localeCompare(b);
     });
     codes.forEach(function (code) {
-      var c = e.countries[code];
-      var cw = worst(visibleRoles({ class: {}, countries: pick(e, code) }));
-      h += '<div class="cty ' + cw + '"><h3>' + esc(code) + '</h3>';
-      if (c.assistance) h += roleHtml('assistance', c.assistance, true);
-      if (c.rec) h += roleHtml('rec', c.rec, true);
+      var c = e.countries[code], ors = openIn(e, code);
+      if (!ors.length) return; // every role of this country is covered → not shown
+      h += '<div class="cty ' + worst(ors) + '"><h3>' + esc(code) + '</h3>';
+      if (c.assistance && status(c.assistance) !== 'green') h += roleHtml('assistance', c.assistance, true);
+      if (c.rec && status(c.rec) !== 'green') h += roleHtml('rec', c.rec, true);
       h += '</div>';
     });
     return h + '</div>';
   }
-  function pick(e, code) { var o = {}; o[code] = e.countries[code]; return o; }
+  function openIn(e, code) {
+    var o = {}; o[code] = e.countries[code];
+    return visibleRoles({ class: {}, countries: o }).filter(function (r) { return status(r.places) !== 'green'; });
+  }
+
+  function applyStatic() {
+    var s = S(), z = tz();
+    document.documentElement.lang = state.lang;
+    document.title = 'Helpers Calendar · Календарь помощников';
+    $('h1').textContent = s.title; $('sub').textContent = s.sub;
+    $('tzMsk').textContent = s.tzMsk; $('tzAz').textContent = s.tzAz;
+    $('today').textContent = s.today; $('langLbl').textContent = s.language;
+    $('prev').setAttribute('aria-label', s.prev); $('next').setAttribute('aria-label', s.next); $('date').setAttribute('aria-label', s.date);
+    $('legend').innerHTML = '<span>' + esc(s.legRed) + '</span><span>' + esc(s.legOrange) + '</span>';
+    $('foot').textContent = s.foot;
+    Array.prototype.forEach.call($('langSeg').children, function (b) { b.className = b.getAttribute('data-l') === state.lang ? 'on' : ''; });
+    Array.prototype.forEach.call($('tzSeg').children, function (b) { b.className = b.getAttribute('data-z') === z ? 'on' : ''; });
+    $('dayTz').textContent = z === 'msk' ? s.headMsk : s.headAz;
+    var dt = new Date(state.date + 'T00:00:00Z');
+    $('dayDt').textContent = s.wd[dt.getUTCDay()] + ' · ' + state.date;
+    $('date').value = state.date;
+  }
 
   function render() {
-    var d = state.data, list = $('list');
-    var dt = new Date(state.date + 'T00:00:00Z');
-    $('dayline').textContent = WEEKDAY[dt.getUTCDay()] + ' · ' + state.date + ' (AZ)';
-    $('date').value = state.date;
-    if (!d) { list.innerHTML = '<div class="empty-day">Loading… / Загрузка…</div>'; return; }
+    applyStatic();
+    var s = S(), d = state.data, list = $('list'), z = tz();
+    if (!d) { list.innerHTML = '<div class="empty-day">' + esc(s.loading) + '</div>'; return; }
 
-    var all = d.events || [];
-    // programs present this day, red ones first
+    // events of the selected date in the selected zone, that still have an open spot
+    var day = (d.events || []).filter(function (e) { return e.azStartMin != null && dayIn(e, z) === state.date; });
+    var all = day.filter(function (e) { return openRoles(e).length > 0; });
+
+    // programs with open sessions this day, red ones first
     var progs = {};
     all.forEach(function (e) {
-      var k = progKey(e), w = worst(visibleRoles(e));
+      var k = progKey(e), w = worst(openRoles(e));
       if (!(k in progs) || RANK[w] < RANK[progs[k]]) progs[k] = w;
     });
     var keys = Object.keys(progs).sort(function (a, b) { return (progs[a] === 'red' ? 0 : 1) - (progs[b] === 'red' ? 0 : 1) || a.localeCompare(b); });
     if (state.program !== 'ALL' && !(state.program in progs)) state.program = 'ALL';
     $('chips').innerHTML = ['ALL'].concat(keys).map(function (k) {
       return '<button class="chip' + (k === state.program ? ' on' : '') + '" data-p="' + esc(k) + '">' +
-        (k === 'ALL' ? 'All / Все' : (progs[k] === 'red' ? '🔴 ' : '') + esc(k)) + '</button>';
+        (k === 'ALL' ? esc(s.all) : (progs[k] === 'red' ? '🔴 ' : '') + esc(k)) + '</button>';
     }).join('');
 
     var inProg = all.filter(function (e) { return state.program === 'ALL' || progKey(e) === state.program; });
+    // country list from the sessions of the chosen program that have any open role (ignoring the country filter itself)
     var langs = {};
-    inProg.forEach(function (e) { Object.keys(e.countries || {}).forEach(function (c) { langs[c] = 1; }); });
+    day.filter(function (e) { return state.program === 'ALL' || progKey(e) === state.program; }).forEach(function (e) {
+      Object.keys(e.countries || {}).forEach(function (c) {
+        var cc = e.countries[c];
+        if ((cc.assistance && status(cc.assistance) !== 'green') || (cc.rec && status(cc.rec) !== 'green')) langs[c] = 1;
+      });
+    });
     var codes = Object.keys(langs).sort();
-    if (state.country !== 'ALL' && !langs[state.country]) state.country = 'ALL';
+    if (state.country !== 'ALL' && !langs[state.country]) { state.country = 'ALL'; render(); return; }
     $('lang').innerHTML = ['ALL'].concat(codes).map(function (c) {
-      return '<option value="' + esc(c) + '"' + (c === state.country ? ' selected' : '') + '>' + (c === 'ALL' ? 'All / Все' : esc(c)) + '</option>';
+      return '<option value="' + esc(c) + '"' + (c === state.country ? ' selected' : '') + '>' + (c === 'ALL' ? esc(s.all) : esc(c)) + '</option>';
     }).join('');
 
-    var evs = inProg.map(function (e) { return { e: e, w: worst(visibleRoles(e)) }; });
-    evs.sort(function (a, b) { return RANK[a.w] - RANK[b.w] || (a.e.azStartMin || 0) - (b.e.azStartMin || 0); });
+    var evs = inProg.map(function (e) { return { e: e, w: worst(openRoles(e)) }; });
+    evs.sort(function (a, b) { return RANK[a.w] - RANK[b.w] || startIn(a.e, z) - startIn(b.e, z); });
     list.innerHTML = evs.length ? evs.map(function (x) { return cardHtml(x.e); }).join('') :
-      '<div class="empty-day">No broadcasts on this day / В этот день эфиров нет</div>';
+      '<div class="empty-day">' + esc(s.noOpen) + '</div>';
     $('failed').innerHTML = (d.failedTabs && d.failedTabs.length) ?
-      '<div class="notice">⚠️ Could not read / Не удалось прочитать: ' + esc(d.failedTabs.map(function (t) { return String(t).split(':')[0]; }).join(', ')) + '</div>' : '';
+      '<div class="notice">⚠️ ' + esc(s.unread) + ': ' + esc(d.failedTabs.map(function (t) { return String(t).split(':')[0]; }).join(', ')) + '</div>' : '';
   }
 
   var token = 0;
+  function fetchDay(date) {
+    return fetch('/api/helpers/day?date=' + encodeURIComponent(date)).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status); return r.json();
+    });
+  }
+  // Moscow = Arizona + 10 h, so a Moscow day holds sessions of the Arizona day itself and of the day before.
   function load() {
     var my = ++token; state.data = null; render();
-    fetch('/api/helpers/day?date=' + encodeURIComponent(state.date)).then(function (r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status); return r.json();
-    }).then(function (j) { if (my === token) { state.data = j; render(); } })
-      .catch(function () {
-        if (my !== token) return;
-        $('list').innerHTML = '<div class="notice">⚠️ Could not load the schedule, try again in a minute / Не удалось загрузить расписание, попробуйте через минуту</div>';
-      });
+    var z = tz(), dates = z === 'msk' ? [addDays(state.date, -1), state.date] : [state.date];
+    Promise.all(dates.map(fetchDay)).then(function (parts) {
+      if (my !== token) return;
+      var failed = [];
+      parts.forEach(function (p) { (p.failedTabs || []).forEach(function (t) { if (failed.indexOf(t) < 0) failed.push(t); }); });
+      state.data = { events: [].concat.apply([], parts.map(function (p) { return p.events || []; })), failedTabs: failed };
+      render();
+    }).catch(function () {
+      if (my !== token) return;
+      $('list').innerHTML = '<div class="notice">⚠️ ' + esc(S().fail) + '</div>';
+    });
   }
 
-  $('prev').onclick = function () { state.date = shift(state.date, -1); load(); };
-  $('next').onclick = function () { state.date = shift(state.date, 1); load(); };
-  $('today').onclick = function () { state.date = azToday(); load(); };
+  $('prev').onclick = function () { state.date = addDays(state.date, -1); load(); };
+  $('next').onclick = function () { state.date = addDays(state.date, 1); load(); };
+  $('today').onclick = function () { state.date = todayIn(tz()); load(); };
   $('date').onchange = function () { if (/^\d{4}-\d{2}-\d{2}$/.test(this.value)) { state.date = this.value; load(); } };
   $('chips').onclick = function (ev) { var p = ev.target.getAttribute && ev.target.getAttribute('data-p'); if (p) { state.program = p; render(); } };
   $('lang').onchange = function () { state.country = this.value; render(); };
+  $('langSeg').onclick = function (ev) {
+    var l = ev.target.getAttribute && ev.target.getAttribute('data-l'); if (!l || l === state.lang) return;
+    var before = tz(); state.lang = l; store('hc_lang', l);
+    if (tz() !== before) load(); else render(); // without a saved choice the zone follows the language
+  };
+  $('tzSeg').onclick = function (ev) {
+    var z = ev.target.getAttribute && ev.target.getAttribute('data-z'); if (!z || z === tz()) return;
+    state.tzPicked = z; store('hc_tz', z); load();
+  };
   load();
 })();
 </script>
