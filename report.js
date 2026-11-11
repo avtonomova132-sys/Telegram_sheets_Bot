@@ -823,7 +823,7 @@ async function fetchTabEvents(spreadsheetId, tab, opts = {}) {
   // straight to where its host would actually sign up, not the general
   // host-signup sheet.
   const tabUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit?gid=${tab.gid}#gid=${tab.gid}`;
-  const withUrl = events.map((e) => ({ ...e, tabUrl, sheetTab: tab.name, ...(opts.withRoles ? { configTab: tab.name } : {}) }));
+  const withUrl = events.map((e) => ({ ...e, tabUrl, sheetTab: tab.name, tabGid: String(tab.gid), ...(opts.withRoles ? { configTab: tab.name } : {}) }));
   withUrl.untitled = events.untitled || [];
   withUrl.offEvents = (events.offEvents || []).map((e) => ({ ...e, tabUrl }));
   withUrl.tempExcluded = events.tempExcluded || [];
@@ -924,7 +924,9 @@ async function collectWeekEvents(range, opts = {}) {
   const failedTabs = [];
   const debugCounts = [];
 
-  const results = await fetchAllTabEvents(config.spreadsheetId, config.tabs, opts);
+  // opts.extraTabs: tabs to read in addition to the configured ones (only the /helpers page passes them)
+  const tabsToRead = [...config.tabs, ...(opts.extraTabs || []).filter((t) => !config.tabs.some((c) => String(c.gid) === String(t.gid)))];
+  const results = await fetchAllTabEvents(config.spreadsheetId, tabsToRead, opts);
   for (const { tab, events, error } of results) {
     if (error) {
       debugCounts.push({ name: tab.name, total: 0, inRange: 0, error: error.message });

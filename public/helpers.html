@@ -65,6 +65,7 @@
   .notice{margin-top:14px;padding:10px 12px;background:#fff6d6;border:1px solid #ecd48a;border-radius:10px;font-size:13px;}
   .empty-day{margin-top:24px;text-align:center;color:var(--ink-soft);}
   .foot{margin-top:18px;color:var(--muted);font-size:12px;text-align:center;}
+  .foot .newtab{margin-top:6px;font-size:11px;}
 </style>
 </head>
 <body>
@@ -114,7 +115,7 @@
       noOpen: 'No open spots on this day', loading: 'Loading…', fail: 'Could not load the schedule, try again in a minute',
       unread: 'Could not read', host: 'Host', hostWord: '', hostNote: 'Questions about this session: ask this person',
       cls: 'Class', empty: 'empty', prev: 'Previous day', next: 'Next day', date: 'Date',
-      signup: 'Sign up in the sheet', hint: 'Enter your name in the empty cell',
+      newTab: 'New tab not in the list: ', signup: 'Sign up in the sheet', hint: 'Enter your name in the empty cell',
       prevDay: '(previous day)', nextDay: '(+1 day)', mc: 'Mic check', assistance: 'Relay', rec: 'Screen recording',
       wd: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
       h: 'h', m: 'm',
@@ -127,7 +128,7 @@
       noOpen: 'В этот день открытых мест нет', loading: 'Загрузка…', fail: 'Не удалось загрузить расписание, попробуйте через минуту',
       unread: 'Не удалось прочитать', host: 'Host', hostWord: 'хост', hostNote: 'Вопросы по эфиру: к нему',
       cls: 'Общее', empty: 'пусто', prev: 'День назад', next: 'День вперёд', date: 'Дата',
-      signup: 'Записаться в таблице', hint: 'Впишите своё имя в пустую ячейку',
+      newTab: 'Новая вкладка, которой нет в списке: ', signup: 'Записаться в таблице', hint: 'Впишите своё имя в пустую ячейку',
       prevDay: '(накануне)', nextDay: '(+1 день)', mc: 'Проверка микрофона', assistance: 'Ретрансляция', rec: 'Запись экрана',
       wd: ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'],
       h: 'ч', m: 'мин',
@@ -264,6 +265,8 @@
     $('prev').setAttribute('aria-label', s.prev); $('next').setAttribute('aria-label', s.next); $('date').setAttribute('aria-label', s.date);
     $('legend').innerHTML = '<span>' + esc(s.legRed) + '</span><span>' + esc(s.legOrange) + '</span>';
     $('foot').textContent = s.foot;
+    var nt = (state.data && state.data.newTabs) || [];
+    if (nt.length) { var div = document.createElement('div'); div.className = 'newtab'; div.textContent = s.newTab + nt.join(', '); $('foot').appendChild(div); }
     Array.prototype.forEach.call($('langSeg').children, function (b) { b.className = b.getAttribute('data-l') === state.lang ? 'on' : ''; });
     Array.prototype.forEach.call($('tzSeg').children, function (b) { b.className = b.getAttribute('data-z') === z ? 'on' : ''; });
     $('dayTz').textContent = z === 'msk' ? s.headMsk : s.headAz;
@@ -331,7 +334,7 @@
       if (my !== token) return;
       var failed = [];
       parts.forEach(function (p) { (p.failedTabs || []).forEach(function (t) { if (failed.indexOf(t) < 0) failed.push(t); }); });
-      state.data = { events: [].concat.apply([], parts.map(function (p) { return p.events || []; })), failedTabs: failed };
+      state.data = { events: [].concat.apply([], parts.map(function (p) { return p.events || []; })), failedTabs: failed, newTabs: (parts[0] && parts[0].newTabs) || [] };
       render();
     }).catch(function () {
       if (my !== token) return;
