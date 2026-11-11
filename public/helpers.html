@@ -300,7 +300,7 @@
     }).join('');
 
     var evs = inProg.map(function (e) { return { e: e, w: worst(openRoles(e)) }; });
-    evs.sort(function (a, b) { return RANK[a.w] - RANK[b.w] || startIn(a.e, z) - startIn(b.e, z); });
+    evs.sort(function (a, b) { return RANK[a.w] - RANK[b.w] || (startIn(a.e, z) % 1440) - (startIn(b.e, z) % 1440); });
     list.innerHTML = evs.length ? evs.map(function (x) { return cardHtml(x.e); }).join('') :
       '<div class="empty-day">' + esc(s.noOpen) + '</div>';
     $('failed').innerHTML = (d.failedTabs && d.failedTabs.length) ?
