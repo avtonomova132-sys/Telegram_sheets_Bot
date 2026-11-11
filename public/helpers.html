@@ -57,6 +57,8 @@
   .role .who.empty{color:var(--muted);}
   .role.red .who.empty{color:var(--red);}
   .info .who{color:var(--ink-soft);}
+  .signup{display:inline-block;margin-top:6px;padding:6px 12px;border-radius:999px;background:var(--ink);color:#fff;font-size:13px;font-weight:600;text-decoration:none;}
+  .hint{display:block;margin-top:3px;color:var(--ink-soft);font-size:12px;}
   .cty{margin-top:8px;border:1px solid var(--line);border-radius:10px;padding:2px 10px;}
   .cty.red{background:var(--red-bg);} .cty.orange{background:var(--orange-bg);}
   .cty h3{font-size:13px;font-weight:600;padding-top:6px;}
@@ -112,6 +114,7 @@
       noOpen: 'No open spots on this day', loading: 'Loading…', fail: 'Could not load the schedule, try again in a minute',
       unread: 'Could not read', host: 'Host', hostWord: '', hostNote: 'Questions about this session: ask this person',
       cls: 'Class', empty: 'empty', prev: 'Previous day', next: 'Next day', date: 'Date',
+      signup: 'Sign up in the sheet', hint: 'Enter your name in the empty cell',
       prevDay: '(previous day)', nextDay: '(+1 day)', mc: 'Mic check', assistance: 'Relay', rec: 'Screen recording',
       wd: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
       h: 'h', m: 'm',
@@ -124,6 +127,7 @@
       noOpen: 'В этот день открытых мест нет', loading: 'Загрузка…', fail: 'Не удалось загрузить расписание, попробуйте через минуту',
       unread: 'Не удалось прочитать', host: 'Host', hostWord: 'хост', hostNote: 'Вопросы по эфиру: к нему',
       cls: 'Общее', empty: 'пусто', prev: 'День назад', next: 'День вперёд', date: 'Дата',
+      signup: 'Записаться в таблице', hint: 'Впишите своё имя в пустую ячейку',
       prevDay: '(накануне)', nextDay: '(+1 день)', mc: 'Проверка микрофона', assistance: 'Ретрансляция', rec: 'Запись экрана',
       wd: ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'],
       h: 'ч', m: 'мин',
@@ -192,14 +196,19 @@
     return roles.length ? w : 'green';
   }
 
-  function roleHtml(kind, places, colored) {
+  function roleHtml(kind, places, colored, url) {
     var s = S(), st = colored ? status(places) : '', ns = names(places);
     var NAME = { mc: 'MC', assistance: 'Assistance', rec: 'REC & BK', coHost: 'Co-Host', adminInt: 'Admin INT' }[kind];
     var note = { mc: s.mc, assistance: s.assistance, rec: s.rec }[kind];
     var sub = note ? '<small>' + esc(note) + '</small>' : '';
     var who = ns.length ? esc(ns.join(' + ')) : esc(s.empty);
+    // open role (🔴 / 🟠) with a link → «Sign up in the sheet» opens the sheet in a new tab on the session row / cell
+    var go = '';
+    if (colored && st !== 'green' && /^https:\/\/docs\.google\.com\//.test(url || '')) {
+      go = '<a class="signup" href="' + esc(url) + '" target="_blank" rel="noopener noreferrer">' + esc(s.signup) + '</a><span class="hint">' + esc(s.hint) + '</span>';
+    }
     return '<div class="role ' + st + (colored ? '' : ' info') + '"><div class="dot">' + (colored ? DOT[st] : '•') + '</div>' +
-      '<div class="what"><b>' + NAME + '</b>' + sub + '<div class="who' + (ns.length ? '' : ' empty') + '">' + who + '</div></div></div>';
+      '<div class="what"><b>' + NAME + '</b>' + sub + '<div class="who' + (ns.length ? '' : ' empty') + '">' + who + '</div>' + go + '</div></div>';
   }
 
   function cardHtml(e) {
@@ -219,7 +228,7 @@
 
     var mcOpen = open.filter(function (r) { return r.kind === 'mc'; });
     var info = '';
-    if (e.class && e.class.mc && mcOpen.length) info += roleHtml('mc', e.class.mc, true);
+    if (e.class && e.class.mc && mcOpen.length) info += roleHtml('mc', e.class.mc, true, e.links && e.links.mc);
     if (e.class && e.class.coHost) info += roleHtml('coHost', e.class.coHost, false);
     if (e.class && e.class.adminInt) info += roleHtml('adminInt', e.class.adminInt, false);
     if (info) h += '<div class="sec">' + esc(s.cls) + '</div>' + info;
@@ -233,12 +242,13 @@
       var c = e.countries[code], ors = openIn(e, code);
       if (!ors.length) return; // every role of this country is covered → not shown
       h += '<div class="cty ' + worst(ors) + '"><h3>' + esc(code) + '</h3>';
-      if (c.assistance && status(c.assistance) !== 'green') h += roleHtml('assistance', c.assistance, true);
-      if (c.rec && status(c.rec) !== 'green') h += roleHtml('rec', c.rec, true);
+      if (c.assistance && status(c.assistance) !== 'green') h += roleHtml('assistance', c.assistance, true, linkOf(e, code, 'assistance'));
+      if (c.rec && status(c.rec) !== 'green') h += roleHtml('rec', c.rec, true, linkOf(e, code, 'rec'));
       h += '</div>';
     });
     return h + '</div>';
   }
+  function linkOf(e, code, kind) { return (e.links && e.links.countries && e.links.countries[code] && e.links.countries[code][kind]) || ''; }
   function openIn(e, code) {
     var o = {}; o[code] = e.countries[code];
     return visibleRoles({ class: {}, countries: o }).filter(function (r) { return status(r.places) !== 'green'; });

@@ -22,9 +22,48 @@ function programName(e) {
   return bad(e.configTab) ? '' : e.configTab;
 }
 
+// Link to the free place of a role (🔴 → the top / white row, 🟠 → the free one of the two), built by the
+// same function as the Tuesday summary (cardButtons.eventLink / cellLink). A covered role (🟢) gets no link;
+// when the cell is unknown the link points at the session row; a failure gives '' (no button).
+function roleLink(e, places, refs) {
+  try {
+    const filled = (places || []).map(Boolean);
+    if (filled.length && filled.every(Boolean)) return '';
+    const idx = !filled[0] ? 0 : 1;
+    const ref = (refs || [])[idx] || '';
+    const cards = require('./cardButtons');
+    return (ref ? cards.cellLink(e, ref) : cards.eventLink(e)) || '';
+  } catch {
+    return '';
+  }
+}
+
+function linksOf(e, roles) {
+  const refs = roles.refs || { class: {}, countries: {} };
+  const links = { mc: '', countries: {} };
+  if (roles.class && roles.class.mc) links.mc = roleLink(e, roles.class.mc, refs.class && refs.class.mc);
+  Object.keys(roles.countries || {}).forEach((code) => {
+    const c = roles.countries[code];
+    const rc = (refs.countries && refs.countries[code]) || {};
+    links.countries[code] = {
+      assistance: c.assistance ? roleLink(e, c.assistance, rc.assistance) : '',
+      rec: c.rec ? roleLink(e, c.rec, rc.rec) : '',
+    };
+  });
+  return links;
+}
+
 function toJson(e) {
   const roles = e.roles || { class: {}, countries: {} };
+  let links = { mc: '', countries: {} };
+  try {
+    links = linksOf(e, roles);
+  } catch {
+    /* no links — the page then shows no buttons */
+  }
   return {
+    row: e.row,
+    links,
     day: e.date.toISOString().slice(0, 10),
     title: e.title,
     program: programName(e),

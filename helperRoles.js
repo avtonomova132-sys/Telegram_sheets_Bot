@@ -57,8 +57,21 @@ function extractRoles(rows, seg, r) {
   const main = rows[r] || [];
   const next = r + 1 < seg.endRowIndex && isContinuation(rows[r + 1], seg) ? rows[r + 1] : null;
   const places = (c) => [nameOf(main[c]), next ? nameOf(next[c]) : ''];
+  // Cell of each place in A1 notation (sheet row = index + 1): the session row and, when there is one,
+  // the continuation row under it — for the «sign up» links of the /helpers page.
+  const letter = (c) => {
+    let n = c + 1;
+    let s = '';
+    while (n > 0) {
+      const m = (n - 1) % 26;
+      s = String.fromCharCode(65 + m) + s;
+      n = Math.floor((n - 1) / 26);
+    }
+    return s;
+  };
+  const refs = (c) => [`${letter(c)}${r + 1}`, next ? `${letter(c)}${r + 2}` : ''];
 
-  const roles = { class: {}, countries: {} };
+  const roles = { class: {}, countries: {}, refs: { class: {}, countries: {} } };
   let classEnd = -1;
   header.forEach((cell, c) => {
     const h = norm(cell);
@@ -66,6 +79,7 @@ function extractRoles(rows, seg, r) {
     else if (h.startsWith('admin')) roles.class.adminInt = places(c);
     else if (h === 'mc') {
       roles.class.mc = places(c);
+      roles.refs.class.mc = refs(c);
       classEnd = c;
     }
   });
@@ -89,6 +103,8 @@ function extractRoles(rows, seg, r) {
     if (!code) return;
     roles.countries[code] = roles.countries[code] || {};
     roles.countries[code][kind] = places(c);
+    roles.refs.countries[code] = roles.refs.countries[code] || {};
+    roles.refs.countries[code][kind] = refs(c);
   });
   return roles;
 }

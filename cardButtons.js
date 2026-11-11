@@ -812,6 +812,12 @@ function eventLink(e) {
   if (!e.tabUrl) return '';
   return e.row ? `${e.tabUrl}&range=A${e.row}` : e.tabUrl;
 }
+// The same link built for one cell (A1 notation, e.g. «R12») — used by the /helpers page, so there is
+// only one way of building a sheet link.
+function cellLink(e, ref) {
+  if (!e.tabUrl) return '';
+  return ref ? `${e.tabUrl}&range=${ref}` : eventLink(e);
+}
 
 function nudgeEventBlocks(e, withLink = false) {
   const programme = programLine(e.tabName, e.title);
@@ -2505,6 +2511,8 @@ function sendReminderNow(bot, chatId) {
 }
 
 module.exports = {
+  eventLink,
+  cellLink,
   sendCard,
   sendWeekCards,
   postWeekCards,
