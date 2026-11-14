@@ -1229,6 +1229,29 @@ if (myChatId) ozonMail.register(app, { bot, chatId: myChatId });
 
 const isOwnerPrivate = (msg) => msg.chat.type === 'private' && myChatId && String(msg.chat.id) === String(myChatId);
 
+// ===== Напоминания про проверки Ozon, которые делает Claude (ozonReminders.js) =====
+const ozonReminders = require('./ozonReminders');
+async function checkOzonReminders() {
+  if (!myChatId) return;
+  try {
+    const today = baliDateString();
+    const weekday = new Date(Date.now() + 8 * 3600 * 1000).getUTCDay();
+    for (const r of ozonReminders.dueNow(today, baliMinutesNow(), weekday)) {
+      await bot.sendMessage(myChatId, ozonReminders.format(r));
+      ozonReminders.markSent(r.id, today); // помечаем только после успешной отправки — при сбое уйдёт на следующем тике
+    }
+  } catch (err) {
+    console.error('[ozon-reminders] ошибка:', err.message);
+  }
+}
+cron.schedule('*/5 * * * *', checkOzonReminders);
+bot.onText(/^\/напомнить_озон(?:@\S+)?(?:\s+([\s\S]*))?$/, (msg, m) => {
+  if (!isOwnerPrivate(msg)) return;
+  if (!m[1] || !m[1].trim()) { bot.sendMessage(msg.chat.id, ozonReminders.list()); return; }
+  const r = ozonReminders.add(m[1], baliDateString());
+  bot.sendMessage(msg.chat.id, r ? `Добавлено: ${r.date.slice(8)}.${r.date.slice(5, 7)} ${r.time} — ${r.title}` : 'Формат: /напомнить_озон 20.11 09:00 | название | текст');
+});
+
 bot.onText(/^\/почта(?:@\S+)?$/, (msg) => {
   if (!isOwnerPrivate(msg)) return;
   bot.sendMessage(msg.chat.id, ozonMail.recentSummary(10));

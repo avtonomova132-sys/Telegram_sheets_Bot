@@ -19,3 +19,7 @@
 - Контрольная точка: поля `id`, `due`, `dueTime` («ЧЧ:ММ» по Бали, по умолчанию 10:00), `title`, `why`, `period`, `what`, `prompt` — в `SEED` в `controlPoints.js`.
 
 Тесты: `node --test ozonMsg.test.js disputes.test.js returnsWatch.test.js fboPlacement.test.js`.
+
+## Напоминания Ozon для Claude
+
+`/напомнить_озон ДД.ММ ЧЧ:ММ | название | текст` — добавить разовое напоминание (время по Бали); без аргументов — список. Хранятся в `/data/ozon_reminders.json`, шаблон — `ozonReminders.format`. Тесты: `node --test ozonReminders.test.js`.
