@@ -391,17 +391,8 @@ function inheritFromGroupCards(store, card) {
   return refusers.length > 0 || reservedBy ? { refusers, reservedBy } : null;
 }
 
-// ONE-OFF (Elena, 2026-11-09): the Announce for 9–15.11 does NOT tag Erik and Darya (they already
-// answered the day before). Only the @-tags in the header / «Thank you» messages are dropped — Erik
-// stays an active host and is counted in «N of M»; every later Announce and every reminder is normal.
-const ONE_OFF_NO_TAG = { weekStart: '2026-11-09', users: ['lp129eric1', 'darya_marchenko9'] };
-function withoutOneOffTags(tags, range, restOfWeek) {
-  if (restOfWeek || !range || !range.start || range.start.toISOString().slice(0, 10) !== ONE_OFF_NO_TAG.weekStart) return tags;
-  return tags.filter((t) => !ONE_OFF_NO_TAG.users.includes(String(t).replace(/^@/, '').toLowerCase()));
-}
-
 async function postWeekCards(bot, chatId, events, range, failedTabs = [], review = null, { restOfWeek = false } = {}) {
-  const allTags = withoutOneOffTags(loadHostCandidates(), range, restOfWeek);
+  const allTags = loadHostCandidates();
   const { header: baseHeader, cards, closing, openCount } = buildWeekCardParts(events, range, { restOfWeek, tags: allTags });
   const label = makeLabeler(chatId, 1 + cards.length + 1 + tagFollowUps(allTags).length);
   const header = label() + baseHeader;
@@ -607,15 +598,37 @@ async function processCardCallback(bot, query) {
 // state. Volume is tiny, so one queue is plenty.
 let serialChain = Promise.resolve();
 
+// A step that never finishes (a hung request) must not block the whole queue for ever: after 10 minutes the
+// queue moves on (the hung step may still finish in the background). 2026-11-16: the Sunday Announce preview
+// and the Monday training preview did not come — a stuck queue is the most likely reason.
+function guarded(fn, ms = 10 * 60 * 1000) {
+  return () =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('шаг не завершился за 10 минут (завис), очередь пошла дальше')), ms);
+      Promise.resolve()
+        .then(fn)
+        .then(
+          (v) => {
+            clearTimeout(timer);
+            resolve(v);
+          },
+          (e) => {
+            clearTimeout(timer);
+            reject(e);
+          }
+        );
+    });
+}
+
 function runSerial(fn) {
-  const next = serialChain.then(fn).catch((err) => console.error('[card-buttons] ошибка:', err.message));
+  const next = serialChain.then(guarded(fn)).catch((err) => console.error('[card-buttons] ошибка:', err.message));
   serialChain = next;
   return next;
 }
 
 // Same queue, but the caller gets the result — or the error — back.
 function runSerialStrict(fn) {
-  const run = serialChain.then(fn);
+  const run = serialChain.then(guarded(fn));
   serialChain = run.catch((err) => console.error('[card-buttons] ошибка:', err.message));
   return run;
 }
@@ -1633,6 +1646,7 @@ async function reportProblem(bot, key, text, everyMs = 60 * 60 * 1000) {
   const due = updateScheduler((s) => {
     if (s.errors[key] && now - s.errors[key] < everyMs) return false;
     s.errors[key] = now;
+    s.lastError = { key, text: String(text).slice(0, 300), at: now };
     return true;
   });
   console.error(`[week-schedule] ${key}: ${text}`);
@@ -1703,6 +1717,8 @@ async function createAnnouncePreview(bot, { monday, now = Date.now(), prevItems 
 
   const doubts = openEvents.filter((e) => liveDoubts(e).length > 0).map((e) => ({ ...e, doubts: liveDoubts(e) }));
   const review = doubts.length > 0 ? { doubts, blocked: false, preview: true } : null;
+  // Elena (2026-11-16): the preview ALWAYS comes, however many sessions there are; many → one warning line first.
+  if (openEvents.length > 8) await sendToElena(bot, `⚠️ Эфиров много: ${openEvents.length}, проверьте`);
   await postWeekCards(bot, elena, events, range, [], review);
 
   const items = announceItems(openEvents);
@@ -1833,10 +1849,10 @@ async function rebuildReminderPreview(bot, now = Date.now()) {
 // Cancel the waiting announce preview(s) of a week and send a new one (same as
 // /announce) built from the current sheet rules and host list. Nothing goes to
 // the group. `once` makes it a one-shot: remembered in the scheduler state.
-async function reissueAnnouncePreview(bot, { monday, once = null, now = Date.now(), before = null, cancelReminders = false }) {
+async function reissueAnnouncePreview(bot, { monday, once = null, now = Date.now(), before = null, cancelReminders = false, markDone = false }) {
   return runSerialStrict(async () => {
     if (once && readJson({ messages: {}, batches: [] }).scheduler?.oneShots?.[once]) return { skipped: true };
-    const pre = before ? await before() : null;
+    if (before) await before();
     const weekStart = isoOf(monday);
     const olds = pendingList().filter((p) => p.kind === 'announce' && p.weekStart === weekStart);
     let prevItems = null;
@@ -1856,15 +1872,11 @@ async function reissueAnnouncePreview(bot, { monday, once = null, now = Date.now
         await removeButtons(bot, p);
       }
     }
-    if (pre && pre.stop) {
-      // Too many sessions left: no new preview, the old one is cancelled, nothing goes to the group.
-      if (once) {
-        updateScheduler((s) => {
-          s.oneShots = s.oneShots || {};
-          s.oneShots[once] = now;
-        });
-      }
-      return { stopped: true, cancelled: olds.length };
+    // The Sunday slot of this week is handled by this run: the regular tick must not announce «missed».
+    if (markDone) {
+      updateScheduler((s) => {
+        s.done[`announce:${weekStart}`] = s.done[`announce:${weekStart}`] || { at: now, outcome: 'manual-reissue' };
+      });
     }
     const res = await createAnnouncePreview(bot, { monday, now, prevItems, manual: true });
     if (once) {
@@ -1877,10 +1889,11 @@ async function reissueAnnouncePreview(bot, { monday, once = null, now = Date.now
   });
 }
 
-// One short note to Elena before the new preview: how many sessions went in and how many were left
-// out as «Rebroadcast» (by program). Nothing goes to the group.
-const MAX_LISTED_EVENTS = 8;
-async function rebroadcastNote(bot, monday, now = Date.now()) {
+const baliStamp = (ms) => (ms ? new Date(ms + 8 * 3600 * 1000).toISOString().slice(5, 16).replace('T', ' ') + ' Бали' : '—');
+
+// One short line before a re-issued preview: how many sessions went in and from which tabs; the list below.
+// No limit: the preview always comes.
+async function announceSummaryNote(bot, monday, now = Date.now()) {
   const range = range7(monday);
   const collected = await collectWeekEvents(range);
   const storeNow = readJson({ messages: {}, batches: [] });
@@ -1889,29 +1902,65 @@ async function rebroadcastNote(bot, monday, now = Date.now()) {
     .filter((e) => (e.hasHost || !isPastAzStart(e, new Date(now))) && (e.hasHost || !reservationOnCards(storeNow, WVP_GROUP_ID, e)))
     .filter((e) => !e.hasHost);
   const untitled = (collected.untitled || []).filter((u) => !u.hasHost);
-  const lines = [];
-  if (untitled.length) {
-    lines.push(
-      '⚠️ Без названия (в Анонс не включены): ' +
-        untitled.map((u) => `${escapeHtml(u.sheetTab || u.tabName)}, строка ${u.row}, ${ddmm(u.date)} ${formatRange24h(u.azStartMin, u.azEndMin)} AZ`).join('; ')
-    );
+  if (!open.length) {
+    await sendToElena(bot, `📋 Анонс ${weekLabel(range)}: свободных эфиров без хоста нет — в группу ничего.`);
+    return;
   }
-  if (open.length > MAX_LISTED_EVENTS) {
-    const byTab = {};
-    open.forEach((e) => {
-      const k = String(e.sheetTab || e.tabName || '—').slice(0, 60);
-      byTab[k] = (byTab[k] || 0) + 1;
-    });
-    await sendToElena(
-      bot,
-      [`📋 Анонс ${weekLabel(range)}: после исключений эфиров без хоста — <b>${open.length}</b> (больше ${MAX_LISTED_EVENTS}). Превью не присылаю, в группу ничего не отправлено.`, `Вкладки: ${Object.keys(byTab).map((k) => `${escapeHtml(k)} — ${byTab[k]}`).join('; ')}.`, ...lines].join('\n')
-    );
-    return { stop: true };
-  }
-  const list = open.map((e) => `• ${escapeHtml(e.sheetTab || e.tabName)} · стр. ${e.row} · ${escapeHtml(e.title || '—')} · ${ddmm(e.date)} ${formatRange24h(e.azStartMin, e.azEndMin)} AZ`);
-  await sendToElena(bot, [`📋 Анонс ${weekLabel(range)}: вошло эфиров без хоста — <b>${open.length}</b>${open.length ? ':' : '. Свободных эфиров не осталось.'}`, ...list, ...lines].join('\n'));
-  return { stop: false };
+  const byTab = {};
+  open.forEach((e) => {
+    const k = String(e.sheetTab || e.tabName || '—').slice(0, 60);
+    byTab[k] = (byTab[k] || 0) + 1;
+  });
+  const lines = [`📋 Анонс ${weekLabel(range)}: вошло эфиров без хоста — <b>${open.length}</b>. Вкладки: ${Object.keys(byTab).map((k) => `${escapeHtml(k)} — ${byTab[k]}`).join('; ')}.`];
+  if (untitled.length) lines.push('⚠️ Без названия (в Анонс не включены): ' + untitled.map((u) => `${escapeHtml(u.sheetTab || u.tabName)}, строка ${u.row}, ${ddmm(u.date)} ${formatRange24h(u.azStartMin, u.azEndMin)} AZ`).join('; '));
+  await sendToElena(bot, lines.join('\n'));
 }
+
+// What the bot itself remembers about the missed Sunday slot — to be sent once before the re-issued preview.
+async function announceDiagnostics(bot, monday, { onceKey = null } = {}) {
+  const st = readJson({ messages: {}, batches: [] }).scheduler || {};
+  if (onceKey && st.oneShots?.[onceKey]) return;
+  const key = `announce:${isoOf(monday)}`;
+  const t = st.tick || {};
+  const errs = Object.entries(st.errors || {})
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([k, at]) => `${k} (${baliStamp(at)})`);
+  const lines = [
+    `🔎 Что бот помнит про воскресный слот ${weekLabel(range7(monday))}:`,
+    `• метка слота: ${st.done?.[key] ? `${st.done[key].outcome} (${baliStamp(st.done[key].at)})` : 'нет — превью не создавалось и «пропуск» не фиксировался'}`,
+    `• планировщик: последний тик ${t.startedAt ? `запущен ${baliStamp(t.startedAt)}, ${t.finishedAt && t.finishedAt >= t.startedAt ? `закончен ${baliStamp(t.finishedAt)}` : `НЕ закончен (шаг «${t.step || '?'}»)`}` : 'раньше не записывался (запись добавлена сегодня)'}`,
+    `• последние ошибки автоматики: ${errs.length ? errs.join('; ') : 'нет записей'}`,
+    `• ждущие превью: ${pendingList().map((p) => `${p.kind} ${p.weekStart || ''}`.trim()).join('; ') || 'нет'}`,
+  ];
+  await sendToElena(bot, lines.join('\n'));
+}
+
+// The bot must not stay silent on Sunday: 30 minutes after the Sunday 09:00 (Bali) slot, with no preview and no mark,
+// ONE line with the reason goes to Elena. Independent of the serial queue (it is what may hang).
+async function announceWatchdog(bot, now = Date.now()) {
+  const cur = baliMonday(now);
+  for (const monday of [cur, addDaysUtc(cur, 7)]) {
+    const key = `announce:${isoOf(monday)}`;
+    const due = at0900(monday, -1);
+    const st = readJson({ messages: {}, batches: [] }).scheduler || {};
+    if (st.done?.[key] || st.watch?.[key]) continue;
+    if (now < due + 30 * 60 * 1000 || now > due + 24 * 3600 * 1000) continue;
+    if (Object.values(st.pending || {}).some((p) => p.kind === 'announce' && p.weekStart === isoOf(monday))) continue;
+    updateScheduler((s) => {
+      s.watch = s.watch || {};
+      s.watch[key] = now;
+    });
+    const t = st.tick || {};
+    let reason;
+    if (!t.startedAt || now - t.startedAt > 15 * 60 * 1000) reason = 'планировщик не запускался последние 15 минут (бот выключен, перезапускался или завис)';
+    else if (!t.finishedAt || t.finishedAt < t.startedAt) reason = `планировщик завис на шаге «${t.step || '?'}» с ${baliStamp(t.startedAt)}`;
+    else if (st.lastError && now - st.lastError.at < 3 * 3600 * 1000) reason = `последняя ошибка: ${st.lastError.text}`;
+    else reason = 'ошибок нет и планировщик работает — вероятно, слот ещё выполняется';
+    await sendToElena(bot, `⚠️ Превью Анонса на неделю ${weekLabel(range7(monday))} ещё не готово (план — вс 09:00 по Бали). Причина: ${escapeHtml(reason)}. Подготовить вручную: /announce`);
+  }
+}
+
 
 // ---- The answer: button, "да"/"нет" reply, /yes, /no ----
 async function confirmPending(bot, id, approve) {
@@ -2164,6 +2213,9 @@ async function nudgeStep(bot, now) {
 }
 
 async function weekSchedulerTick(bot, now = Date.now()) {
+  updateScheduler((s) => {
+    s.tick = { ...(s.tick || {}), startedAt: Date.now() };
+  });
   const steps = [
     ['coverage-tuesday', () => runSerialStrict(() => weekFlowTick(bot, now))],
     ['announce-sunday', () => runSerialStrict(() => announceSlotStep(bot, now))],
@@ -2172,12 +2224,18 @@ async function weekSchedulerTick(bot, now = Date.now()) {
     ['urgent-24h', () => runSerialStrict(() => urgentStep(bot, now))],
   ];
   for (const [name, run] of steps) {
+    updateScheduler((s) => {
+      s.tick = { ...(s.tick || {}), step: name, stepAt: Date.now() };
+    });
     try {
       await run();
     } catch (err) {
       await reportProblem(bot, `tick:${name}`, `Автоматика недели («${name}») не сработала: ${err.message}. Попробую снова через 5 минут; если не получится — бот напишет ещё раз.`);
     }
   }
+  updateScheduler((s) => {
+    s.tick = { ...(s.tick || {}), finishedAt: Date.now(), step: null };
+  });
 }
 
 // ---- "Less than 24 hours left" for a session that still has no host ----
@@ -2529,7 +2587,10 @@ module.exports = {
   runTuesdayPreview,
   rebuildReminderPreview,
   reissueAnnouncePreview,
-  rebroadcastNote,
+  isOneShotDone: (key) => Boolean(readJson({ messages: {}, batches: [] }).scheduler?.oneShots?.[key]),
+  announceSummaryNote,
+  announceDiagnostics,
+  announceWatchdog,
   newestPendingAt: () => (pendingList()[0] || {}).createdAt || 0,
   addCountedExtraForEvent,
   urgentStep,

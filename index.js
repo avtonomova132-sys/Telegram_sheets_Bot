@@ -2346,27 +2346,41 @@ setTimeout(async () => {
   }
 }, 25 * 1000);
 
-// Разовая правка 2026-11-08 (Елена): «Rebroadcast» и «Break» исключены насовсем, «Break» (начало = конец)
-// и дата в названии больше не задерживают Анонс. Короткая сводка + НОВОЕ превью Анонса 9–15.11
-// в личку (в группу ничего без «да»; старое превью, если висит, отменяется).
+// Разовое (2026-11-16): воскресное превью Анонса на 16–22.11 не пришло. Бот сам присылает Елене, что он помнит про
+// пропущенный слот, потом строку «вошло N эфиров, вкладки» и НОВОЕ превью Анонса (всегда, сколько бы эфиров ни было).
+// Старые превью Анонса и понедельничного напоминания отменяются; в группу ничего без «да».
 setTimeout(async () => {
   try {
-    const monday = new Date(Date.UTC(2026, 10, 9));
-    // 2026-11-09: белый список вкладок (programRules.js) сохраняется в /data; короткое правило
-    // «ACI N» (для Inna & Bill) не должно исключать Ven. Utpala — такие записи из исключённых убираем.
-    require('./programRules').update((s) => {
-      s.excluded = s.excluded.filter((p) => !/^aci\s*\d+$/i.test(String(p.name || '').trim()));
-    });
+    const monday = new Date(Date.UTC(2026, 10, 16));
+    const once = 'announce-reissue-1116-2026-11-16';
+    if (cardButtons.isOneShotDone(once)) return;
+    // Состав хостов (Елена, 2026-11-16): Дарья (@Darya_Marchenko9) не хост; Анжелика вернулась (пауза кончилась
+    // 15.11 09:00 сама), Евгений на паузе бессрочно; разовое исключение тегов от 9.11 больше не действует.
+    const hs = require('./hostsStore').hosts;
+    const gone = hs.remove('Darya_Marchenko9');
+    if (myChatId) {
+      await bot
+        .sendMessage(Number(myChatId), `👥 Хосты для Анонса (активные, ${hs.tags().length}): ${hs.tags().join(' ')}${gone && gone.ok ? '\nДарья (@Darya_Marchenko9) убрана из хостов, как вы сказали.' : ''}`)
+        .catch(() => {});
+    }
+    await cardButtons.announceDiagnostics(bot, monday, { onceKey: once });
     await reissueAnnouncePreview(bot, {
       monday,
-      once: 'announce-reissue-notags-2026-11-09',
+      once,
       cancelReminders: true,
-      before: () => cardButtons.rebroadcastNote(bot, monday),
+      markDone: true,
+      before: () => cardButtons.announceSummaryNote(bot, monday),
     });
   } catch (err) {
-    console.error('[announce-reissue-2026-11-08] ошибка:', err.message);
+    console.error('[announce-reissue-2026-11-16] ошибка:', err.message);
   }
-}, 60 * 1000);
+}, 20 * 1000);
+
+// «Бот не молчит в воскресенье»: через 30 минут после воскресного слота без превью — одна строка с причиной.
+cron.schedule('*/5 * * * *', () => {
+  cardButtons.announceWatchdog(bot).catch((err) => console.error('[announce-watchdog]', err.message));
+});
+
 
 // Одно напоминание хостам, не отметившимся под карточками, через 24 часа после
 // Анонса (любого, отправленного ботом в группу: воскресная рассылка или
