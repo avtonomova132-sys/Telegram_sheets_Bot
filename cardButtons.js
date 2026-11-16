@@ -1889,6 +1889,35 @@ async function reissueAnnouncePreview(bot, { monday, once = null, now = Date.now
   });
 }
 
+// ONE-OFF (Elena, 2026-11-16): the Announce for 16–22.11 was declined on purpose («Не отправлять» — 5 days of big
+// broadcasts, the group is busy). It is NOT a refusal and nothing is nagged about it (no Monday reminder, no Tuesday
+// summary — those only exist for an Announce that was sent). On Wednesday 18.11 at 09:00 Bali the bot sends ONE line
+// «Напоминание: Анонс отложен с 16.11» and a NEW preview of the same week (the sheet is read again, only sessions that are
+// still without a host). No free sessions → one line and nothing for the group. Runs once; the next Sunday (22.11) is normal.
+const DEFERRED_ANNOUNCE = { key: 'deferred-announce-2026-11-16', monday: Date.UTC(2026, 10, 16), due: Date.UTC(2026, 10, 18, 1, 0, 0) };
+async function deferredAnnounceTick(bot, now = Date.now()) {
+  const shots = readJson({ messages: {}, batches: [] }).scheduler?.oneShots || {};
+  if (shots[DEFERRED_ANNOUNCE.key] || now < DEFERRED_ANNOUNCE.due) return;
+  if (now > DEFERRED_ANNOUNCE.due + 12 * 3600 * 1000) {
+    updateScheduler((s) => {
+      s.oneShots = { ...(s.oneShots || {}), [DEFERRED_ANNOUNCE.key]: now };
+    });
+    await sendToElena(bot, '⚠️ Отложенное превью Анонса 16–22.11 в среду подготовить вовремя не удалось (бот был недоступен). Подготовить сейчас: /announce this');
+    return;
+  }
+  if (!shots[`${DEFERRED_ANNOUNCE.key}:note`]) {
+    updateScheduler((s) => {
+      s.oneShots = { ...(s.oneShots || {}), [`${DEFERRED_ANNOUNCE.key}:note`]: now };
+    });
+    await sendToElena(bot, 'Напоминание: Анонс отложен с 16.11');
+  }
+  try {
+    await reissueAnnouncePreview(bot, { monday: new Date(DEFERRED_ANNOUNCE.monday), once: DEFERRED_ANNOUNCE.key, now });
+  } catch (err) {
+    await reportProblem(bot, 'deferred-announce', `Отложенное превью Анонса 16–22.11 не подготовилось: ${err.message}. Повторю через 5 минут; вручную: /announce this`);
+  }
+}
+
 const baliStamp = (ms) => (ms ? new Date(ms + 8 * 3600 * 1000).toISOString().slice(5, 16).replace('T', ' ') + ' Бали' : '—');
 
 // One short line before a re-issued preview: how many sessions went in and from which tabs; the list below.
@@ -2588,6 +2617,7 @@ module.exports = {
   rebuildReminderPreview,
   reissueAnnouncePreview,
   isOneShotDone: (key) => Boolean(readJson({ messages: {}, batches: [] }).scheduler?.oneShots?.[key]),
+  deferredAnnounceTick,
   announceSummaryNote,
   announceDiagnostics,
   announceWatchdog,

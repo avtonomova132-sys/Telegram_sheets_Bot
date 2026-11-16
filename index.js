@@ -2376,6 +2376,11 @@ setTimeout(async () => {
   }
 }, 20 * 1000);
 
+// Разовое (2026-11-16): отложенный Анонс 16–22.11 — в среду 18.11 в 09:00 по Бали новое превью (см. cardButtons.js).
+cron.schedule('*/5 * * * *', () => {
+  cardButtons.deferredAnnounceTick(bot).catch((err) => console.error('[deferred-announce]', err.message));
+});
+
 // «Бот не молчит в воскресенье»: через 30 минут после воскресного слота без превью — одна строка с причиной.
 cron.schedule('*/5 * * * *', () => {
   cardButtons.announceWatchdog(bot).catch((err) => console.error('[announce-watchdog]', err.message));
