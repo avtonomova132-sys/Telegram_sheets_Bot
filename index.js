@@ -1252,6 +1252,39 @@ bot.onText(/^\/напомнить_озон(?:@\S+)?(?:\s+([\s\S]*))?$/, (msg, m)
   bot.sendMessage(msg.chat.id, r ? `Добавлено: ${r.date.slice(8)}.${r.date.slice(5, 7)} ${r.time} — ${r.title}` : 'Формат: /напомнить_озон 20.11 09:00 | название | текст');
 });
 
+// ===== Таблица «Задания менеджерам» → лист «Елена (Ozon)» (tasksSheet.js, только чтение) =====
+// 07:00 по Бали (catch-up раз в 5 мин): новое/изменённое/убранное → Елене; нет нового — тишина. /задания — всегда отвечает.
+const tasksSheet = require('./tasksSheet');
+let tasksSheetRunning = false;
+async function checkTasksSheet() {
+  if (!myChatId || tasksSheetRunning) return;
+  const today = baliDateString();
+  if (!tasksSheet.dueToday(today, baliHour())) return;
+  const snap = tasksSheet.readSnap() || {};
+  if (snap.lastErrorAt && Date.now() - snap.lastErrorAt < 60 * 60 * 1000) return; // после ошибки — ретрай раз в час
+  tasksSheetRunning = true;
+  try {
+    const r = await tasksSheet.check({ today });
+    if (r.text) await ozonMsg.sendParts(bot, myChatId, r.text);
+  } catch (err) {
+    console.error('[tasks-sheet] ошибка:', err.message);
+    if (!snap.errorNotified) { try { await bot.sendMessage(myChatId, `🛍️📋 Не получилось прочитать таблицу заданий 😔 ${err.message}\nПовторю через час.`); } catch { /* ignore */ } }
+    tasksSheet.patchSnap({ errorNotified: true, lastErrorAt: Date.now() });
+  } finally { tasksSheetRunning = false; }
+}
+cron.schedule('*/5 * * * *', checkTasksSheet);
+bot.onText(/^\/(задания|tasks)(?:@\S+)?$/i, async (msg) => {
+  if (!isOwnerPrivate(msg)) return;
+  if (tasksSheetRunning) { await bot.sendMessage(msg.chat.id, '🛍️📋 Проверка уже идёт, секунду…'); return; }
+  tasksSheetRunning = true;
+  try {
+    const r = await tasksSheet.check({ manual: true });
+    await ozonMsg.sendParts(bot, msg.chat.id, r.text);
+  } catch (err) {
+    await bot.sendMessage(msg.chat.id, `🛍️📋 Не получилось прочитать таблицу заданий 😔 ${err.message}`);
+  } finally { tasksSheetRunning = false; }
+});
+
 bot.onText(/^\/почта(?:@\S+)?$/, (msg) => {
   if (!isOwnerPrivate(msg)) return;
   bot.sendMessage(msg.chat.id, ozonMail.recentSummary(10));
