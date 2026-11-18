@@ -1315,6 +1315,7 @@ cron.schedule('*/5 * * * *', async () => {
 // сразу в личку; тишина, если нового нет. Раз в месяц с FEES_REMINDER_DAY —
 // напоминание проверить «Витрину услуг» (автоподключение заранее не видно).
 const feesWatch = require('./feesWatch');
+const feesKnown = require('./feesKnown');
 const FEES_WATCH_HOUR = Number(process.env.FEES_WATCH_HOUR) || 10;
 const FEES_REMINDER_DAY = Number(process.env.FEES_REMINDER_DAY) || 25;
 let feesWatchRunning = false;
@@ -1329,11 +1330,18 @@ async function checkFeesPeriodic() {
   if (state.lastErrorAt && now - state.lastErrorAt < 60 * 60 * 1000) return;
   feesWatchRunning = true;
   try {
-    const summary = feesWatch.summarize(await feesWatch.listOperations());
+    // Новая логика (2026-11-18): только новый вид списания или рост известной платной услуги >30%; обязательное молчит.
     const monthKey = today.slice(0, 7);
-    const { alerts, known, paidSeen } = feesWatch.diff(summary, state, monthKey);
-    if (alerts.length) await bot.sendMessage(myChatId, feesWatch.formatAlerts(alerts));
-    const patch = { lastCheckDate: today, knownNames: known, paidSeen, errorNotified: false, lastErrorAt: null };
+    const ops = await feesWatch.listOperations(2 * feesWatch.LOOKBACK_DAYS);
+    const ev = feesWatch.evaluate(ops, state, today, feesKnown);
+    if (ev.alerts.length) {
+      await ozonMsg.sendParts(bot, myChatId, feesWatch.formatAlerts(ev.alerts));
+      feesWatch.patchState(ev.patch); // сразу запоминаем отправленное — при сбое ниже оно не придёт второй раз
+    }
+    const dg = feesWatch.monthlyDigest({ ...state, ...ev.patch }, today, feesKnown);
+    if (dg.text) await ozonMsg.sendParts(bot, myChatId, dg.text);
+    const alerts = ev.alerts.filter((a) => a.type !== 'growth');
+    const patch = { lastCheckDate: today, ...ev.patch, ...dg.patch, errorNotified: false, lastErrorAt: null };
     patch.monthly = feesWatch.trackMonthly(alerts, state, today);
     const due = feesWatch.prewarnDue({ ...state, monthly: patch.monthly }, today);
     if (due.length) {
@@ -1360,6 +1368,22 @@ async function checkFeesPeriodic() {
 }
 
 cron.schedule('*/5 * * * *', checkFeesPeriodic);
+
+
+// /озон_знаю — какие виды списаний бот не считает новыми (feesKnown.js): без аргументов — список,
+// «название» — обязательное (молчим), «платное название» — платная услуга, о которой знаешь. /озон_забыть — убрать.
+bot.onText(/^\/озон_знаю(?:@\S+)?(?:\s+([\s\S]+))?$/i, (msg, m) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  const arg = (m[1] || '').trim();
+  if (!arg) { ozonMsg.sendParts(bot, msg.chat.id, `🛍️ Что я знаю про списания Ozon\n\n${feesKnown.list()}`); return; }
+  const paid = /^платн\S*\s+/i.test(arg);
+  const r = feesKnown.add(paid ? arg.replace(/^платн\S*\s+/i, '') : arg, paid ? 'paid' : 'mandatory');
+  bot.sendMessage(msg.chat.id, r ? `Запомнил: «${r.name}» — ${paid ? 'платное, о котором ты знаешь (молчу, пока не вырастет больше чем на 30%)' : 'обязательное (молчу всегда)'}.` : 'Напиши название: /озон_знаю логистика');
+});
+bot.onText(/^\/озон_забыть(?:@\S+)?\s+([\s\S]+)$/i, (msg, m) => {
+  if (!isTrustedUser(msg.chat.id)) return;
+  bot.sendMessage(msg.chat.id, feesKnown.remove(m[1].trim()) ? `Убрал «${m[1].trim()}» из списка — снова буду сообщать.` : 'Такого названия в списке нет. Список: /озон_знаю');
+});
 
 bot.onText(/^\/(списания_debug|fees_debug)(?:@\w+)?$/i, async (msg) => {
   if (!isTrustedUser(msg.chat.id)) return;

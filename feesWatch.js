@@ -156,10 +156,10 @@ async function listOperations(days = LOOKBACK_DAYS, now = Date.now()) {
     for (const acc of await accrualsForDay(day)) {
       const fees = collectFees(acc);
       if (!fees.length) {
-        ops.push({ name: types.get(String(acc.type_id)) || `${UNTYPED} ${acc.accrued_category || 'начисление'}`, amount: amountOf(acc) });
+        ops.push({ name: types.get(String(acc.type_id)) || `${UNTYPED} ${acc.accrued_category || 'начисление'}`, amount: amountOf(acc), day });
         continue;
       }
-      for (const f of fees) ops.push({ name: types.get(f.typeId) || `тип ${f.typeId}`, amount: f.amount });
+      for (const f of fees) ops.push({ name: types.get(f.typeId) || `тип ${f.typeId}`, amount: f.amount, day });
     }
   }
   return ops;
@@ -194,27 +194,6 @@ function isPaidName(name) {
 
 const money = (n) => `${Math.round(n).toLocaleString('ru-RU')} ₽`;
 
-// Сравнение с тем, что уже видели. Возвращает { alerts, known }.
-function diff(summary, state, monthKey) {
-  const known = new Set(state.knownNames || []);
-  const firstRun = !state.knownNames;
-  const paidSeen = { ...(state.paidSeen || {}) };
-  const alerts = [];
-  for (const [name, v] of summary) {
-    if (name.startsWith(UNTYPED)) continue;
-    const paid = isPaidName(name);
-    const k = `${name}|${monthKey}`;
-    if (paid && !paidSeen[k]) {
-      alerts.push({ name, ...v, why: 'платная программа' });
-      paidSeen[k] = true;
-    } else if (!paid && !firstRun && !known.has(name)) {
-      alerts.push({ name, ...v, why: 'новый вид списания' });
-    }
-    known.add(name);
-  }
-  return { alerts, known: [...known], paidSeen };
-}
-
 // Пошаговые инструкции «как отключить» по ключевым словам названия списания.
 // Пути взяты из уведомлений самого Озона (чат «Подписки и лояльность»).
 const HOWTO = [
@@ -246,15 +225,104 @@ function howTo(name) {
   return h ? h.steps.join('\n') : GENERIC_HOWTO;
 }
 
-function formatAlerts(alerts, days = LOOKBACK_DAYS) {
-  const lines = alerts.map((a) => `• ${a.name} — ${money(a.sum)} (${a.count} шт.), ${a.why}`);
-  const seen = new Set();
-  const guides = [];
-  for (const a of alerts) {
-    const g = howTo(a.name);
-    if (!seen.has(g)) { seen.add(g); guides.push(g); }
+// ---------- Новая логика оповещения (2026-11-18) ----------
+// Сообщаем ТОЛЬКО о: (а) виде списания, которого нет в списках «знаю» (feesKnown.js), включая «всегда сообщать»
+// (звёздные, клики/заказы, платное размещение, новые подписки и Premium других тарифов);
+// (б) известной платной услуге, сумма которой за последние LOOKBACK_DAYS выросла больше чем на 30% к предыдущему периоду.
+// Обязательные списания молчат всегда. Раз в месяц — один итог по известным платным.
+const GROWTH = Number(process.env.FEES_GROWTH_PCT) || 30;
+const addDays = (iso, n) => { const d = new Date(`${iso}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+const dm = (iso) => `${iso.slice(8, 10)}.${iso.slice(5, 7)}`;
+
+// ops: [{name, amount, day}] за 2×LOOKBACK_DAYS дней. state — снимок бота. today — ГГГГ-ММ-ДД по Бали.
+// → { alerts, patch }. Сам ничего не отправляет и не пишет.
+function evaluate(ops, state, today, known, days = LOOKBACK_DAYS) {
+  const hist = JSON.parse(JSON.stringify(state.hist || {}));
+  const reported = { ...(state.reported || {}) };
+  const growthAlerted = { ...(state.growthAlerted || {}) };
+  const winFrom = addDays(today, -(days - 1));
+  const prevFrom = addDays(today, -(2 * days - 1));
+  const byName = new Map(); // название → день → { sum, count }
+  for (const op of ops) {
+    const name = String(op.name || '').trim();
+    if (!name || name.startsWith(UNTYPED)) continue;
+    const day = op.day || today;
+    const m = byName.get(name) || new Map();
+    const c = m.get(day) || { sum: 0, count: 0 };
+    c.sum += Number(op.amount) || 0; c.count += 1; m.set(day, c); byName.set(name, m);
   }
-  return `💸 Ozon: в списаниях за последние ${days} дн. —\n${lines.join('\n')}\n\nКак отключить, если не нужно:\n\n${guides.join('\n\n')}`;
+  const alerts = [];
+  for (const [name, dayMap] of byName) {
+    const cls = known.classify(name);
+    if (cls.type === 'mandatory') continue;
+    if (cls.type === 'paid') {
+      const h = hist[name] || (hist[name] = {});
+      for (const [day, c] of dayMap) h[day] = c.sum;
+      const sumIn = (from, to) => Object.entries(h).filter(([d]) => d >= from && d <= to).reduce((a, [, v]) => a + Math.abs(v), 0);
+      const cur = sumIn(winFrom, today); const prev = sumIn(prevFrom, addDays(winFrom, -1));
+      let ref = prev; let grown = false;
+      if (prev > 0) grown = cur > prev * (1 + GROWTH / 100);
+      else if (cur > 0) { // разовое/месячное списание: сравниваем с самым большим дневным списанием за прошлые 45 дней
+        const older = Object.entries(h).filter(([d]) => d < prevFrom && d >= addDays(today, -45)).map(([, v]) => Math.abs(v));
+        ref = older.length ? Math.max(...older) : 0;
+        const curMax = Math.max(...Object.entries(h).filter(([d]) => d >= winFrom).map(([, v]) => Math.abs(v)));
+        grown = ref > 0 && curMax > ref * (1 + GROWTH / 100);
+      }
+      const gk = `${name}|${today.slice(0, 7)}`;
+      if (grown && !growthAlerted[gk]) {
+        growthAlerted[gk] = true;
+        const lastDay = Object.keys(h).filter((d) => d >= winFrom).sort().pop() || today;
+        alerts.push({ type: 'growth', name, sum: cur, prev: ref, pct: Math.round((cur / ref - 1) * 100), days: [lastDay], count: 1 });
+      }
+      continue;
+    }
+    // «всегда» и «неизвестное»: каждый новый (название, день) сообщаем один раз; только за последние LOOKBACK_DAYS
+    const fresh = [...dayMap].filter(([day]) => day >= winFrom && !reported[`${name}|${day}`]);
+    if (!fresh.length) continue;
+    for (const [day] of fresh) reported[`${name}|${day}`] = true;
+    alerts.push({ type: cls.type === 'always' ? 'always' : 'unknown', name, sum: fresh.reduce((a, [, c]) => a + c.sum, 0), count: fresh.reduce((a, [, c]) => a + c.count, 0), days: fresh.map(([d]) => d).sort() });
+  }
+  // чистка старого
+  const cutH = addDays(today, -75); const cutR = addDays(today, -120);
+  for (const h of Object.values(hist)) for (const d of Object.keys(h)) if (d < cutH) delete h[d];
+  for (const k of Object.keys(reported)) if (k.slice(k.lastIndexOf('|') + 1) < cutR) delete reported[k];
+  return { alerts, patch: { v2: true, hist, reported, growthAlerted } };
+}
+
+const dateOf = (a) => (a.days.length > 1 ? `${dm(a.days[0])}–${dm(a.days[a.days.length - 1])}` : dm(a.days[0]));
+const VERDICT = {
+  always: '💸 можно отключить (платная услуга)',
+  unknown: '❓ не знаю этот вид: обязательное или можно отключить? Если обязательное — /озон_знаю <название>',
+};
+const MAX_LINES = 25;
+// Сообщение: название, сумма, дата и одна строка «обязательное / можно отключить». Без инструкций.
+function formatAlerts(alerts, days = LOOKBACK_DAYS) {
+  const lines = alerts.slice(0, MAX_LINES).map((a) => {
+    const verdict = a.type === 'growth' ? `💸 можно отключить — выросло на ${a.pct}% (было ${money(a.prev)})` : VERDICT[a.type];
+    return `• ${a.name} — ${money(a.sum)}, ${dateOf(a)}\n   ${verdict}`;
+  });
+  if (alerts.length > MAX_LINES) lines.push(`…и ещё ${alerts.length - MAX_LINES}`);
+  return require('./ozonMsg').build({
+    title: `💸 Ozon: в списаниях за последние ${days} дн.`,
+    why: 'увидеть новое или подорожавшее платное списание, остальное молчит.',
+    body: lines.join('\n'),
+  });
+}
+
+// Раз в месяц (первый запуск нового месяца) — один итог по известным платным услугам (по данным, что бот видел).
+function monthlyDigest(state, today, known) {
+  const monthKey = today.slice(0, 7);
+  if (state.digestMonth === monthKey) return { text: null, patch: {} };
+  const [y, m] = monthKey.split('-').map(Number);
+  const prev = m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`;
+  const rows = [];
+  for (const [name, h] of Object.entries(state.hist || {})) {
+    const sum = Object.entries(h).filter(([d]) => d.startsWith(prev)).reduce((a, [, v]) => a + Math.abs(v), 0);
+    if (sum > 0) rows.push(`• ${name} — ${money(sum)}`);
+  }
+  const patch = { digestMonth: monthKey };
+  if (!rows.length) return { text: null, patch };
+  return { text: require('./ozonMsg').build({ title: `💸 Ozon: итог платных услуг за ${prev.slice(5)}.${prev.slice(0, 4)}`, why: 'раз в месяц видеть, сколько стоят платные услуги, о которых ты знаешь.', body: rows.join('\n') }), patch };
 }
 
 // Раз в месяц повторяющиеся списания (одна операция за период) запоминаем с числом
@@ -302,6 +370,6 @@ function formatSummary(summary) {
 }
 
 module.exports = {
-  isConfigured, listOperations, summarize, diff, formatAlerts, formatSummary,
+  isConfigured, listOperations, summarize, evaluate, monthlyDigest, formatAlerts, formatSummary, LOOKBACK_DAYS,
   getState, patchState, isPaidName, debugSample, trackMonthly, prewarnDue, formatPrewarn, howTo,
 };
