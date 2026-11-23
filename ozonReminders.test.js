@@ -42,3 +42,19 @@ test('🛍️ и «Зачем» к шаблону не добавляются', 
   await b.sendMessage(1, r.format(r.SEED[1]));
   assert.ok(sent[0].startsWith('⏰ Ozon:') && !/Зачем|🛍️/.test(sent[0]));
 });
+test('29.11 09:00: споры по возвратам — один раз, текст целиком, без 🛍️', async () => {
+  const id = 'oz-1129-spory-vozvraty';
+  assert.ok(!ids(r.dueNow('2026-11-29', 8 * 60 + 59, 0)).includes(id));          // до 09:00 нет
+  assert.ok(ids(r.dueNow('2026-11-29', 9 * 60, 0)).includes(id));                // в срок
+  const item = r.dueNow('2026-11-29', 9 * 60, 0).find((x) => x.id === id);
+  const text = r.format(item);
+  assert.ok(text.startsWith('⏰ Ozon: сегодня открыть споры по возвратам 1002019808, 1002019809, 1002019810'));
+  assert.match(text, /обращению №98178098 и по обращениям для строк 173 и 175, обновить F\. Спор подавать после моего «да»\.$/);
+  const sent = []; const b = { sendMessage: async (cid, x) => { sent.push(x); } }; ozonMsg.installMarker(b);
+  await b.sendMessage(1, text);
+  assert.equal(sent[0], text);
+  r.markSent(id, '2026-11-29');
+  delete require.cache[require.resolve('./ozonReminders')]; const r3 = require('./ozonReminders'); // «перезапуск»
+  assert.ok(!ids(r3.dueNow('2026-11-29', 12 * 60, 0)).includes(id));
+  assert.ok(!ids(r3.dueNow('2026-12-06', 12 * 60, 0)).includes(id));             // больше не повторяется
+});
