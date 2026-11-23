@@ -2438,6 +2438,14 @@ cron.schedule('*/5 * * * *', () => {
   cardButtons.deferredAnnounceTick(bot).catch((err) => console.error('[deferred-announce]', err.message));
 });
 
+// Разовое (2026-11-22): воскресный Анонс на 23–29.11 нашёл 0 свободных эфиров — превью сообщения «все эфиры закрыты» для группы.
+// Дальше то же самое делается каждое воскресенье само (cardButtons.js: createCoveredPreview).
+setTimeout(() => {
+  cardButtons
+    .coveredPreviewNow(bot, new Date(Date.UTC(2026, 10, 23)), 'covered-preview-now-2026-11-23')
+    .catch((err) => console.error('[covered-preview-now]', err.message));
+}, 30 * 1000);
+
 // «Бот не молчит в воскресенье»: через 30 минут после воскресного слота без превью — одна строка с причиной.
 cron.schedule('*/5 * * * *', () => {
   cardButtons.announceWatchdog(bot).catch((err) => console.error('[announce-watchdog]', err.message));

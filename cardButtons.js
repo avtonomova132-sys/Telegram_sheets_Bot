@@ -1707,6 +1707,8 @@ async function createAnnouncePreview(bot, { monday, now = Date.now(), prevItems 
   if (openEvents.length === 0) {
     // A manual run never uses up the Sunday slot.
     if (!manual) {
+      // Nobody is left to ask for: prepare the warm «all sessions are covered» message for the group (preview to Elena, once a week).
+      await createCoveredPreview(bot, { monday, now });
       updateScheduler((s) => {
         s.done[key] = { at: now, outcome: 'none' };
       });
@@ -1991,6 +1993,95 @@ async function announceWatchdog(bot, now = Date.now()) {
 }
 
 
+// ---- «All sessions are covered» message for the group (Elena, 2026-11-22) ----
+// Every Sunday 09:00 Bali, when the Announce for the next week has NO free sessions, the bot prepares a short warm
+// message for the group (EN first, then RU, no tags) and sends Elena a PREVIEW with «Отправить в группу / Не отправлять»
+// (or «да»/«нет»). Nothing goes to the group without her «да»; «Не отправлять» = nothing more for this week; one preview
+// per week (flag done['covered:<monday>'], set when the preview is made — a restart does not make a second one).
+const EN_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const RU_MONTHS_GEN = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+// «November 23–29» / «23–29 ноября»; two months: «November 30 – December 6» / «30 ноября – 6 декабря»
+function weekWords(monday) {
+  const a = monday;
+  const b = addDaysUtc(monday, 6);
+  const same = a.getUTCMonth() === b.getUTCMonth();
+  return {
+    en: same ? `${EN_MONTHS[a.getUTCMonth()]} ${a.getUTCDate()}–${b.getUTCDate()}` : `${EN_MONTHS[a.getUTCMonth()]} ${a.getUTCDate()} – ${EN_MONTHS[b.getUTCMonth()]} ${b.getUTCDate()}`,
+    ru: same ? `${a.getUTCDate()}–${b.getUTCDate()} ${RU_MONTHS_GEN[a.getUTCMonth()]}` : `${a.getUTCDate()} ${RU_MONTHS_GEN[a.getUTCMonth()]} – ${b.getUTCDate()} ${RU_MONTHS_GEN[b.getUTCMonth()]}`,
+  };
+}
+function coveredText(monday) {
+  const w = weekWords(monday);
+  return [
+    '💛 Dear hosts,',
+    `For the upcoming week, ${w.en}, all sessions are covered — there are no broadcasts without a host. Thank you so much for your care and support! 🙏🌸`,
+    '',
+    '💛 Дорогие хосты,',
+    `На предстоящую неделю, ${w.ru}, все эфиры закрыты — эфиров без хоста нет. Огромное спасибо за вашу заботу и поддержку! 🙏🌸`,
+  ].join('\n');
+}
+
+// Makes the preview for Elena (once per week). Returns { created } or { skipped: 'already' }.
+async function createCoveredPreview(bot, { monday, now = Date.now() }) {
+  const elena = elenaChatId();
+  if (!elena) throw new Error('MY_CHAT_ID не задан — некому слать превью');
+  const flag = `covered:${isoOf(monday)}`;
+  if (readJson({ messages: {}, batches: [] }).scheduler?.done?.[flag]) return { skipped: 'already' };
+  const text = coveredText(monday);
+  const id = `c-${isoOf(monday)}`;
+  const preview = [
+    `👆 <b>Превью сообщения для группы «WorldView Productions»</b> (тема General) — на неделю ${weekLabel(range7(monday))}: свободных эфиров нет. Вот что уйдёт в группу, без тегов:`,
+    `───────────\n${escapeHtml(text)}\n───────────`,
+    HOW_TO_ANSWER,
+  ].join('\n\n');
+  const control = await withRetry(() => bot.sendMessage(elena, preview, { parse_mode: 'HTML', reply_markup: { inline_keyboard: controlKeyboard(id) } }));
+  updateScheduler((s) => {
+    s.done[flag] = { at: now, outcome: 'preview' };
+    s.pending[id] = {
+      id,
+      kind: 'covered',
+      weekStart: isoOf(monday),
+      text,
+      controlMessageId: control.message_id,
+      createdAt: now,
+      nudgedAt: null,
+      expiresAt: at0900(addDaysUtc(monday, 7)),
+      status: 'pending',
+    };
+  });
+  return { created: true, id };
+}
+
+async function sendApprovedCovered(bot, p) {
+  await withRetry(() => bot.sendMessage(WVP_GROUP_ID, p.text, { disable_web_page_preview: true }));
+  updateScheduler((s) => {
+    s.pending[p.id].status = 'sent';
+    s.pending[p.id].sentAt = Date.now();
+  });
+  await sendToElena(bot, '✅ Сообщение «все эфиры закрыты» отправлено в группу.');
+}
+
+// One-off at the start (2026-11-22): the Sunday Announce for 23–29.11 found no free sessions, the covered-message
+// feature did not exist yet — make the preview now (once). The sheet is read again: free sessions → just a note.
+async function coveredPreviewNow(bot, monday, onceKey, now = Date.now()) {
+  if (readJson({ messages: {}, batches: [] }).scheduler?.oneShots?.[onceKey]) return { skipped: true };
+  const collected = await collectWeekEvents(range7(monday));
+  if (collected.failedTabs.length > 0) throw new Error(`не загрузились вкладки таблицы: ${collected.failedTabs.join('; ')}`);
+  const storeNow = readJson({ messages: {}, batches: [] });
+  const open = collected.events.filter((e) => !e.hasHost && !isPastAzStart(e, new Date(now)) && !reservationOnCards(storeNow, WVP_GROUP_ID, e));
+  let res;
+  if (open.length > 0) {
+    await sendToElena(bot, `На неделю ${weekLabel(range7(monday))} сейчас есть свободные эфиры (${open.length}) — сообщение «все закрыты» не готовлю. Анонс: /announce`);
+    res = { openNow: open.length };
+  } else {
+    res = await createCoveredPreview(bot, { monday, now });
+  }
+  updateScheduler((s) => {
+    s.oneShots = { ...(s.oneShots || {}), [onceKey]: now };
+  });
+  return res;
+}
+
 // ---- The answer: button, "да"/"нет" reply, /yes, /no ----
 async function confirmPending(bot, id, approve) {
   const now = Date.now();
@@ -2025,6 +2116,7 @@ async function confirmPending(bot, id, approve) {
   await removeButtons(bot, p);
   try {
     if (p.kind === 'announce') await sendApprovedAnnounce(bot, p, now);
+    else if (p.kind === 'covered') await sendApprovedCovered(bot, p);
     else if (p.kind === 'urgent') await sendApprovedUrgent(bot, p, now);
     else await sendApprovedReminder(bot, p, now);
   } catch (err) {
@@ -2237,7 +2329,7 @@ async function nudgeStep(bot, now) {
     updateScheduler((s) => {
       s.pending[p.id].nudgedAt = now;
     });
-    await sendToElena(bot, `⏰ Превью ${p.kind === 'announce' ? 'Анонса' : 'напоминания'} всё ещё ждёт вашего ответа. Нажмите кнопку под ним, ответьте «да» / «нет» или напишите /yes / /no. Пока вы не ответили, в группу ничего не уходит.`);
+    await sendToElena(bot, `⏰ Превью ${p.kind === 'announce' ? 'Анонса' : p.kind === 'covered' ? 'сообщения «все эфиры закрыты»' : 'напоминания'} всё ещё ждёт вашего ответа. Нажмите кнопку под ним, ответьте «да» / «нет» или напишите /yes / /no. Пока вы не ответили, в группу ничего не уходит.`);
   }
 }
 
@@ -2618,6 +2710,9 @@ module.exports = {
   reissueAnnouncePreview,
   isOneShotDone: (key) => Boolean(readJson({ messages: {}, batches: [] }).scheduler?.oneShots?.[key]),
   deferredAnnounceTick,
+  coveredPreviewNow,
+  createCoveredPreview,
+  coveredText,
   announceSummaryNote,
   announceDiagnostics,
   announceWatchdog,
