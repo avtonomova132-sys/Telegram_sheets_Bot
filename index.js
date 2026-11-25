@@ -1237,7 +1237,7 @@ async function checkOzonReminders() {
     const today = baliDateString();
     const weekday = new Date(Date.now() + 8 * 3600 * 1000).getUTCDay();
     for (const r of ozonReminders.dueNow(today, baliMinutesNow(), weekday)) {
-      await bot.sendMessage(myChatId, ozonReminders.format(r));
+      await ozonReminders.send(bot, myChatId, r);
       ozonReminders.markSent(r.id, today); // помечаем только после успешной отправки — при сбое уйдёт на следующем тике
     }
   } catch (err) {
