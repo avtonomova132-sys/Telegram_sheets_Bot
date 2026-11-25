@@ -1,0 +1,52 @@
+{
+  "community-tags.json": {
+    "mtime": 1795586275.299424,
+    "seen": 1795609471.8238208,
+    "ast_hash": "bd7ecd642b525cead8217f82db73c67b",
+    "semantic_hash": "bd7ecd642b525cead8217f82db73c67b",
+    "ast_empty": true
+  },
+  "index.js": {
+    "mtime": 1795586275.299424,
+    "seen": 1795609471.8238275,
+    "ast_hash": "a0588d0f1485a17b54e81d3dabb94ed9",
+    "semantic_hash": "a0588d0f1485a17b54e81d3dabb94ed9"
+  },
+  "package.json": {
+    "mtime": 1795586275.299424,
+    "seen": 1795609471.823891,
+    "ast_hash": "50cd95d6fcd2509c55d663cfbf3cd566",
+    "semantic_hash": "50cd95d6fcd2509c55d663cfbf3cd566"
+  },
+  "peredachi/extract.js": {
+    "mtime": 1795586275.299424,
+    "seen": 1795609471.8239157,
+    "ast_hash": "a022594d64375220dcaa659c6d9acdea",
+    "semantic_hash": "a022594d64375220dcaa659c6d9acdea"
+  },
+  "peredachi/query.js": {
+    "mtime": 1795586275.3004487,
+    "seen": 1795609471.823938,
+    "ast_hash": "5867e92d4a04df0c27f8ccf371326f82",
+    "semantic_hash": "5867e92d4a04df0c27f8ccf371326f82"
+  },
+  "peredachi/store.js": {
+    "mtime": 1795586275.3004487,
+    "seen": 1795609471.823954,
+    "ast_hash": "c3bbaefc30fd11908c59f953208775cc",
+    "semantic_hash": "c3bbaefc30fd11908c59f953208775cc"
+  },
+  "report.js": {
+    "mtime": 1795586275.3004487,
+    "seen": 1795609471.823972,
+    "ast_hash": "aed33af5cf90002d32d6547d1d78fcbf",
+    "semantic_hash": "aed33af5cf90002d32d6547d1d78fcbf"
+  },
+  "tabs-config.json": {
+    "mtime": 1795586275.3004487,
+    "seen": 1795609471.8240087,
+    "ast_hash": "69e862dcd8ff3fc6fbb325910d072409",
+    "semantic_hash": "69e862dcd8ff3fc6fbb325910d072409",
+    "ast_empty": true
+  }
+}
