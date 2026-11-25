@@ -1253,23 +1253,29 @@ bot.onText(/^\/напомнить_озон(?:@\S+)?(?:\s+([\s\S]*))?$/, (msg, m)
 });
 
 // ===== Таблица «Задания менеджерам» → лист «Елена (Ozon)» (tasksSheet.js, только чтение) =====
-// 07:00 по Бали (catch-up раз в 5 мин): новое/изменённое/убранное → Елене; нет нового — тишина. /задания — всегда отвечает.
+// 08:00 по Бали (TASKS_SHEET_HOUR, catch-up раз в 5 мин, после обновления таблицы скриптом ~07:30): Елене в личку ТОЛЬКО
+// действительно новые задачи; нет новых — тишина (SHEET_EMPTY_NOTICE=1 — «новых задач нет»). /задания — что новое прямо сейчас, без записи.
+// (/задачи занята личным списком задач — zadachi/, поэтому команда по таблице — /задания.)
 const tasksSheet = require('./tasksSheet');
 let tasksSheetRunning = false;
 async function checkTasksSheet() {
   if (!myChatId || tasksSheetRunning) return;
   const today = baliDateString();
   if (!tasksSheet.dueToday(today, baliHour())) return;
-  const snap = tasksSheet.readSnap() || {};
-  if (snap.lastErrorAt && Date.now() - snap.lastErrorAt < 60 * 60 * 1000) return; // после ошибки — ретрай раз в час
+  const st = tasksSheet.readState();
+  if (st.lastErrorAt && Date.now() - st.lastErrorAt < 60 * 60 * 1000) return; // после ошибки — тихий ретрай раз в час
   tasksSheetRunning = true;
   try {
-    const r = await tasksSheet.check({ today });
-    if (r.text) await ozonMsg.sendParts(bot, myChatId, r.text);
+    await tasksSheet.check({ today, send: (text) => ozonMsg.sendParts(bot, myChatId, text) });
   } catch (err) {
     console.error('[tasks-sheet] ошибка:', err.message);
-    if (!snap.errorNotified) { try { await bot.sendMessage(myChatId, `🛍️📋 Не получилось прочитать таблицу заданий 😔 ${err.message}\nПовторю через час.`); } catch { /* ignore */ } }
-    tasksSheet.patchSnap({ errorNotified: true, lastErrorAt: Date.now() });
+    try {
+      if (st.errorNotifiedDate !== today) { // сообщение об ошибке — не чаще раза в сутки
+        await bot.sendMessage(myChatId, `🛍️📋 Не получилось прочитать таблицу заданий 😔 ${err.message}`);
+        tasksSheet.patchState({ errorNotifiedDate: today });
+      }
+    } catch { /* ignore */ }
+    tasksSheet.patchState({ lastErrorAt: Date.now() });
   } finally { tasksSheetRunning = false; }
 }
 cron.schedule('*/5 * * * *', checkTasksSheet);
@@ -1278,7 +1284,7 @@ bot.onText(/^\/(задания|tasks)(?:@\S+)?$/i, async (msg) => {
   if (tasksSheetRunning) { await bot.sendMessage(msg.chat.id, '🛍️📋 Проверка уже идёт, секунду…'); return; }
   tasksSheetRunning = true;
   try {
-    const r = await tasksSheet.check({ manual: true });
+    const r = await tasksSheet.preview();
     await ozonMsg.sendParts(bot, msg.chat.id, r.text);
   } catch (err) {
     await bot.sendMessage(msg.chat.id, `🛍️📋 Не получилось прочитать таблицу заданий 😔 ${err.message}`);

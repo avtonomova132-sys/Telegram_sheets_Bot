@@ -1,17 +1,26 @@
-// Ежедневная проверка Google-таблицы «Задания менеджерам», лист «Елена (Ozon)» (только чтение).
-// 07:00 по Бали (catch-up poll раз в 5 мин, см. index.js) + команда /задания (всегда отвечает).
-// Ключ строки: Задача + Артикул + Что сделать. Снимок — /data/tasks_sheet_snapshot.json (атомарная запись).
-// Новые → «новое от Алины», изменились (тот же ключ, другой Товар/Комментарий) → «изменено», пропали → «✅ Убрано».
-// «Проверка (скрипт)» в сравнении НЕ участвует (считается скриптом, менялась бы каждый день).
-// Доступ — тот же, что у «Номенклатуры»: сервисный аккаунт (Sheets API, scope readonly), без него — публичная ссылка (gviz CSV).
+// Таблица «Задания менеджерам», лист «Елена (Ozon)»: уведомление Елене ТОЛЬКО о действительно новых задачах.
+// Бот только читает таблицу (ничего в неё не пишет). 08:00 по Бали (TASKS_SHEET_HOUR) — после обновления таблицы скриптом (~07:30).
+//
+// «Новая» = отпечаток (id) задачи отсутствует в снимке. Номер строки и количество строк НЕ используются:
+// строки сдвигаются, выполненные пропадают. id = sha1( нормализованные A | B | D ), где
+//   A — Задача, B — Артикул (как есть), D — «Что сделать» БЕЗ цифр и знаков (скрипт каждое утро пересчитывает
+//   цены и остатки: «…3 шт» → «…2 шт» — это та же задача, а не новая).
+// Комментарий Елены (F), товар (C) и «Проверка (скрипт)» (E) в id не входят: их изменение — не новая задача.
+// Строки без артикула (B) и пустые пропускаются.
+// Снимок — /data/tasks_snapshot.json: { id: { A, B, D, first_seen } }; состояние (когда запускали, ошибки) — /data/tasks_state.json.
+// Первый запуск (снимка нет) только сохраняет снимок, без уведомления. Исчезнувшие задачи из снимка удаляются.
+// Доступ — как у «Номенклатуры»: сервисный аккаунт (Sheets API, readonly), без него — публичная ссылка (gviz CSV).
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const SPREADSHEET_ID = process.env.TASKS_SHEET_ID || '1AOxj6UGT4cnMQyJhL-1IJQgdn_YDyChLSYc7j4f9bE4';
 const TAB_TITLE = process.env.TASKS_SHEET_TAB || 'Елена (Ozon)';
-const SNAP_PATH = process.env.TASKS_SNAPSHOT_PATH || '/data/tasks_sheet_snapshot.json';
-const RUN_HOUR = Number(process.env.TASKS_SHEET_HOUR) || 7;
-const TITLE = '🛍️📋 Таблица заданий';
+const SNAP_PATH = () => process.env.TASKS_SNAPSHOT_PATH || '/data/tasks_snapshot.json';
+const STATE_PATH = () => process.env.TASKS_STATE_PATH || '/data/tasks_state.json';
+const RUN_HOUR = Number(process.env.TASKS_SHEET_HOUR) || 8;
+const MAX_SHOWN = 15;
+const TITLE = '🆕 Новых задач';
 
 const COLS = [
   ['task', /^задача$/i], ['article', /^артикул$/i], ['product', /^товар$/i],
@@ -19,19 +28,11 @@ const COLS = [
 ];
 const clean = (v) => String(v ?? '').replace(/\s+/g, ' ').trim();
 const norm = (v) => clean(v).toLowerCase().replace(/ё/g, 'е');
-const keyOf = (r) => [r.task, r.article, r.what].map(norm).join('|');
+// D без цифр, знаков препинания и символов (₽, %, +, ·): остаются только слова.
+const normWhat = (v) => norm(v).replace(/[\d\p{P}\p{S}]+/gu, ' ').replace(/\s+/g, ' ').trim();
+const idOf = (r) => crypto.createHash('sha1').update([norm(r.task), norm(r.article), normWhat(r.what)].join('\u0001')).digest('hex').slice(0, 16);
 
-// Эмодзи по типу задачи (по ключевым словам в названии задачи/что сделать).
-const EMOJI = [
-  [/цен|price|скидк|маржа/i, '💰'], [/акци|промо|бустинг/i, '🏷️'], [/реклам|продвиж|бренд/i, '📣'],
-  [/остат|склад|постав|fbo|fbs|приход/i, '📦'], [/габарит|размер|вес/i, '📏'],
-  [/карточк|фото|описан|название|контент|штрихкод|баркод/i, '🖼️'],
-  [/документ|сертиф|декларац|сгр|маркиров/i, '📄'], [/возврат|спор|списан|компенсац/i, '⚖️'],
-  [/отзыв|рейтинг|вопрос/i, '⭐'],
-];
-const emojiFor = (r) => (EMOJI.find(([re]) => re.test(`${r.task} ${r.what}`)) || [null, '📌'])[1];
-
-// values — массив строк листа (как отдаёт Sheets API / CSV).
+// values — массив строк листа (как отдаёт Sheets API / CSV). Возвращает { id: { A, B, C, D, F } } в порядке листа.
 function parseRows(values) {
   const hi = values.findIndex((row, i) => i < 10 && row.some((c) => /^задача$/i.test(clean(c))) && row.some((c) => /^что сделать$/i.test(clean(c))));
   if (hi < 0) throw new Error('в листе «Елена (Ozon)» не нашёл заголовки «Задача» и «Что сделать» — структура таблицы изменилась');
@@ -41,44 +42,44 @@ function parseRows(values) {
   for (const raw of values.slice(hi + 1)) {
     const r = {};
     for (const [k] of COLS) r[k] = pos[k] >= 0 ? clean(raw[pos[k]]) : '';
-    if (!r.task && !r.article && !r.what) continue;
-    rows[keyOf(r)] = r;
+    if (!r.article) continue; // пустые строки и строки без артикула (B)
+    const id = idOf(r);
+    if (!rows[id]) rows[id] = { A: r.task, B: r.article, C: r.product, D: r.what, F: r.comment };
   }
   return rows;
 }
 
-const sameVisible = (a, b) => norm(a.product) === norm(b.product) && norm(a.comment) === norm(b.comment);
-function diff(prev, cur) {
-  const added = []; const changed = []; const removed = [];
-  for (const [k, r] of Object.entries(cur)) {
-    if (!prev[k]) added.push(r); else if (!sameVisible(prev[k], r)) changed.push(r);
-  }
-  for (const [k, r] of Object.entries(prev)) if (!cur[k]) removed.push(r);
-  return { added, changed, removed };
+function readJson(p) { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; } }
+function writeJson(p, d) {
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  const tmp = `${p}.tmp`; fs.writeFileSync(tmp, JSON.stringify(d, null, 2)); fs.renameSync(tmp, p);
+}
+const readSnap = () => readJson(SNAP_PATH());
+const readState = () => readJson(STATE_PATH()) || {};
+const patchState = (p) => writeJson(STATE_PATH(), { ...readState(), ...p });
+
+// Новые = id нет в снимке (в порядке листа).
+const newIds = (snap, cur) => Object.keys(cur).filter((id) => !snap[id]);
+// Новый снимок: только то, что сейчас в таблице; у старых first_seen сохраняется.
+function nextSnap(snap, cur, nowIso) {
+  const out = {};
+  for (const [id, r] of Object.entries(cur)) out[id] = { A: r.A, B: r.B, D: r.D, first_seen: (snap && snap[id] && snap[id].first_seen) || nowIso };
+  return out;
 }
 
-const line = (r, mark = '') => `• ${emojiFor(r)} ${r.task || 'Без названия'}: ${r.article || '—'} — ${r.what || '—'}${mark}${r.comment ? ` (${r.comment})` : ''}`;
-
-function buildMessage({ added, changed, removed }, firstRun, total) {
-  if (firstRun) {
-    const all = [...added];
-    return `${TITLE} — таблица подключена, вот текущие задачи (${all.length})\n\n` + (all.length ? all.map((r) => line(r)).join('\n') : 'Пока в листе «Елена (Ozon)» задач нет.');
-  }
-  if (!added.length && !changed.length && !removed.length) return null;
-  const parts = [`${TITLE} — новое от Алины`];
-  if (added.length) parts.push(added.map((r) => line(r)).join('\n'));
-  if (changed.length) parts.push('✏️ Изменено:\n' + changed.map((r) => line(r)).join('\n'));
-  if (removed.length) parts.push('✅ Убрано:\n' + removed.map((r) => `• ${emojiFor(r)} ${r.task || 'Без названия'}: ${r.article || '—'} — ${r.what || '—'}`).join('\n'));
-  if (!added.length && !changed.length) parts[0] = `${TITLE} — изменения`;
+function taskBlock(r, n) {
+  const lines = [`${n}) ${r.B}${r.C ? ` — ${r.C}` : ''}`];
+  if (r.A) lines.push(`Задача: ${r.A}`);
+  if (r.D) lines.push(`Что сделать: ${r.D}`);
+  if (r.F) lines.push('(комментарий уже есть)');
+  return lines.join('\n');
+}
+function buildMessage(cur, ids) {
+  const shown = ids.slice(0, MAX_SHOWN);
+  const parts = [`${TITLE}: ${ids.length}`, ...shown.map((id, i) => taskBlock(cur[id], i + 1))];
+  if (ids.length > shown.length) parts.push(`и ещё ${ids.length - shown.length}`);
   return parts.join('\n\n');
 }
-
-function readSnap() { try { return JSON.parse(fs.readFileSync(SNAP_PATH, 'utf8')); } catch { return null; } }
-function writeSnap(d) {
-  fs.mkdirSync(path.dirname(SNAP_PATH), { recursive: true });
-  const tmp = `${SNAP_PATH}.tmp`; fs.writeFileSync(tmp, JSON.stringify(d, null, 2)); fs.renameSync(tmp, SNAP_PATH);
-}
-function patchSnap(p) { writeSnap({ ...(readSnap() || {}), ...p }); }
 
 class AccessError extends Error {}
 
@@ -109,18 +110,42 @@ async function fetchValues() {
   return parseCsv(await res.text());
 }
 
-// Одна проверка. Возвращает { text|null, firstRun, total }. Снимок обновляется всегда (после успешного чтения).
-async function check({ manual = false, read = fetchValues, today = null } = {}) {
+
+const NO_ROWS = 'лист «Елена (Ozon)» прочитался пустым — не трогаю снимок, проверю позже (возможно, таблицу как раз обновляет скрипт)';
+
+// Плановая проверка. send(text) — отправка Елене; снимок и метка дня пишутся ТОЛЬКО после успешной отправки
+// (упала отправка/чтение — ничего не сохраняется, следующий тик повторит). Возвращает { first, sent, newCount, total }.
+async function check({ today, read = fetchValues, send, now = () => new Date() } = {}) {
   const cur = parseRows(await read());
   const snap = readSnap();
-  const firstRun = !snap || !snap.rows;
-  const d = firstRun ? { added: Object.values(cur), changed: [], removed: [] } : diff(snap.rows, cur);
-  let text = buildMessage(d, firstRun, Object.keys(cur).length);
-  if (!text && manual) text = `${TITLE} — нового нет. Сейчас в листе «Елена (Ozon)»: ${Object.keys(cur).length} задач.`;
-  writeSnap({ ...(snap || {}), rows: cur, updatedAt: new Date().toISOString(), ...(today ? { lastRunDate: today } : {}), errorNotified: false, lastErrorAt: null });
-  return { text, firstRun, total: Object.keys(cur).length };
+  const total = Object.keys(cur).length;
+  const nowIso = now().toISOString();
+  if (!snap) { // первый запуск: только запоминаем, что есть сейчас
+    writeJson(SNAP_PATH(), nextSnap(null, cur, nowIso));
+    patchState({ ...(today ? { lastRunDate: today } : {}), lastErrorAt: null });
+    return { first: true, sent: false, newCount: 0, total };
+  }
+  if (!total && Object.keys(snap).length) throw new Error(NO_ROWS);
+  const ids = newIds(snap, cur);
+  let sent = false;
+  if (ids.length) { await send(buildMessage(cur, ids)); sent = true; }
+  else if (process.env.SHEET_EMPTY_NOTICE === '1') { await send(`Новых задач нет. Всего активных: ${total}.`); sent = true; }
+  writeJson(SNAP_PATH(), nextSnap(snap, cur, nowIso));
+  patchState({ ...(today ? { lastRunDate: today } : {}), lastErrorAt: null });
+  return { first: false, sent, newCount: ids.length, total };
 }
 
-const dueToday = (today, hour) => hour >= RUN_HOUR && (readSnap() || {}).lastRunDate !== today;
+// /задания: что было бы новым прямо сейчас. Ничего не записывает (ни снимок, ни метки).
+async function preview({ read = fetchValues } = {}) {
+  const cur = parseRows(await read());
+  const snap = readSnap();
+  const total = Object.keys(cur).length;
+  if (!snap) return { text: `Снимка ещё нет: ближайшая проверка в ${String(RUN_HOUR).padStart(2, '0')}:00 по Бали сохранит текущие задачи как «уже известные» и ничего не пришлёт. Сейчас в листе активных задач: ${total}.`, newCount: 0, total };
+  const ids = newIds(snap, cur);
+  const text = ids.length ? `${buildMessage(cur, ids)}\n\nВсего активных: ${total}.` : `Новых задач нет. Всего активных: ${total}.`;
+  return { text, newCount: ids.length, total };
+}
 
-module.exports = { parseRows, diff, buildMessage, emojiFor, check, dueToday, readSnap, patchSnap, AccessError, TITLE, RUN_HOUR };
+const dueToday = (today, hour) => hour >= RUN_HOUR && readState().lastRunDate !== today;
+
+module.exports = { parseRows, idOf, normWhat, buildMessage, check, preview, dueToday, readSnap, readState, patchState, AccessError, TITLE, RUN_HOUR, MAX_SHOWN };

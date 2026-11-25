@@ -1,8 +1,8 @@
 {
   ".claude/settings.json": {
-    "mtime": 1795609463.892407,
-    "seen": 1795609474.7664406,
-    "ast_hash": "0a0ef578e59e2bb38c69f1dcb49a0e1a",
+    "mtime": 1795610120.1978211,
+    "seen": 1795610361.826281,
+    "ast_hash": "dd6efe6c632457022f22c029e57b6dfc",
     "semantic_hash": ""
   },
   "accrualsReport.js": {
@@ -228,9 +228,9 @@
     "semantic_hash": ""
   },
   "index.js": {
-    "mtime": 1795609489.242493,
-    "seen": 1795609499.3462174,
-    "ast_hash": "17c9e7748d5c70bb19eaea3e732f28ee",
+    "mtime": 1795610286.0387735,
+    "seen": 1795610361.8263605,
+    "ast_hash": "cb6eaf4b1adcbdc22982222c6d1cd55b",
     "semantic_hash": ""
   },
   "margin.js": {
@@ -276,9 +276,9 @@
     "semantic_hash": ""
   },
   "ozonMsg.js": {
-    "mtime": 1795323005.971055,
-    "seen": 1795609474.7664976,
-    "ast_hash": "3a55db8a510ae1bba498220326cbe3ed",
+    "mtime": 1795610313.8506794,
+    "seen": 1795610361.8263762,
+    "ast_hash": "52204832284c1f1a899cb4783faa7c54",
     "semantic_hash": ""
   },
   "ozonMsg.test.js": {
@@ -564,15 +564,15 @@
     "semantic_hash": ""
   },
   "tasksSheet.js": {
-    "mtime": 1795323005.9799325,
-    "seen": 1795609474.766541,
-    "ast_hash": "d643f17fff26a9166ca53eede4d68888",
+    "mtime": 1795610277.3104508,
+    "seen": 1795610361.826466,
+    "ast_hash": "b26655b8a388ccd4d1da27988f48a1bc",
     "semantic_hash": ""
   },
   "tasksSheet.test.js": {
-    "mtime": 1795323005.9799325,
-    "seen": 1795609474.7665422,
-    "ast_hash": "dffb057e9acbcc906ec227370f0b9aae",
+    "mtime": 1795610313.854127,
+    "seen": 1795610361.826468,
+    "ast_hash": "955e9e4fd36ecdc32fe7d1a5bea4186f",
     "semantic_hash": ""
   },
   "training.js": {
@@ -660,15 +660,15 @@
     "semantic_hash": ""
   },
   "CLAUDE.md": {
-    "mtime": 1795609496.6742756,
-    "seen": 1795609499.346422,
-    "ast_hash": "024b1d6f8352569c4a1066bf710de9ab",
+    "mtime": 1795610358.3782806,
+    "seen": 1795610361.8264966,
+    "ast_hash": "3ac10555744bdaafb4525705e7a2ee57",
     "semantic_hash": ""
   },
   "README.md": {
-    "mtime": 1795323005.9630184,
-    "seen": 1795609474.7665553,
-    "ast_hash": "35e6182b10e125096879bb431a4fbb6e",
+    "mtime": 1795610358.3789449,
+    "seen": 1795610361.8264983,
+    "ast_hash": "ad004c88308448d3186753b38e71a1ba",
     "semantic_hash": ""
   },
   "claude/Ozon_\u0436\u0443\u0440\u043d\u0430\u043b_\u0432\u043e\u0437\u0432\u0440\u0430\u0442\u044b_\u043a\u043e\u043d\u0442\u0440\u043e\u043b\u044c.md": {
@@ -723,6 +723,12 @@
     "mtime": 1795323005.9990184,
     "seen": 1795609474.7665646,
     "ast_hash": "90de56b48218c87da3f57e2492cf8b35",
+    "semantic_hash": ""
+  },
+  ".claude/hooks/session-start.sh": {
+    "mtime": 1795610113.12044,
+    "seen": 1795610361.8262694,
+    "ast_hash": "86116078d93ec4083dad59e8c5808919",
     "semantic_hash": ""
   },
   "package-lock.json": {

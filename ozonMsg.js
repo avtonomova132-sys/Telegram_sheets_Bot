@@ -23,7 +23,7 @@ const WHY_BY_TOPIC = [
 const whyByTopic = (t) => (WHY_BY_TOPIC.find(([re]) => re.test(t)) || [])[1] || null;
 
 // «⏰ Ozon: …» — готовый шаблон напоминаний для Claude (ozonReminders.js), 🛍️ и «Зачем:» не добавляем.
-const isOzonText = (t) => typeof t === 'string' && !t.startsWith('⏰ Ozon:') && !t.startsWith('🛍️📋') && OZON_RE.test(t) && !NOT_OZON_RE.test(t);
+const isOzonText = (t) => typeof t === 'string' && !t.startsWith('⏰ Ozon:') && !t.startsWith('🛍️📋') && !t.startsWith('🆕 Новых задач') && !t.startsWith('Новых задач нет') && !/(^|\n)Что сделать: /.test(t) && OZON_RE.test(t) && !NOT_OZON_RE.test(t);
 // Первой строкой 🛍️ — только если её ещё нет.
 function mark(text) {
   const t = String(text ?? '');
